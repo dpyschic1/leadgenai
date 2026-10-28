@@ -24,7 +24,7 @@ Specs live in `docs/`:
 
 ## Getting started
 
-Requires Node 20+ and Docker Desktop.
+Requires Node 22+ and Docker Desktop.
 
 ```sh
 npm install
@@ -43,21 +43,50 @@ Health check: `GET /api/v1/health`.
 | `npm run dev` | Start the dev server |
 | `npm run build` | Production build |
 | `npm run lint` / `npm run typecheck` | Static checks |
+| `npm test` / `npm run test:watch` | Unit tests (Vitest) |
 | `npm run db:up` | Start Postgres (Docker) |
 | `npm run db:generate` | Generate a migration from `src/db/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:studio` | Browse the database with Drizzle Studio |
 
-## Layout
+## Architecture
 
 ```
 src/
-  app/              routes (pages + /api/v1 route handlers)
-  db/schema.ts      data model (PRD §13, MVP subset)
-  db/index.ts       Drizzle client (server-only)
-drizzle/            generated SQL migrations
-docs/               PRD, SRS, product specification
+  app/
+    (auth)/             login, signup (public)
+    (app)/              signed-in app shell + pages
+    api/v1/             REST route handlers — thin: parse → service → DTO
+  server/               server-only code
+    auth/               password hashing, DB sessions
+    http/               route wrappers (auth, roles, errors, request ids), AppError
+    services/           business logic; always scoped by the session's workspaceId
+  db/                   Drizzle schema, client, DB error helpers
+  lib/
+    api/                typed fetch client + one module per resource, DTO types, error contract
+    validation/         Zod schemas shared by forms and route handlers
+  hooks/                TanStack Query hooks (call lib/api only)
+  components/           UI (call hooks only); components/ui = shadcn/ui
+  providers/            client providers (query client, theme, toasts)
+  proxy.ts              optimistic redirects by session-cookie presence
+drizzle/                generated SQL migrations
+docs/                   PRD, SRS, product specification
 ```
+
+Frontend data flow is one-directional: **component → hook → `lib/api` → `/api/v1` route → service → DB**.
+Components never call `fetch`; route handlers never contain business logic.
+
+### Conventions
+
+- **Route handlers** use `publicRoute` / `authedRoute` from `src/server/http/handler.ts`, which add
+  the request id, enforce roles, block cross-origin mutations and map errors to the
+  SRS §12.3 contract: `{ "error": { "code", "message", "request_id", "field_errors?" } }`.
+- **Tenant isolation:** services take `workspaceId` from the authenticated session, never from
+  the request body or URL.
+- **Auth:** database sessions (revocable). The browser holds a random token in the httpOnly
+  `lg_session` cookie; the DB stores only its SHA-256. Passwords are hashed with argon2id.
+- **Validation:** one Zod schema per input in `src/lib/validation`, used by both the form
+  (react-hook-form) and the route handler.
 
 ## Data model (MVP)
 

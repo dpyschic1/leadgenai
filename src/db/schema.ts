@@ -121,14 +121,34 @@ export const users = pgTable(
   {
     id: id(),
     workspaceId: workspaceRef(),
+    /** Stored lowercased; normalization happens in the validation schemas. */
     email: text().notNull(),
     name: text(),
+    /** argon2id hash; null for invited users who have not set a password yet. */
+    passwordHash: text(),
     role: userRole().notNull().default("member"),
     status: userStatus().notNull().default("active"),
+    lastLoginAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex("users_email_idx").on(t.email)],
+);
+
+/** Database sessions, so they can be revoked (SRS FR-AUTH-004). */
+export const sessions = pgTable(
+  "sessions",
+  {
+    /** SHA-256 of the session token; the raw token only ever lives in the cookie. */
+    id: text().primaryKey(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    userAgent: text(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId)],
 );
 
 // ---------------------------------------------------------------------------
