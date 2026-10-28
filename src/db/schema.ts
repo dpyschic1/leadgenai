@@ -6,10 +6,21 @@
  * enrichment_jobs, provider_accounts) are intentionally omitted.
  * Funding and job signals are stored as `signals` with structured `metadata`.
  *
+ * Normalization rules:
+ * - Shared vocabularies (service categories, industries, job functions, signal types,
+ *   opportunity types) are global lookup tables keyed by a stable slug.
+ * - Multi-valued attributes are join tables, never arrays that get matched on.
+ * - Tenant-owned rows carry `workspace_id`; every reference between tenant-owned rows is a
+ *   composite FK on (id, workspace_id), so the database itself rejects cross-workspace links.
+ *   Pure child rows (locations, contact points, evidence) are scoped through their parent.
+ * - Deliberate denormalizations are marked "Denormalized:" with the reason.
+ *
  * Column names are camelCase here and snake_case in Postgres (casing: "snake_case").
  */
 import {
   boolean,
+  check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -18,27 +29,19 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
-// Enums
+// Enums (closed sets that code branches on; open vocabularies are lookup tables)
 // ---------------------------------------------------------------------------
 
 /** Workspace roles (SRS §3). Platform admin is an internal role, not a workspace member. */
-export const userRole = pgEnum("user_role", ["owner", "admin", "manager", "member", "viewer"]);
-export const userStatus = pgEnum("user_status", ["invited", "active", "deactivated"]);
-
-/** Top-level groups from the signal taxonomy (PRD §10). */
-export const signalCategory = pgEnum("signal_category", [
-  "explicit_buying",
-  "problem",
-  "company_event",
-  "workforce",
-  "digital",
-]);
+export const memberRole = pgEnum("user_role", ["owner", "admin", "manager", "member", "viewer"]);
+export const membershipStatus = pgEnum("membership_status", ["invited", "active", "deactivated"]);
 
 /** SRS Appendix B. */
 export const intentLevel = pgEnum("intent_level", ["explicit", "high", "medium", "low", "unknown"]);
@@ -53,12 +56,44 @@ export const identityStatus = pgEnum("identity_status", [
   "suppressed",
 ]);
 
+export const contactPointType = pgEnum("contact_point_type", ["email", "phone"]);
+
 export const contactVerification = pgEnum("contact_verification", [
   "valid",
   "invalid",
   "accept_all",
   "webmail",
   "disposable",
+  "unknown",
+]);
+
+export const locationType = pgEnum("location_type", [
+  "headquarters",
+  "office",
+  "branch",
+  "store",
+  "warehouse",
+  "other",
+]);
+
+export const companyRelationship = pgEnum("company_relationship", [
+  "employee",
+  "founder",
+  "owner",
+  "board_member",
+  "advisor",
+  "contractor",
+  "investor",
+]);
+
+export const seniorityLevel = pgEnum("seniority_level", [
+  "owner",
+  "c_level",
+  "vp",
+  "director",
+  "manager",
+  "senior",
+  "entry",
   "unknown",
 ]);
 
@@ -69,6 +104,9 @@ export const evidenceLabel = pgEnum("evidence_label", [
   "inferred",
   "unknown",
 ]);
+
+/** How a signal contributes to an opportunity's signal stack. */
+export const signalRole = pgEnum("signal_role", ["primary", "corroborating", "negative"]);
 
 /** Opportunity lifecycle (SRS Appendix B). */
 export const opportunityStatus = pgEnum("opportunity_status", [
@@ -101,9 +139,37 @@ const workspaceRef = () =>
     .references(() => workspaces.id, { onDelete: "cascade" });
 /** 0-100 score; null means not yet scored. */
 const score = () => integer();
+/** ISO 3166-1 alpha-2 country code, e.g. "GB". */
+const countryCode = () => text();
+const isCountryCode = (column: string) => sql`${sql.identifier(column)} ~ '^[A-Z]{2}$'`;
+/** Global lookup table keyed by a stable slug (the slug is what code and AI output use). */
+const lookupTable = (name: string) =>
+  pgTable(name, {
+    slug: text().primaryKey(),
+    name: text().notNull(),
+  });
 
 // ---------------------------------------------------------------------------
-// Tenancy
+// Reference data (global, seeded by migration)
+// ---------------------------------------------------------------------------
+
+export const serviceCategories = lookupTable("service_categories");
+export const industries = lookupTable("industries");
+export const jobFunctions = lookupTable("job_functions");
+export const opportunityTypes = lookupTable("opportunity_types");
+/** Top-level groups from the signal taxonomy (PRD §10), plus negative signals (PRD §12). */
+export const signalCategories = lookupTable("signal_categories");
+
+export const signalTypes = pgTable("signal_types", {
+  slug: text().primaryKey(),
+  name: text().notNull(),
+  categorySlug: text()
+    .notNull()
+    .references(() => signalCategories.slug),
+});
+
+// ---------------------------------------------------------------------------
+// Tenancy & identity
 // ---------------------------------------------------------------------------
 
 export const workspaces = pgTable("workspaces", {
@@ -116,18 +182,16 @@ export const workspaces = pgTable("workspaces", {
   updatedAt: updatedAt(),
 });
 
+/** A person's login identity. Workspace access and roles live in `workspace_members`. */
 export const users = pgTable(
   "users",
   {
     id: id(),
-    workspaceId: workspaceRef(),
     /** Stored lowercased; normalization happens in the validation schemas. */
     email: text().notNull(),
     name: text(),
     /** argon2id hash; null for invited users who have not set a password yet. */
     passwordHash: text(),
-    role: userRole().notNull().default("member"),
-    status: userStatus().notNull().default("active"),
     lastLoginAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -135,20 +199,45 @@ export const users = pgTable(
   (t) => [uniqueIndex("users_email_idx").on(t.email)],
 );
 
-/** Database sessions, so they can be revoked (SRS FR-AUTH-004). */
+export const workspaceMembers = pgTable(
+  "workspace_members",
+  {
+    workspaceId: workspaceRef(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: memberRole().notNull().default("member"),
+    status: membershipStatus().notNull().default("active"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.userId] }),
+    index("workspace_members_user_idx").on(t.userId),
+  ],
+);
+
+/** Database sessions, so they can be revoked (SRS FR-AUTH-004). Bound to one workspace. */
 export const sessions = pgTable(
   "sessions",
   {
     /** SHA-256 of the session token; the raw token only ever lives in the cookie. */
     id: text().primaryKey(),
-    userId: uuid()
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    userId: uuid().notNull(),
+    workspaceId: uuid().notNull(),
     expiresAt: timestamp({ withTimezone: true }).notNull(),
     userAgent: text(),
     createdAt: createdAt(),
   },
-  (t) => [index("sessions_user_idx").on(t.userId)],
+  (t) => [
+    index("sessions_user_idx").on(t.userId),
+    // Losing workspace membership ends the sessions for that workspace.
+    foreignKey({
+      name: "sessions_member_fk",
+      columns: [t.workspaceId, t.userId],
+      foreignColumns: [workspaceMembers.workspaceId, workspaceMembers.userId],
+    }).onDelete("cascade"),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -162,12 +251,9 @@ export const companies = pgTable(
     workspaceId: workspaceRef(),
     canonicalName: text().notNull(),
     domain: text(),
-    industry: text(),
+    industry: text().references(() => industries.slug),
     employeeCount: integer(),
     revenueRange: text(),
-    locationCount: integer(),
-    country: text(),
-    city: text(),
     description: text(),
     metadata: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     createdAt: createdAt(),
@@ -176,9 +262,11 @@ export const companies = pgTable(
   (t) => [
     index("companies_workspace_idx").on(t.workspaceId),
     uniqueIndex("companies_workspace_domain_idx").on(t.workspaceId, t.domain),
+    unique("companies_id_workspace_uq").on(t.id, t.workspaceId),
   ],
 );
 
+/** Where a company operates. Location count and headquarters are derived from these rows. */
 export const companyLocations = pgTable(
   "company_locations",
   {
@@ -186,57 +274,99 @@ export const companyLocations = pgTable(
     companyId: uuid()
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
+    type: locationType().notNull().default("office"),
     address: text(),
     city: text(),
     region: text(),
-    country: text(),
+    country: countryCode(),
     postalCode: text(),
-    /** e.g. "headquarters", "office", "branch". */
-    locationType: text(),
     createdAt: createdAt(),
   },
-  (t) => [index("company_locations_company_idx").on(t.companyId)],
+  (t) => [
+    index("company_locations_company_idx").on(t.companyId),
+    uniqueIndex("company_locations_one_hq_idx")
+      .on(t.companyId)
+      .where(sql`${t.type} = 'headquarters'`),
+    check("company_locations_country_chk", isCountryCode("country")),
+  ],
 );
 
+/** A real-world person. Their role at a company lives on `company_people`. */
 export const people = pgTable(
   "people",
   {
     id: id(),
     workspaceId: workspaceRef(),
     name: text().notNull(),
-    title: text(),
-    seniority: text(),
     location: text(),
     professionalUrl: text(),
-    email: text(),
-    phone: text(),
-    contactVerification: contactVerification().notNull().default("unknown"),
-    /** When contact details were last verified; null = unverified (PRD §13 freshness rule). */
-    contactVerifiedAt: timestamp({ withTimezone: true }),
     identityStatus: identityStatus().notNull().default("unresolved"),
     identityConfidence: score(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("people_workspace_idx").on(t.workspaceId)],
+  (t) => [
+    index("people_workspace_idx").on(t.workspaceId),
+    unique("people_id_workspace_uq").on(t.id, t.workspaceId),
+  ],
 );
 
-export const companyPeople = pgTable(
-  "company_people",
+/** A person's business email/phone, each with its own source and freshness (PRD §13). */
+export const contactPoints = pgTable(
+  "contact_points",
   {
-    companyId: uuid()
-      .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
+    id: id(),
     personId: uuid()
       .notNull()
       .references(() => people.id, { onDelete: "cascade" }),
-    relationship: text().notNull().default("employee"),
+    type: contactPointType().notNull(),
+    value: text().notNull(),
+    isPrimary: boolean().notNull().default(false),
+    verification: contactVerification().notNull().default("unknown"),
+    /** When the value was last verified; null = never verified. */
+    verifiedAt: timestamp({ withTimezone: true }),
+    /** Where the value came from, e.g. "manual" or a provider name. */
+    source: text().notNull().default("manual"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("contact_points_person_value_idx").on(t.personId, t.type, t.value),
+    uniqueIndex("contact_points_one_primary_idx")
+      .on(t.personId, t.type)
+      .where(sql`${t.isPrimary}`),
+  ],
+);
+
+/** Employment / relationship graph: a person's role at a company. */
+export const companyPeople = pgTable(
+  "company_people",
+  {
+    workspaceId: uuid().notNull(),
+    companyId: uuid().notNull(),
+    personId: uuid().notNull(),
+    relationship: companyRelationship().notNull().default("employee"),
     title: text(),
+    seniority: seniorityLevel().notNull().default("unknown"),
+    jobFunction: text().references(() => jobFunctions.slug),
     startedAt: timestamp({ withTimezone: true }),
     endedAt: timestamp({ withTimezone: true }),
     confidence: score(),
   },
-  (t) => [primaryKey({ columns: [t.companyId, t.personId] })],
+  (t) => [
+    primaryKey({ columns: [t.companyId, t.personId] }),
+    index("company_people_person_idx").on(t.personId),
+    foreignKey({
+      name: "company_people_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "company_people_person_fk",
+      columns: [t.personId, t.workspaceId],
+      foreignColumns: [people.id, people.workspaceId],
+    }).onDelete("cascade"),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -248,17 +378,14 @@ export const signals = pgTable(
   {
     id: id(),
     workspaceId: workspaceRef(),
-    companyId: uuid()
+    companyId: uuid().notNull(),
+    /** Composite FK uses ON DELETE SET NULL (person_id) — hand-written in migration 0002. */
+    personId: uuid(),
+    signalType: text()
       .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
-    personId: uuid().references(() => people.id, { onDelete: "set null" }),
-    category: signalCategory().notNull(),
-    /** Specific type within the category, e.g. "website_redesign_request", "funding", "hiring_surge". */
-    signalType: text().notNull(),
+      .references(() => signalTypes.slug),
     intentLevel: intentLevel().notNull().default("unknown"),
     urgency: urgencyLevel().notNull().default("unknown"),
-    /** Service categories this signal points to, e.g. ["web_development", "seo"]. */
-    serviceCategories: text().array().notNull().default(sql`'{}'::text[]`),
     summary: text().notNull(),
     evidenceLabel: evidenceLabel().notNull().default("observed"),
     confidence: score(),
@@ -271,6 +398,37 @@ export const signals = pgTable(
   (t) => [
     index("signals_workspace_idx").on(t.workspaceId),
     index("signals_company_idx").on(t.companyId),
+    unique("signals_id_workspace_uq").on(t.id, t.workspaceId),
+    foreignKey({
+      name: "signals_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "signals_person_fk",
+      columns: [t.personId, t.workspaceId],
+      foreignColumns: [people.id, people.workspaceId],
+    }).onDelete("set null"),
+  ],
+);
+
+/** Service categories a signal points to (AI classification output). */
+export const signalServiceCategories = pgTable(
+  "signal_service_categories",
+  {
+    signalId: uuid()
+      .notNull()
+      .references(() => signals.id, { onDelete: "cascade" }),
+    categorySlug: text().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.signalId, t.categorySlug] }),
+    // Named explicitly: the generated name exceeds Postgres' 63-character limit.
+    foreignKey({
+      name: "signal_service_categories_category_fk",
+      columns: [t.categorySlug],
+      foreignColumns: [serviceCategories.slug],
+    }),
   ],
 );
 
@@ -293,6 +451,7 @@ export const signalEvidence = pgTable(
 // Customer configuration
 // ---------------------------------------------------------------------------
 
+/** Something the workspace sells. Targeting criteria are the join tables below. */
 export const services = pgTable(
   "services",
   {
@@ -300,20 +459,89 @@ export const services = pgTable(
     workspaceId: workspaceRef(),
     name: text().notNull(),
     description: text(),
-    categories: text().array().notNull().default(sql`'{}'::text[]`),
-    capabilities: text().array().notNull().default(sql`'{}'::text[]`),
-    targetRoles: text().array().notNull().default(sql`'{}'::text[]`),
-    targetIndustries: text().array().notNull().default(sql`'{}'::text[]`),
-    targetCountries: text().array().notNull().default(sql`'{}'::text[]`),
     targetCompanySizeMin: integer(),
     targetCompanySizeMax: integer(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("services_workspace_idx").on(t.workspaceId)],
+  (t) => [
+    index("services_workspace_idx").on(t.workspaceId),
+    unique("services_id_workspace_uq").on(t.id, t.workspaceId),
+    check(
+      "services_company_size_chk",
+      sql`${t.targetCompanySizeMin} is null or ${t.targetCompanySizeMax} is null or ${t.targetCompanySizeMin} <= ${t.targetCompanySizeMax}`,
+    ),
+  ],
 );
 
-/** Score weights and ICP criteria (PRD §12). One active profile per workspace for MVP. */
+export const serviceServiceCategories = pgTable(
+  "service_service_categories",
+  {
+    serviceId: uuid()
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    categorySlug: text().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.serviceId, t.categorySlug] }),
+    foreignKey({
+      name: "service_service_categories_category_fk",
+      columns: [t.categorySlug],
+      foreignColumns: [serviceCategories.slug],
+    }),
+  ],
+);
+
+export const serviceTargetIndustries = pgTable(
+  "service_target_industries",
+  {
+    serviceId: uuid()
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    industrySlug: text()
+      .notNull()
+      .references(() => industries.slug),
+  },
+  (t) => [primaryKey({ columns: [t.serviceId, t.industrySlug] })],
+);
+
+/** Buyer roles the service sells to, e.g. engineering for staff augmentation. */
+export const serviceTargetJobFunctions = pgTable(
+  "service_target_job_functions",
+  {
+    serviceId: uuid()
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    jobFunctionSlug: text().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.serviceId, t.jobFunctionSlug] }),
+    foreignKey({
+      name: "service_target_job_functions_job_function_fk",
+      columns: [t.jobFunctionSlug],
+      foreignColumns: [jobFunctions.slug],
+    }),
+  ],
+);
+
+export const serviceTargetCountries = pgTable(
+  "service_target_countries",
+  {
+    serviceId: uuid()
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    countryCode: countryCode().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.serviceId, t.countryCode] }),
+    check("service_target_countries_code_chk", isCountryCode("country_code")),
+  ],
+);
+
+/**
+ * Score weights and ICP criteria (PRD §12). One active profile per workspace for MVP.
+ * `config` is JSONB on purpose: the weights are always read and validated (Zod) as one unit.
+ */
 export const scoringProfiles = pgTable(
   "scoring_profiles",
   {
@@ -334,7 +562,8 @@ export const recipes = pgTable(
   {
     id: id(),
     workspaceId: workspaceRef(),
-    serviceId: uuid().references(() => services.id, { onDelete: "set null" }),
+    /** Composite FK uses ON DELETE SET NULL (service_id) — hand-written in migration 0002. */
+    serviceId: uuid(),
     name: text().notNull(),
     /** Structured search criteria (filters, signal types, date window). */
     query: jsonb().$type<Record<string, unknown>>().notNull().default({}),
@@ -345,7 +574,14 @@ export const recipes = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("recipes_workspace_idx").on(t.workspaceId)],
+  (t) => [
+    index("recipes_workspace_idx").on(t.workspaceId),
+    foreignKey({
+      name: "recipes_service_fk",
+      columns: [t.serviceId, t.workspaceId],
+      foreignColumns: [services.id, services.workspaceId],
+    }).onDelete("set null"),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -357,30 +593,35 @@ export const opportunities = pgTable(
   {
     id: id(),
     workspaceId: workspaceRef(),
-    companyId: uuid()
+    companyId: uuid().notNull(),
+    /** Composite FK uses ON DELETE SET NULL (primary_person_id) — hand-written in migration 0002. */
+    primaryPersonId: uuid(),
+    /** Composite FK uses ON DELETE SET NULL (service_id) — hand-written in migration 0002. */
+    serviceId: uuid(),
+    type: text()
       .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
-    primaryPersonId: uuid().references(() => people.id, { onDelete: "set null" }),
-    serviceId: uuid().references(() => services.id, { onDelete: "set null" }),
-    /** e.g. "website_redesign", "staff_augmentation", "bpo", "rpo", "mvp", "rfp". */
-    type: text().notNull(),
+      .references(() => opportunityTypes.slug),
     problem: text(),
     businessImpact: text(),
     desiredOutcome: text(),
+    /** Display-only list generated from evidence; never matched or joined on. */
     requirements: text().array().notNull().default(sql`'{}'::text[]`),
     urgency: urgencyLevel().notNull().default("unknown"),
+    /** Display-only "why now" lines; the supporting signals are in opportunity_signals. */
     whyNow: text().array().notNull().default(sql`'{}'::text[]`),
     suggestedAction: text(),
     notes: text(),
+    // Denormalized: scores are computed from signals + scoring profile, stored so the feed can
+    // sort/filter by them with an index. `scoreFactors` keeps the breakdown (PRD App. B).
     intentScore: score(),
     icpScore: score(),
     identityConfidence: score(),
     serviceFit: score(),
     /** Prioritization score, not a purchase probability (PRD §12). */
     opportunityScore: score(),
-    /** Per-factor contributions behind each score, so every score is explainable (PRD App. B). */
     scoreFactors: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     status: opportunityStatus().notNull().default("new"),
+    /** Denormalized: max(occurred_at) of linked signals, cached for freshness sorting. */
     latestSignalAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -389,23 +630,49 @@ export const opportunities = pgTable(
     index("opportunities_workspace_status_idx").on(t.workspaceId, t.status),
     index("opportunities_workspace_score_idx").on(t.workspaceId, t.opportunityScore),
     index("opportunities_company_idx").on(t.companyId),
+    unique("opportunities_id_workspace_uq").on(t.id, t.workspaceId),
+    foreignKey({
+      name: "opportunities_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "opportunities_person_fk",
+      columns: [t.primaryPersonId, t.workspaceId],
+      foreignColumns: [people.id, people.workspaceId],
+    }).onDelete("set null"),
+    foreignKey({
+      name: "opportunities_service_fk",
+      columns: [t.serviceId, t.workspaceId],
+      foreignColumns: [services.id, services.workspaceId],
+    }).onDelete("set null"),
   ],
 );
 
+/** The signal stack behind an opportunity. */
 export const opportunitySignals = pgTable(
   "opportunity_signals",
   {
-    opportunityId: uuid()
-      .notNull()
-      .references(() => opportunities.id, { onDelete: "cascade" }),
-    signalId: uuid()
-      .notNull()
-      .references(() => signals.id, { onDelete: "cascade" }),
+    workspaceId: uuid().notNull(),
+    opportunityId: uuid().notNull(),
+    signalId: uuid().notNull(),
     weight: integer(),
-    /** e.g. "primary", "corroborating", "negative". */
-    relationship: text().notNull().default("corroborating"),
+    role: signalRole().notNull().default("corroborating"),
   },
-  (t) => [primaryKey({ columns: [t.opportunityId, t.signalId] })],
+  (t) => [
+    primaryKey({ columns: [t.opportunityId, t.signalId] }),
+    index("opportunity_signals_signal_idx").on(t.signalId),
+    foreignKey({
+      name: "opportunity_signals_opportunity_fk",
+      columns: [t.opportunityId, t.workspaceId],
+      foreignColumns: [opportunities.id, opportunities.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "opportunity_signals_signal_fk",
+      columns: [t.signalId, t.workspaceId],
+      foreignColumns: [signals.id, signals.workspaceId],
+    }).onDelete("cascade"),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -420,21 +687,34 @@ export const lists = pgTable(
     name: text().notNull(),
     createdAt: createdAt(),
   },
-  (t) => [index("lists_workspace_idx").on(t.workspaceId)],
+  (t) => [
+    index("lists_workspace_idx").on(t.workspaceId),
+    unique("lists_id_workspace_uq").on(t.id, t.workspaceId),
+  ],
 );
 
 export const savedOpportunities = pgTable(
   "saved_opportunities",
   {
-    listId: uuid()
-      .notNull()
-      .references(() => lists.id, { onDelete: "cascade" }),
-    opportunityId: uuid()
-      .notNull()
-      .references(() => opportunities.id, { onDelete: "cascade" }),
+    workspaceId: uuid().notNull(),
+    listId: uuid().notNull(),
+    opportunityId: uuid().notNull(),
     addedAt: createdAt(),
   },
-  (t) => [primaryKey({ columns: [t.listId, t.opportunityId] })],
+  (t) => [
+    primaryKey({ columns: [t.listId, t.opportunityId] }),
+    index("saved_opportunities_opportunity_idx").on(t.opportunityId),
+    foreignKey({
+      name: "saved_opportunities_list_fk",
+      columns: [t.listId, t.workspaceId],
+      foreignColumns: [lists.id, lists.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "saved_opportunities_opportunity_fk",
+      columns: [t.opportunityId, t.workspaceId],
+      foreignColumns: [opportunities.id, opportunities.workspaceId],
+    }).onDelete("cascade"),
+  ],
 );
 
 // ---------------------------------------------------------------------------

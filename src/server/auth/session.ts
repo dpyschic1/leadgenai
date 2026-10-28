@@ -1,8 +1,8 @@
 import "server-only";
 import { cookies } from "next/headers";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { sessions, users } from "@/db/schema";
+import { sessions, workspaceMembers } from "@/db/schema";
 import type { UserRole } from "@/lib/api/types";
 import { SESSION_COOKIE } from "./constants";
 import {
@@ -24,8 +24,15 @@ export type AuthContext = {
   role: UserRole;
 };
 
-/** Issues a fresh session, revoking any session the browser already had. */
-export async function startSession(userId: string, userAgent: string | null): Promise<void> {
+/**
+ * Issues a fresh session for one workspace membership, revoking any session the browser
+ * already had.
+ */
+export async function startSession(
+  userId: string,
+  workspaceId: string,
+  userAgent: string | null,
+): Promise<void> {
   const previous = (await cookies()).get(SESSION_COOKIE)?.value;
   if (previous) {
     await db.delete(sessions).where(eq(sessions.id, hashSessionToken(previous)));
@@ -33,13 +40,16 @@ export async function startSession(userId: string, userAgent: string | null): Pr
 
   const token = generateSessionToken();
   const expiresAt = sessionExpiry(new Date());
-  await db.insert(sessions).values({ id: hashSessionToken(token), userId, expiresAt, userAgent });
+  await db
+    .insert(sessions)
+    .values({ id: hashSessionToken(token), userId, workspaceId, expiresAt, userAgent });
   await setSessionCookie(token, expiresAt);
 }
 
 /**
- * Resolves the session cookie to the current user. Returns null when the cookie is missing,
- * unknown or expired, or the user is no longer active. Extends sessions nearing expiry.
+ * Resolves the session cookie to the current user and workspace. Returns null when the cookie
+ * is missing, unknown or expired, or the membership is no longer active. Extends sessions
+ * nearing expiry.
  */
 export async function authenticate(): Promise<AuthContext | null> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
@@ -49,13 +59,19 @@ export async function authenticate(): Promise<AuthContext | null> {
   const [row] = await db
     .select({
       expiresAt: sessions.expiresAt,
-      userId: users.id,
-      workspaceId: users.workspaceId,
-      role: users.role,
-      status: users.status,
+      userId: workspaceMembers.userId,
+      workspaceId: workspaceMembers.workspaceId,
+      role: workspaceMembers.role,
+      status: workspaceMembers.status,
     })
     .from(sessions)
-    .innerJoin(users, eq(users.id, sessions.userId))
+    .innerJoin(
+      workspaceMembers,
+      and(
+        eq(workspaceMembers.workspaceId, sessions.workspaceId),
+        eq(workspaceMembers.userId, sessions.userId),
+      ),
+    )
     .where(eq(sessions.id, sessionId))
     .limit(1);
 

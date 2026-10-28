@@ -90,11 +90,34 @@ Components never call `fetch`; route handlers never contain business logic.
 
 ## Data model (MVP)
 
-`workspaces`, `users`, `companies`, `company_locations`, `people`, `company_people`, `signals`,
-`signal_evidence`, `services`, `scoring_profiles`, `recipes`, `opportunities`,
-`opportunity_signals`, `lists`, `saved_opportunities`, `audit_logs`.
+The schema (`src/db/schema.ts`) is normalized so post-MVP features can be added without reworking it.
+
+| Area | Tables |
+| --- | --- |
+| Identity & tenancy | `users` (login identity), `workspaces`, `workspace_members` (role per workspace), `sessions` |
+| Entities | `companies`, `company_locations`, `people`, `contact_points`, `company_people` (title, seniority, job function) |
+| Signals | `signals`, `signal_evidence`, `signal_service_categories` |
+| Customer config | `services` + `service_service_categories`, `service_target_industries`, `service_target_job_functions`, `service_target_countries`; `scoring_profiles`, `recipes` |
+| Opportunities | `opportunities`, `opportunity_signals`, `lists`, `saved_opportunities` |
+| Governance | `audit_logs` |
+| Reference data (global, seeded) | `signal_categories`, `signal_types`, `service_categories`, `industries`, `job_functions`, `opportunity_types` |
+
+Rules:
+
+- **Lookups, not free text.** Shared vocabularies are lookup tables keyed by a stable slug
+  (e.g. `web_development`); code and AI output use the slug. Add values with a migration.
+- **No matched-on arrays.** Multi-valued attributes are join tables.
+- **Tenant isolation in the database.** Tenant-owned rows carry `workspace_id`, and references
+  between them are composite FKs on `(id, workspace_id)`, so a row can never point at another
+  workspace's data. Child rows (locations, contact points, evidence) are scoped via their parent.
+  All queries must still be scoped by the session's workspace (PRD §19).
+- **Derived values are derived.** Location count and headquarters come from `company_locations`;
+  a signal's category comes from its `signal_type`. The few cached values (opportunity scores,
+  `latest_signal_at`) are marked `Denormalized:` in the schema with the reason.
+- **Countries** are ISO 3166-1 alpha-2 codes (`GB`, `US`), enforced by a check constraint.
 
 Enum values (roles, intent level, opportunity status, identity status, contact verification)
 follow SRS Appendix B.
 
-Every tenant-owned table carries `workspace_id`; all queries must be scoped by it (PRD §19).
+Migrations are append-only: never edit one that has been committed. A few migrations contain
+hand-edited SQL (ordering, `ON DELETE SET NULL (column)`, data copies); each edit is commented.

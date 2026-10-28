@@ -1,7 +1,7 @@
 /** Response DTOs shared by the route handlers and the client. Only these shapes leave the server. */
-import type { userRole } from "@/db/schema";
+import type { memberRole } from "@/db/schema";
 
-export type UserRole = (typeof userRole.enumValues)[number];
+export type UserRole = (typeof memberRole.enumValues)[number];
 
 export type CurrentUser = {
   id: string;

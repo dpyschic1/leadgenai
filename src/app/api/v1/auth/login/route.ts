@@ -6,6 +6,6 @@ import { verifyCredentials } from "@/server/services/auth.service";
 export const POST = publicRoute(async ({ request }) => {
   const input = await parseJsonBody(request, loginSchema);
   const me = await verifyCredentials(input);
-  await startSession(me.user.id, request.headers.get("user-agent"));
+  await startSession(me.user.id, me.workspace.id, request.headers.get("user-agent"));
   return Response.json(me);
 });
