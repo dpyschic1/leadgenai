@@ -3,12 +3,13 @@
  *
  * MVP scope: no automated ingestion. Companies, people and signals are entered
  * manually, so the ingestion-only entities from the PRD (sources, source_records,
- * enrichment_jobs, provider_accounts, recipes) are intentionally omitted.
+ * enrichment_jobs, provider_accounts) are intentionally omitted.
  * Funding and job signals are stored as `signals` with structured `metadata`.
  *
  * Column names are camelCase here and snake_case in Postgres (casing: "snake_case").
  */
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -26,7 +27,8 @@ import { sql } from "drizzle-orm";
 // Enums
 // ---------------------------------------------------------------------------
 
-export const userRole = pgEnum("user_role", ["owner", "admin", "member"]);
+/** Workspace roles (SRS §3). Platform admin is an internal role, not a workspace member. */
+export const userRole = pgEnum("user_role", ["owner", "admin", "manager", "member", "viewer"]);
 export const userStatus = pgEnum("user_status", ["invited", "active", "deactivated"]);
 
 /** Top-level groups from the signal taxonomy (PRD §10). */
@@ -38,7 +40,27 @@ export const signalCategory = pgEnum("signal_category", [
   "digital",
 ]);
 
-export const intentLevel = pgEnum("intent_level", ["explicit", "implicit"]);
+/** SRS Appendix B. */
+export const intentLevel = pgEnum("intent_level", ["explicit", "high", "medium", "low", "unknown"]);
+
+export const urgencyLevel = pgEnum("urgency_level", ["high", "medium", "low", "unknown"]);
+
+/** Whether a person/company match is trustworthy enough to show as fact (SRS Appendix B). */
+export const identityStatus = pgEnum("identity_status", [
+  "resolved",
+  "ambiguous",
+  "unresolved",
+  "suppressed",
+]);
+
+export const contactVerification = pgEnum("contact_verification", [
+  "valid",
+  "invalid",
+  "accept_all",
+  "webmail",
+  "disposable",
+  "unknown",
+]);
 
 /** How well a claim is supported (PRD §9). */
 export const evidenceLabel = pgEnum("evidence_label", [
@@ -48,10 +70,9 @@ export const evidenceLabel = pgEnum("evidence_label", [
   "unknown",
 ]);
 
-/** Opportunity lifecycle (PRD §9). */
+/** Opportunity lifecycle (SRS Appendix B). */
 export const opportunityStatus = pgEnum("opportunity_status", [
-  "detected",
-  "analyzing",
+  "new",
   "qualified",
   "saved",
   "contacted",
@@ -60,6 +81,7 @@ export const opportunityStatus = pgEnum("opportunity_status", [
   "proposal",
   "won",
   "lost",
+  "dismissed",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -137,6 +159,25 @@ export const companies = pgTable(
   ],
 );
 
+export const companyLocations = pgTable(
+  "company_locations",
+  {
+    id: id(),
+    companyId: uuid()
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    address: text(),
+    city: text(),
+    region: text(),
+    country: text(),
+    postalCode: text(),
+    /** e.g. "headquarters", "office", "branch". */
+    locationType: text(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("company_locations_company_idx").on(t.companyId)],
+);
+
 export const people = pgTable(
   "people",
   {
@@ -149,8 +190,10 @@ export const people = pgTable(
     professionalUrl: text(),
     email: text(),
     phone: text(),
+    contactVerification: contactVerification().notNull().default("unknown"),
     /** When contact details were last verified; null = unverified (PRD §13 freshness rule). */
     contactVerifiedAt: timestamp({ withTimezone: true }),
+    identityStatus: identityStatus().notNull().default("unresolved"),
     identityConfidence: score(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -192,7 +235,10 @@ export const signals = pgTable(
     category: signalCategory().notNull(),
     /** Specific type within the category, e.g. "website_redesign_request", "funding", "hiring_surge". */
     signalType: text().notNull(),
-    intentLevel: intentLevel().notNull().default("implicit"),
+    intentLevel: intentLevel().notNull().default("unknown"),
+    urgency: urgencyLevel().notNull().default("unknown"),
+    /** Service categories this signal points to, e.g. ["web_development", "seo"]. */
+    serviceCategories: text().array().notNull().default(sql`'{}'::text[]`),
     summary: text().notNull(),
     evidenceLabel: evidenceLabel().notNull().default("observed"),
     confidence: score(),
@@ -233,10 +279,14 @@ export const services = pgTable(
     id: id(),
     workspaceId: workspaceRef(),
     name: text().notNull(),
+    description: text(),
     categories: text().array().notNull().default(sql`'{}'::text[]`),
     capabilities: text().array().notNull().default(sql`'{}'::text[]`),
     targetRoles: text().array().notNull().default(sql`'{}'::text[]`),
     targetIndustries: text().array().notNull().default(sql`'{}'::text[]`),
+    targetCountries: text().array().notNull().default(sql`'{}'::text[]`),
+    targetCompanySizeMin: integer(),
+    targetCompanySizeMax: integer(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -251,10 +301,31 @@ export const scoringProfiles = pgTable(
     workspaceId: workspaceRef(),
     name: text().notNull(),
     config: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    active: boolean().notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [index("scoring_profiles_workspace_idx").on(t.workspaceId)],
+);
+
+/** Saved search / monitor definition (PRD §16). Scheduled runs come after the MVP. */
+export const recipes = pgTable(
+  "recipes",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    serviceId: uuid().references(() => services.id, { onDelete: "set null" }),
+    name: text().notNull(),
+    /** Structured search criteria (filters, signal types, date window). */
+    query: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    /** Cron expression; null = run on demand only. */
+    schedule: text(),
+    active: boolean().notNull().default(true),
+    lastRunAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("recipes_workspace_idx").on(t.workspaceId)],
 );
 
 // ---------------------------------------------------------------------------
@@ -274,6 +345,10 @@ export const opportunities = pgTable(
     /** e.g. "website_redesign", "staff_augmentation", "bpo", "rpo", "mvp", "rfp". */
     type: text().notNull(),
     problem: text(),
+    businessImpact: text(),
+    desiredOutcome: text(),
+    requirements: text().array().notNull().default(sql`'{}'::text[]`),
+    urgency: urgencyLevel().notNull().default("unknown"),
     whyNow: text().array().notNull().default(sql`'{}'::text[]`),
     suggestedAction: text(),
     notes: text(),
@@ -283,7 +358,9 @@ export const opportunities = pgTable(
     serviceFit: score(),
     /** Prioritization score, not a purchase probability (PRD §12). */
     opportunityScore: score(),
-    status: opportunityStatus().notNull().default("qualified"),
+    /** Per-factor contributions behind each score, so every score is explainable (PRD App. B). */
+    scoreFactors: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    status: opportunityStatus().notNull().default("new"),
     latestSignalAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

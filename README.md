@@ -2,7 +2,11 @@
 
 B2B Opportunity Intelligence: surface evidence-backed business opportunities
 (Company + Person + Problem + Intent + Evidence + Timing + Fit + Action) instead of contact lists.
-The full spec is in [`docs/B2B_Opportunity_Intelligence_PRD.pdf`](docs/B2B_Opportunity_Intelligence_PRD.pdf).
+Specs live in `docs/`:
+
+- [`B2B_Opportunity_Intelligence_PRD.pdf`](docs/B2B_Opportunity_Intelligence_PRD.pdf) — product requirements (what and why)
+- [`B2B_Opportunity_Intelligence_SRS.pdf`](docs/B2B_Opportunity_Intelligence_SRS.pdf) — software requirements (numbered FRs, roles, API, enums)
+- [`B2B_Opportunity_Intelligence_Product_Specification.pdf`](docs/B2B_Opportunity_Intelligence_Product_Specification.pdf) — screens, schema detail, scoring weights, 30-day plan
 
 ## MVP scope
 
@@ -52,13 +56,16 @@ src/
   db/schema.ts      data model (PRD §13, MVP subset)
   db/index.ts       Drizzle client (server-only)
 drizzle/            generated SQL migrations
-docs/               PRD
+docs/               PRD, SRS, product specification
 ```
 
 ## Data model (MVP)
 
-`workspaces`, `users`, `companies`, `people`, `company_people`, `signals`, `signal_evidence`,
-`services`, `scoring_profiles`, `opportunities`, `opportunity_signals`, `lists`,
-`saved_opportunities`, `audit_logs`.
+`workspaces`, `users`, `companies`, `company_locations`, `people`, `company_people`, `signals`,
+`signal_evidence`, `services`, `scoring_profiles`, `recipes`, `opportunities`,
+`opportunity_signals`, `lists`, `saved_opportunities`, `audit_logs`.
+
+Enum values (roles, intent level, opportunity status, identity status, contact verification)
+follow SRS Appendix B.
 
 Every tenant-owned table carries `workspace_id`; all queries must be scoped by it (PRD §19).
