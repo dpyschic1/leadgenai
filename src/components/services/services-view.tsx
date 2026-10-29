@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { BriefcaseBusinessIcon, PlusIcon } from "lucide-react";
+import { EditorSheet } from "@/components/forms/editor-sheet";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+
 import { usePermission } from "@/hooks/use-permission";
 import { useServices } from "@/hooks/use-services";
 import type { Service } from "@/lib/api/types";
@@ -59,26 +60,25 @@ export function ServicesView() {
         <EmptyServices canEdit={canEdit} onAdd={() => setEditing("new")} />
       )}
 
-      <Sheet open={editing !== null} onOpenChange={(open) => !open && close()}>
-        <SheetContent side="right" className="flex flex-col gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl data-[side=right]:xl:max-w-3xl">
-          <SheetHeader className="border-b px-6 py-5">
-            <SheetTitle>{editing === "new" ? "Add a service" : "Edit service"}</SheetTitle>
-            <SheetDescription>
-              {editing === "new"
-                ? "Describe one thing you sell. Add a separate service for each offer."
-                : "Changes apply to how new opportunities are scored."}
-            </SheetDescription>
-          </SheetHeader>
-          {editing !== null && (
-            <ServiceForm
-              key={editing === "new" ? "new" : editing.id}
-              service={editing === "new" ? undefined : editing}
-              onDone={close}
-              onCancel={close}
-            />
-          )}
-        </SheetContent>
-      </Sheet>
+      <EditorSheet
+        open={editing !== null}
+        onClose={close}
+        title={editing === "new" ? "Add a service" : "Edit service"}
+        description={
+          editing === "new"
+            ? "Describe one thing you sell. Add a separate service for each offer."
+            : "Changes apply to how new opportunities are scored."
+        }
+      >
+        {editing !== null && (
+          <ServiceForm
+            key={editing === "new" ? "new" : editing.id}
+            service={editing === "new" ? undefined : editing}
+            onDone={close}
+            onCancel={close}
+          />
+        )}
+      </EditorSheet>
 
       <DeleteServiceDialog service={deleting} onClose={() => setDeleting(null)} />
     </div>

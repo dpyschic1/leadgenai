@@ -5,8 +5,9 @@ import { Controller, type Control, type FieldValues, type Path } from "react-hoo
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
-type TextFieldProps<T extends FieldValues> = {
-  control: Control<T>;
+type TextFieldProps<T extends FieldValues, TOutput extends FieldValues> = {
+  /** Accepts forms whose resolver transforms values (input type T, output type TOutput). */
+  control: Control<T, unknown, TOutput>;
   name: Path<T>;
   label: string;
   /** Hint shown under the input, e.g. password rules. */
@@ -14,13 +15,13 @@ type TextFieldProps<T extends FieldValues> = {
 } & Omit<ComponentProps<typeof Input>, "name" | "id" | "value" | "onChange" | "onBlur">;
 
 /** A labelled text input bound to react-hook-form, with accessible hint and error display. */
-export function TextField<T extends FieldValues>({
+export function TextField<T extends FieldValues, TOutput extends FieldValues = T>({
   control,
   name,
   label,
   description,
   ...inputProps
-}: TextFieldProps<T>) {
+}: TextFieldProps<T, TOutput>) {
   const id = useId();
   const descriptionId = `${id}-description`;
 

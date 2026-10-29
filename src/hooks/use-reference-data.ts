@@ -12,3 +12,17 @@ export function useReferenceData() {
     staleTime: Infinity,
   });
 }
+
+/** Display names for lookup slugs; falls back to the slug while reference data loads. */
+export function useLookupNames() {
+  const { data } = useReferenceData();
+  const index = (rows: { slug: string; name: string }[] | undefined) => new Map(rows?.map((r) => [r.slug, r.name]));
+  const industries = index(data?.industries);
+  const jobFunctions = index(data?.jobFunctions);
+  const categories = index(data?.serviceCategories);
+  return {
+    industry: (slug: string) => industries.get(slug) ?? slug,
+    jobFunction: (slug: string) => jobFunctions.get(slug) ?? slug,
+    category: (slug: string) => categories.get(slug) ?? slug,
+  };
+}

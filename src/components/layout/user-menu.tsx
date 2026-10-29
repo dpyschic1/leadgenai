@@ -13,17 +13,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLogout } from "@/hooks/use-auth";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { sentenceCase } from "@/lib/format";
+import { initials, sentenceCase } from "@/lib/format";
 import { goToLogin } from "@/lib/navigation";
-
-function initials(name: string | null, email: string): string {
-  const source = name?.trim() || email;
-  const parts = source.split(/[\s@.]+/).filter(Boolean);
-  return parts
-    .slice(0, 2)
-    .map((part) => part[0]!.toUpperCase())
-    .join("");
-}
 
 export function UserMenu() {
   const { data: me } = useCurrentUser();
@@ -51,7 +42,7 @@ export function UserMenu() {
     <DropdownMenu>
       <DropdownMenuTrigger className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-accent">
         <span className="grid size-8 shrink-0 place-items-center rounded-full bg-foreground text-xs font-semibold text-background">
-          {initials(me.user.name, me.user.email)}
+          {initials(me.user.name?.trim() || me.user.email)}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">{me.user.name ?? me.user.email}</span>

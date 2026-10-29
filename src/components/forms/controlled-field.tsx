@@ -21,7 +21,7 @@ type ControlProps<T extends FieldValues, N extends FieldPath<T>> = {
  * Label, optional hint and error around any custom control bound to react-hook-form.
  * Use `TextField` for plain text inputs; this is for chips, multi-selects, sliders and similar.
  */
-export function ControlledField<T extends FieldValues, N extends FieldPath<T>>({
+export function ControlledField<T extends FieldValues, N extends FieldPath<T>, TOutput extends FieldValues = T>({
   control,
   name,
   label,
@@ -29,7 +29,7 @@ export function ControlledField<T extends FieldValues, N extends FieldPath<T>>({
   optional,
   children,
 }: {
-  control: Control<T>;
+  control: Control<T, unknown, TOutput>;
   name: N;
   label: string;
   description?: string;

@@ -5,9 +5,10 @@ import { Controller, useFormState, type Control } from "react-hook-form";
 import { ChipSelect, type Option } from "@/components/forms/chip-select";
 import { ControlledField } from "@/components/forms/controlled-field";
 import { MultiCombobox } from "@/components/forms/multi-combobox";
+import { NumberInput } from "@/components/forms/number-input";
 import { TextField } from "@/components/forms/text-field";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
+
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useReferenceData } from "@/hooks/use-reference-data";
@@ -204,21 +205,17 @@ function SizeInput({
       control={control}
       name={name}
       render={({ field, fieldState }) => (
-        <Input
+        <NumberInput
           id={id}
           name={field.name}
           ref={field.ref}
           onBlur={field.onBlur}
-          type="number"
-          inputMode="numeric"
-          min={1}
-          className="h-10"
+          value={field.value}
+          onChange={field.onChange}
           placeholder={placeholder}
           aria-label={label}
           aria-invalid={fieldState.invalid}
           aria-describedby={hintId}
-          value={field.value ?? ""}
-          onChange={(event) => field.onChange(event.target.value === "" ? null : event.target.valueAsNumber)}
         />
       )}
     />

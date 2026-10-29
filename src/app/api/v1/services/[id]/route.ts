@@ -1,17 +1,12 @@
-import { z } from "zod";
-import { serviceSchema } from "@/lib/validation/services";
 import { CONFIG_ROLES } from "@/lib/permissions";
-import { AppError } from "@/server/http/errors";
+import { serviceSchema } from "@/lib/validation/services";
 import { authedRoute, parseJsonBody } from "@/server/http/handler";
+import { uuidParam } from "@/server/http/params";
 import { deleteService, updateService } from "@/server/services/services.service";
 
 type Context = RouteContext<"/api/v1/services/[id]">;
 
-async function serviceId(context: Context): Promise<string> {
-  const { id } = await context.params;
-  if (!z.uuid().safeParse(id).success) throw new AppError("NOT_FOUND", "Service not found.");
-  return id;
-}
+const serviceId = async (context: Context) => uuidParam((await context.params).id, "Service");
 
 export const PATCH = authedRoute<Context>(
   async ({ request, context, auth }) => {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useCompanies } from "@/hooks/use-companies";
 import { useServices } from "@/hooks/use-services";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,7 @@ const STEPS: { title: string; description: string; href?: string }[] = [
   {
     title: "Add a company you're watching",
     description: "Enter the company and the people you would talk to there.",
+    href: "/companies",
   },
   {
     title: "Record a signal",
@@ -31,8 +33,13 @@ const STEPS: { title: string; description: string; href?: string }[] = [
 ];
 
 export function SetupSteps() {
-  const { data: services, isPending } = useServices();
-  const completed = services && services.length > 0 ? 1 : 0;
+  const services = useServices();
+  const companies = useCompanies();
+  const isPending = services.isPending || companies.isPending;
+  // Steps complete in order, so progress is the run of finished steps from the start.
+  const finished = [Boolean(services.data?.length), Boolean(companies.data?.length)];
+  const firstUnfinished = finished.indexOf(false);
+  const completed = firstUnfinished === -1 ? finished.length : firstUnfinished;
 
   return (
     <section aria-labelledby="setup-heading" className="rounded-xl border bg-card">

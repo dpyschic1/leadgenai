@@ -1,5 +1,6 @@
 /** Response DTOs shared by the route handlers and the client. Only these shapes leave the server. */
 import type { memberRole } from "@/db/schema";
+import type { CompanyRelationship, LocationType, SeniorityLevel } from "@/lib/domain/people";
 import type { ScoreWeights } from "@/lib/validation/scoring";
 
 export type UserRole = (typeof memberRole.enumValues)[number];
@@ -48,4 +49,50 @@ export type Service = {
 
 export type ScoringProfile = {
   weights: ScoreWeights;
+};
+
+/** A row in the companies list. */
+export type CompanySummary = {
+  id: string;
+  name: string;
+  domain: string | null;
+  industry: string | null;
+  employeeCount: number | null;
+  headquarters: { city: string | null; country: string | null } | null;
+  peopleCount: number;
+};
+
+export type CompanyLocation = {
+  id: string;
+  type: LocationType;
+  address: string | null;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  postalCode: string | null;
+};
+
+/** A person in the context of one company: their role there plus primary contact details. */
+export type CompanyPerson = {
+  id: string;
+  name: string;
+  title: string | null;
+  seniority: SeniorityLevel;
+  jobFunction: string | null;
+  relationship: CompanyRelationship;
+  email: string | null;
+  phone: string | null;
+  professionalUrl: string | null;
+  location: string | null;
+};
+
+export type CompanyDetail = {
+  id: string;
+  name: string;
+  domain: string | null;
+  industry: string | null;
+  employeeCount: number | null;
+  description: string | null;
+  locations: CompanyLocation[];
+  people: CompanyPerson[];
 };

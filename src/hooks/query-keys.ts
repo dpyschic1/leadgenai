@@ -4,4 +4,8 @@ export const queryKeys = {
   referenceData: ["reference-data"] as const,
   services: ["services"] as const,
   scoringProfile: ["scoring-profile"] as const,
+  /** Prefix of every companies-list query, whatever the search. */
+  companyLists: ["companies"] as const,
+  companies: (search: string) => ["companies", { search }] as const,
+  company: (id: string) => ["company", id] as const,
 };

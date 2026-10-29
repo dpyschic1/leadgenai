@@ -11,3 +11,6 @@ if (process.env.NODE_ENV !== "production") globalForDb.pg = client;
 
 export const db = drizzle(client, { schema, casing: "snake_case" });
 export { schema };
+
+/** A transaction handle, for helpers that must run inside a caller's `db.transaction`. */
+export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];

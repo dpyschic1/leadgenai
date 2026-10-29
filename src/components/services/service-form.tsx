@@ -2,9 +2,8 @@
 
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { EditorBody, EditorFooter, FormSection } from "@/components/forms/editor-sheet";
 import { FieldError } from "@/components/ui/field";
 import { useCreateService, useUpdateService } from "@/hooks/use-services";
 import type { Service } from "@/lib/api/types";
@@ -47,18 +46,6 @@ function toFormValues(service: Service): ServiceInput {
   };
 }
 
-function Section({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
-  return (
-    <section className="space-y-5">
-      <div>
-        <h3 className="font-semibold">{title}</h3>
-        <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
-      </div>
-      {children}
-    </section>
-  );
-}
-
 /** Creates a service, or edits `service` when given. Calls `onDone` after a successful save. */
 export function ServiceForm({
   service,
@@ -75,7 +62,6 @@ export function ServiceForm({
   });
   const create = useCreateService();
   const update = useUpdateService();
-  const pending = create.isPending || update.isPending;
 
   const onSubmit = form.handleSubmit((values) => {
     const options = {
@@ -91,25 +77,20 @@ export function ServiceForm({
 
   return (
     <form onSubmit={onSubmit} noValidate className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 space-y-8 overflow-y-auto px-6 py-6">
-        <Section title="What you sell" description="Used to match signals to this service.">
+      <EditorBody>
+        <FormSection title="What you sell" description="Used to match signals to this service.">
           <ServiceBasicsFields control={form.control} />
-        </Section>
-        <div className="border-t" />
-        <Section title="Who you sell to" description="Your ideal customer. Leave anything blank to match all.">
+        </FormSection>
+        <FormSection title="Who you sell to" description="Your ideal customer. Leave anything blank to match all.">
           <ServiceTargetingFields control={form.control} />
-        </Section>
+        </FormSection>
         {form.formState.errors.root && <FieldError>{form.formState.errors.root.message}</FieldError>}
-      </div>
-      <div className="flex justify-end gap-2 border-t bg-background px-6 py-4">
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={pending} aria-busy={pending}>
-          {pending && <Loader2Icon className="animate-spin" />}
-          {service ? "Save changes" : "Add service"}
-        </Button>
-      </div>
+      </EditorBody>
+      <EditorFooter
+        submitLabel={service ? "Save changes" : "Add service"}
+        pending={create.isPending || update.isPending}
+        onCancel={onCancel}
+      />
     </form>
   );
 }

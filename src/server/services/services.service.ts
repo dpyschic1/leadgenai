@@ -1,6 +1,6 @@
 import "server-only";
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Tx } from "@/db";
 import { isForeignKeyViolation } from "@/db/errors";
 import {
   auditLogs,
@@ -15,7 +15,6 @@ import type { ServiceValues } from "@/lib/validation/services";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type ServiceRow = typeof services.$inferSelect;
 
 export async function listServices(auth: AuthContext): Promise<Service[]> {

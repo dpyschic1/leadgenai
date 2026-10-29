@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { CalendarDaysIcon, ChevronRightIcon, MenuIcon } from "lucide-react";
@@ -32,9 +32,13 @@ function MobileMenu() {
   );
 }
 
+/** Name of the current section. Reads the URL, so it sits behind Suspense on dynamic routes. */
+function SectionTitle() {
+  return sectionTitle(usePathname());
+}
+
 /** Top bar of every signed-in page: where you are, and today's date. */
 export function AppHeader() {
-  const pathname = usePathname();
   const { data: me } = useCurrentUser();
   const today = useToday();
 
@@ -58,8 +62,10 @@ export function AppHeader() {
             <li aria-hidden="true" className="hidden text-muted-foreground/60 sm:block">
               <ChevronRightIcon className="size-3.5" />
             </li>
-            <li className="truncate font-medium" aria-current="page">
-              {sectionTitle(pathname)}
+            <li className="min-w-0 truncate font-medium" aria-current="page">
+              <Suspense fallback={<Skeleton className="h-4 w-24" />}>
+                <SectionTitle />
+              </Suspense>
             </li>
           </ol>
         </nav>

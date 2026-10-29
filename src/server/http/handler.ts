@@ -71,6 +71,15 @@ export async function parseJsonBody<S extends z.ZodType>(
   return result.data;
 }
 
+/** Parses URL query parameters; throws VALIDATION_FAILED with per-field messages. */
+export function parseQuery<S extends z.ZodType>(request: NextRequest, schema: S): z.output<S> {
+  const result = schema.safeParse(Object.fromEntries(request.nextUrl.searchParams));
+  if (!result.success) {
+    throw new AppError("VALIDATION_FAILED", "Some query parameters are invalid.", z.flattenError(result.error).fieldErrors);
+  }
+  return result.data;
+}
+
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 async function run(

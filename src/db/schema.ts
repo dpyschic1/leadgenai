@@ -34,6 +34,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { COMPANY_RELATIONSHIPS, LOCATION_TYPES, SENIORITY_LEVELS } from "@/lib/domain/people";
 
 // ---------------------------------------------------------------------------
 // Enums (closed sets that code branches on; open vocabularies are lookup tables)
@@ -67,35 +68,11 @@ export const contactVerification = pgEnum("contact_verification", [
   "unknown",
 ]);
 
-export const locationType = pgEnum("location_type", [
-  "headquarters",
-  "office",
-  "branch",
-  "store",
-  "warehouse",
-  "other",
-]);
+export const locationType = pgEnum("location_type", LOCATION_TYPES);
 
-export const companyRelationship = pgEnum("company_relationship", [
-  "employee",
-  "founder",
-  "owner",
-  "board_member",
-  "advisor",
-  "contractor",
-  "investor",
-]);
+export const companyRelationship = pgEnum("company_relationship", COMPANY_RELATIONSHIPS);
 
-export const seniorityLevel = pgEnum("seniority_level", [
-  "owner",
-  "c_level",
-  "vp",
-  "director",
-  "manager",
-  "senior",
-  "entry",
-  "unknown",
-]);
+export const seniorityLevel = pgEnum("seniority_level", SENIORITY_LEVELS);
 
 /** How well a claim is supported (PRD §9). */
 export const evidenceLabel = pgEnum("evidence_label", [

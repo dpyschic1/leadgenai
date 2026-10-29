@@ -1,6 +1,6 @@
 import "server-only";
 import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Tx } from "@/db";
 import { auditLogs, scoringProfiles } from "@/db/schema";
 import type { ScoringProfile } from "@/lib/api/types";
 import {
@@ -9,8 +9,6 @@ import {
   type ScoringProfileInput,
 } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
-
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const activeProfile = (workspaceId: string) =>
   and(eq(scoringProfiles.workspaceId, workspaceId), eq(scoringProfiles.active, true));
