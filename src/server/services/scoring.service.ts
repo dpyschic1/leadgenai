@@ -6,6 +6,7 @@ import type { ScoringProfile } from "@/lib/api/types";
 import {
   DEFAULT_SCORE_WEIGHTS,
   scoreWeightsSchema,
+  type ScoreWeights,
   type ScoringProfileInput,
 } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
@@ -15,15 +16,20 @@ const activeProfile = (workspaceId: string) =>
 
 /** The workspace's active weights, or the PRD defaults when none have been saved yet. */
 export async function getScoringProfile(auth: AuthContext): Promise<ScoringProfile> {
+  return { weights: await loadWeights(auth.workspaceId) };
+}
+
+/** A workspace's active weights; also used by background re-scoring (no request user). */
+export async function loadWeights(workspaceId: string): Promise<ScoreWeights> {
   const [row] = await db
     .select({ config: scoringProfiles.config })
     .from(scoringProfiles)
-    .where(activeProfile(auth.workspaceId))
+    .where(activeProfile(workspaceId))
     .limit(1);
 
   // Config is JSONB; re-validate so a malformed row falls back to defaults instead of leaking out.
   const parsed = scoreWeightsSchema.safeParse(row?.config.weights);
-  return { weights: parsed.success ? parsed.data : DEFAULT_SCORE_WEIGHTS };
+  return parsed.success ? parsed.data : DEFAULT_SCORE_WEIGHTS;
 }
 
 export async function saveScoringProfile(

@@ -12,6 +12,9 @@ export function useSaveScoringProfile() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: scoringApi.save,
-    onSuccess: (profile) => queryClient.setQueryData(queryKeys.scoringProfile, profile),
+    onSuccess: (profile) => {
+      queryClient.setQueryData(queryKeys.scoringProfile, profile);
+      return queryClient.invalidateQueries({ queryKey: queryKeys.opportunities });
+    },
   });
 }

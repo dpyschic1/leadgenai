@@ -1,10 +1,12 @@
 /** Response DTOs shared by the route handlers and the client. Only these shapes leave the server. */
-import type { memberRole } from "@/db/schema";
+import type { memberRole, signalRole } from "@/db/schema";
+import type { OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
 import type { CompanyRelationship, LocationType, SeniorityLevel } from "@/lib/domain/people";
 import type { EvidenceLabel, IntentLevel, SignalSource, UrgencyLevel } from "@/lib/domain/signals";
-import type { ScoreWeights } from "@/lib/validation/scoring";
+import type { ScoreFactor, ScoreWeights } from "@/lib/validation/scoring";
 
 export type UserRole = (typeof memberRole.enumValues)[number];
+export type SignalRole = (typeof signalRole.enumValues)[number];
 
 export type CurrentUser = {
   id: string;
@@ -38,6 +40,7 @@ export type ReferenceData = {
   /** Taxonomy groups (PRD §10): explicit buying first, negative last. */
   signalCategories: LookupOption[];
   signalTypes: SignalTypeOption[];
+  opportunityTypes: LookupOption[];
 };
 
 /** Something the workspace sells, with who it is sold to. Empty targeting lists mean "any". */
@@ -101,6 +104,8 @@ export type CompanyDetail = {
   description: string | null;
   locations: CompanyLocation[];
   people: CompanyPerson[];
+  /** This company's opportunity, if its signals have produced one. */
+  opportunity: { id: string; score: number | null; status: OpportunityStatus } | null;
 };
 
 export type Signal = {
@@ -138,4 +143,42 @@ export type SignalAnalysis = {
   /** Date mentioned in the source (YYYY-MM-DD), if any. */
   occurredOn: string | null;
   model: string;
+};
+
+/** One of the five score factors, with the reasons behind it (PRD: scores are explainable). */
+export type OpportunityFactor = { score: number; weight: number; contribution: number; reasons: string[] };
+
+export type OpportunitySummary = {
+  id: string;
+  company: { id: string; name: string; domain: string | null };
+  service: { id: string; name: string } | null;
+  type: string;
+  /** Priority 0-100, not a purchase probability. Null once no positive signal remains. */
+  score: number | null;
+  scores: Record<ScoreFactor, number> | null;
+  urgency: UrgencyLevel;
+  status: OpportunityStatus;
+  problem: string | null;
+  /** YYYY-MM-DD of the newest supporting signal. */
+  latestSignalOn: string | null;
+  signalCount: number;
+  contact: { id: string; name: string; title: string | null } | null;
+  updatedAt: string;
+};
+
+export type OpportunityList = {
+  items: OpportunitySummary[];
+  /** Totals per status tab, independent of the selected tab. */
+  counts: Record<StatusGroup, number>;
+};
+
+export type OpportunitySignal = Signal & { role: SignalRole };
+
+export type OpportunityDetail = OpportunitySummary & {
+  suggestedAction: string | null;
+  notes: string | null;
+  factors: Record<ScoreFactor, OpportunityFactor> | null;
+  signals: OpportunitySignal[];
+  contactDetails: CompanyPerson | null;
+  scoredAt: string;
 };

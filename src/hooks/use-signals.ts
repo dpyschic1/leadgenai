@@ -26,7 +26,11 @@ export function useSaveSignal(companyId: string) {
   return useMutation({
     mutationFn: ({ signalId, input }: { signalId?: string; input: SignalValues }) =>
       signalId ? signalsApi.update(signalId, input) : signalsApi.create(companyId, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.signals }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.signals }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+      ]),
   });
 }
 
@@ -34,6 +38,10 @@ export function useDeleteSignal() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: signalsApi.remove,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.signals }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.signals }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+      ]),
   });
 }

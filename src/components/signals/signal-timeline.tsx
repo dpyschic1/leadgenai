@@ -14,7 +14,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import { useDeleteSignal } from "@/hooks/use-signals";
-import type { CompanyPerson, Signal } from "@/lib/api/types";
+import type { CompanyPerson, Signal, SignalRole } from "@/lib/api/types";
 import type { IntentLevel } from "@/lib/domain/signals";
 import { cn } from "@/lib/utils";
 import { EvidenceTag, IntentBadge, UrgencyBadge } from "./signal-badges";
@@ -42,11 +42,14 @@ export function SignalTimeline({
   people,
   canEdit,
   onEdit,
+  roles,
 }: {
   signals: Signal[];
   people: CompanyPerson[];
   canEdit: boolean;
   onEdit: (signal: Signal) => void;
+  /** On an opportunity: how each signal counts (lead, supporting or negative). */
+  roles?: Map<string, SignalRole>;
 }) {
   const [deleting, setDeleting] = useState<Signal | null>(null);
   const remove = useDeleteSignal();
@@ -60,6 +63,7 @@ export function SignalTimeline({
             key={signal.id}
             signal={signal}
             personName={signal.personId ? personName.get(signal.personId) : undefined}
+            role={roles?.get(signal.id)}
             isLast={index === signals.length - 1}
             canEdit={canEdit}
             onEdit={() => onEdit(signal)}
@@ -92,6 +96,7 @@ export function SignalTimeline({
 function SignalItem({
   signal,
   personName,
+  role,
   isLast,
   canEdit,
   onEdit,
@@ -99,6 +104,7 @@ function SignalItem({
 }: {
   signal: Signal;
   personName?: string;
+  role?: SignalRole;
   isLast: boolean;
   canEdit: boolean;
   onEdit: () => void;
@@ -116,7 +122,10 @@ function SignalItem({
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="font-medium">{names.signalType(signal.signalType)}</p>
+            <p className="flex flex-wrap items-center gap-2 font-medium">
+              {names.signalType(signal.signalType)}
+              {role && <RoleTag role={role} />}
+            </p>
             <p className="text-xs text-muted-foreground">
               {category && <span>{names.signalCategory(category)}</span>}
               {category && <span aria-hidden="true"> / </span>}
@@ -239,4 +248,15 @@ export function EmptySignals({ canEdit, onRecord }: { canEdit: boolean; onRecord
       )}
     </div>
   );
+}
+
+const ROLE_TAG: Record<SignalRole, { label: string; className: string }> = {
+  primary: { label: "Lead signal", className: "border-primary/25 bg-signal-tint text-[var(--signal-deep)]" },
+  corroborating: { label: "Supporting", className: "border-border bg-secondary text-muted-foreground" },
+  negative: { label: "Lowers priority", className: "border-red-200 bg-red-50 text-red-700" },
+};
+
+function RoleTag({ role }: { role: SignalRole }) {
+  const tag = ROLE_TAG[role];
+  return <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", tag.className)}>{tag.label}</span>;
 }

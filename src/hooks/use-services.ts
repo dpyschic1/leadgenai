@@ -13,7 +13,11 @@ export function useCreateService() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: servicesApi.create,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.services }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.services }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+      ]),
   });
 }
 
@@ -21,7 +25,11 @@ export function useUpdateService() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: ServiceInput }) => servicesApi.update(id, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.services }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.services }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+      ]),
   });
 }
 
@@ -29,6 +37,10 @@ export function useDeleteService() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: servicesApi.remove,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.services }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.services }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+      ]),
   });
 }

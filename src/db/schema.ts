@@ -34,6 +34,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { OPPORTUNITY_STATUSES } from "@/lib/domain/opportunities";
 import { COMPANY_RELATIONSHIPS, LOCATION_TYPES, SENIORITY_LEVELS } from "@/lib/domain/people";
 import { EVIDENCE_LABELS, INTENT_LEVELS, SIGNAL_SOURCES, URGENCY_LEVELS } from "@/lib/domain/signals";
 
@@ -85,18 +86,7 @@ export const signalSource = pgEnum("signal_source", SIGNAL_SOURCES);
 export const signalRole = pgEnum("signal_role", ["primary", "corroborating", "negative"]);
 
 /** Opportunity lifecycle (SRS Appendix B). */
-export const opportunityStatus = pgEnum("opportunity_status", [
-  "new",
-  "qualified",
-  "saved",
-  "contacted",
-  "replied",
-  "meeting",
-  "proposal",
-  "won",
-  "lost",
-  "dismissed",
-]);
+export const opportunityStatus = pgEnum("opportunity_status", OPPORTUNITY_STATUSES);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -606,6 +596,8 @@ export const opportunities = pgTable(
     opportunityScore: score(),
     scoreFactors: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     status: opportunityStatus().notNull().default("new"),
+    /** When the scores were last computed; recency changes with time, so stale rows are re-scored. */
+    scoredAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     /** Denormalized: max(occurred_at) of linked signals, cached for freshness sorting. */
     latestSignalAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
@@ -614,7 +606,9 @@ export const opportunities = pgTable(
   (t) => [
     index("opportunities_workspace_status_idx").on(t.workspaceId, t.status),
     index("opportunities_workspace_score_idx").on(t.workspaceId, t.opportunityScore),
-    index("opportunities_company_idx").on(t.companyId),
+    // MVP: one opportunity per company, matched to its best-fitting service. Drop this to allow
+    // one per (company, service) later.
+    uniqueIndex("opportunities_company_uq").on(t.companyId),
     unique("opportunities_id_workspace_uq").on(t.id, t.workspaceId),
     foreignKey({
       name: "opportunities_company_fk",

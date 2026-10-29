@@ -101,14 +101,16 @@ export async function updateSignal(auth: AuthContext, signalId: string, input: S
   );
 }
 
-export async function deleteSignal(auth: AuthContext, signalId: string): Promise<void> {
-  await db.transaction(async (tx) => {
+/** Deletes the signal; returns its company's id so the caller can re-score that company. */
+export async function deleteSignal(auth: AuthContext, signalId: string): Promise<string> {
+  return db.transaction(async (tx) => {
     const [row] = await tx
       .delete(signals)
       .where(and(eq(signals.id, signalId), eq(signals.workspaceId, auth.workspaceId)))
       .returning({ id: signals.id, companyId: signals.companyId });
     if (!row) throw notFound();
     await audit(tx, auth, "signal.deleted", row.id, row.companyId);
+    return row.companyId;
   });
 }
 

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCompanies } from "@/hooks/use-companies";
+import { useOpportunities } from "@/hooks/use-opportunities";
 import { useServices } from "@/hooks/use-services";
 import { useRecentSignals } from "@/hooks/use-signals";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,7 @@ const STEPS: { title: string; description: string; href?: string }[] = [
   {
     title: "Review your first opportunity",
     description: "See its score, the evidence behind it and a suggested next step.",
+    href: "/opportunities",
   },
 ];
 
@@ -38,9 +40,16 @@ export function SetupSteps() {
   const services = useServices();
   const companies = useCompanies();
   const signals = useRecentSignals(1);
-  const isPending = services.isPending || companies.isPending || signals.isPending;
+  const opportunities = useOpportunities("open");
+  const isPending = services.isPending || companies.isPending || signals.isPending || opportunities.isPending;
+  const hasOpportunity = Object.values(opportunities.data?.counts ?? {}).some((count) => count > 0);
   // Steps complete in order, so progress is the run of finished steps from the start.
-  const finished = [Boolean(services.data?.length), Boolean(companies.data?.length), Boolean(signals.data?.length)];
+  const finished = [
+    Boolean(services.data?.length),
+    Boolean(companies.data?.length),
+    Boolean(signals.data?.length),
+    hasOpportunity,
+  ];
   const firstUnfinished = finished.indexOf(false);
   const completed = firstUnfinished === -1 ? finished.length : firstUnfinished;
 

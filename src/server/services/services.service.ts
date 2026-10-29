@@ -18,10 +18,15 @@ import { AppError } from "@/server/http/errors";
 type ServiceRow = typeof services.$inferSelect;
 
 export async function listServices(auth: AuthContext): Promise<Service[]> {
+  return loadServices(auth.workspaceId);
+}
+
+/** A workspace's services with targeting; also used by background re-scoring (no request user). */
+export async function loadServices(workspaceId: string): Promise<Service[]> {
   const rows = await db
     .select()
     .from(services)
-    .where(eq(services.workspaceId, auth.workspaceId))
+    .where(eq(services.workspaceId, workspaceId))
     .orderBy(asc(services.createdAt));
   return withTargeting(db, rows);
 }

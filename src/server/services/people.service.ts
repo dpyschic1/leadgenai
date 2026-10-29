@@ -14,11 +14,16 @@ import { AppError } from "@/server/http/errors";
  */
 
 export async function listCompanyPeople(auth: AuthContext, companyId: string): Promise<CompanyPerson[]> {
+  return loadCompanyPeople(auth.workspaceId, companyId);
+}
+
+/** A company's people with role and primary contacts; also used by background re-scoring. */
+export async function loadCompanyPeople(workspaceId: string, companyId: string): Promise<CompanyPerson[]> {
   const rows = await db
     .select({ person: people, role: companyPeople })
     .from(companyPeople)
     .innerJoin(people, eq(people.id, companyPeople.personId))
-    .where(and(eq(companyPeople.companyId, companyId), eq(companyPeople.workspaceId, auth.workspaceId)))
+    .where(and(eq(companyPeople.companyId, companyId), eq(companyPeople.workspaceId, workspaceId)))
     .orderBy(asc(people.name));
   if (rows.length === 0) return [];
 

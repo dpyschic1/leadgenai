@@ -1,0 +1,1 @@
+ALTER TABLE "opportunities" ADD COLUMN "scored_at" timestamp with time zone DEFAULT now() NOT NULL;

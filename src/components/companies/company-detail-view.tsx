@@ -16,6 +16,8 @@ import {
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/forms/confirm-dialog";
 import { EditorSheet } from "@/components/forms/editor-sheet";
+import { ScoreRing } from "@/components/opportunities/score-ring";
+import { StatusBadge } from "@/components/opportunities/status-badge";
 import { CompanySignals } from "@/components/signals/company-signals";
 import { SignalForm } from "@/components/signals/signal-form";
 import { Button } from "@/components/ui/button";
@@ -188,20 +190,36 @@ function CompanyDetailContent({ company }: { company: CompanyDetail }) {
           </section>
         </div>
 
-        <aside aria-labelledby="about-heading" className="rounded-xl border bg-card p-5">
-          <h2 id="about-heading" className="font-semibold">
-            About
-          </h2>
-          <dl className="mt-4 space-y-3 text-sm">
-            <AboutRow label="Industry" value={company.industry && names.industry(company.industry)} />
-            <AboutRow label="Employees" value={formatEmployees(company.employeeCount)} />
-            <AboutRow label="Headquarters" value={hqText} />
-            <AboutRow label="Website" value={company.domain} />
-          </dl>
-          {company.description && (
-            <p className="mt-5 border-t pt-4 text-sm leading-relaxed text-muted-foreground">{company.description}</p>
+        <div className="space-y-6">
+          {company.opportunity && (
+            <Link
+              href={`/opportunities/${company.opportunity.id}`}
+              className="flex items-center gap-4 rounded-xl border border-primary/20 bg-card p-5 transition-shadow hover:shadow-[0_8px_24px_-12px_rgba(27,36,51,0.18)]"
+            >
+              <ScoreRing score={company.opportunity.score} />
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">Opportunity</p>
+                <p className="text-sm text-muted-foreground">Priority score and the evidence behind it</p>
+              </div>
+              <StatusBadge status={company.opportunity.status} />
+            </Link>
           )}
-        </aside>
+
+          <aside aria-labelledby="about-heading" className="rounded-xl border bg-card p-5">
+            <h2 id="about-heading" className="font-semibold">
+              About
+            </h2>
+            <dl className="mt-4 space-y-3 text-sm">
+              <AboutRow label="Industry" value={company.industry && names.industry(company.industry)} />
+              <AboutRow label="Employees" value={formatEmployees(company.employeeCount)} />
+              <AboutRow label="Headquarters" value={hqText} />
+              <AboutRow label="Website" value={company.domain} />
+            </dl>
+            {company.description && (
+              <p className="mt-5 border-t pt-4 text-sm leading-relaxed text-muted-foreground">{company.description}</p>
+            )}
+          </aside>
+        </div>
       </div>
 
       <EditorSheet

@@ -1,7 +1,7 @@
 import { DashboardGreeting } from "@/components/dashboard/dashboard-greeting";
-import { EmptyOpportunities } from "@/components/dashboard/empty-opportunities";
 import { ScoreExplainer } from "@/components/dashboard/score-explainer";
 import { SetupSteps } from "@/components/dashboard/setup-steps";
+import { TopOpportunities } from "@/components/dashboard/top-opportunities";
 
 export default function DashboardPage() {
   return (
@@ -11,7 +11,7 @@ export default function DashboardPage() {
         <SetupSteps />
         <ScoreExplainer />
       </div>
-      <EmptyOpportunities />
+      <TopOpportunities />
     </div>
   );
 }

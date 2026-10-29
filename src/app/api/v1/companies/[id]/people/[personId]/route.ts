@@ -2,6 +2,7 @@ import { EDITOR_ROLES } from "@/lib/permissions";
 import { personSchema } from "@/lib/validation/companies";
 import { authedRoute, parseJsonBody } from "@/server/http/handler";
 import { uuidParam } from "@/server/http/params";
+import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
 import { getCompany } from "@/server/services/companies.service";
 import { removePerson, updatePerson } from "@/server/services/people.service";
 
@@ -18,6 +19,7 @@ export const PATCH = authedRoute<Context>(
     const { companyId, personId } = await ids(context);
     const input = await parseJsonBody(request, personSchema);
     await updatePerson(auth, companyId, personId, input);
+    await rescoreAfterCompanyChange(auth.workspaceId, companyId);
     return Response.json(await getCompany(auth, companyId));
   },
   { roles: EDITOR_ROLES },
@@ -28,6 +30,7 @@ export const DELETE = authedRoute<Context>(
   async ({ context, auth }) => {
     const { companyId, personId } = await ids(context);
     await removePerson(auth, companyId, personId);
+    await rescoreAfterCompanyChange(auth.workspaceId, companyId);
     return Response.json(await getCompany(auth, companyId));
   },
   { roles: EDITOR_ROLES },

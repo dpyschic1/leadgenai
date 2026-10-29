@@ -50,6 +50,20 @@
       "when": 1793288190596,
       "tag": "0006_signal_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793293221567,
+      "tag": "0007_one_opportunity_per_company",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793293550684,
+      "tag": "0008_opportunity_scored_at",
+      "breakpoints": true
     }
   ]
 }

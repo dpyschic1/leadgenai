@@ -2,6 +2,7 @@ import { EDITOR_ROLES } from "@/lib/permissions";
 import { companySchema } from "@/lib/validation/companies";
 import { authedRoute, parseJsonBody } from "@/server/http/handler";
 import { uuidParam } from "@/server/http/params";
+import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
 import { deleteCompany, getCompany, updateCompany } from "@/server/services/companies.service";
 
 type Context = RouteContext<"/api/v1/companies/[id]">;
@@ -16,7 +17,9 @@ export const PATCH = authedRoute<Context>(
   async ({ request, context, auth }) => {
     const id = await companyId(context);
     const input = await parseJsonBody(request, companySchema);
-    return Response.json(await updateCompany(auth, id, input));
+    const company = await updateCompany(auth, id, input);
+    await rescoreAfterCompanyChange(auth.workspaceId, id);
+    return Response.json(company);
   },
   { roles: EDITOR_ROLES },
 );

@@ -22,6 +22,7 @@ export function useLookupNames() {
   const categories = index(data?.serviceCategories);
   const signalTypes = new Map(data?.signalTypes.map((t) => [t.slug, t]));
   const signalCategories = index(data?.signalCategories);
+  const opportunityTypes = index(data?.opportunityTypes);
   return {
     industry: (slug: string) => industries.get(slug) ?? slug,
     jobFunction: (slug: string) => jobFunctions.get(slug) ?? slug,
@@ -30,5 +31,6 @@ export function useLookupNames() {
     /** The taxonomy group a signal type belongs to, e.g. "website_redesign" -> "digital". */
     signalCategoryOf: (typeSlug: string) => signalTypes.get(typeSlug)?.categorySlug ?? null,
     signalCategory: (slug: string) => signalCategories.get(slug) ?? slug,
+    opportunityType: (slug: string) => opportunityTypes.get(slug) ?? slug,
   };
 }

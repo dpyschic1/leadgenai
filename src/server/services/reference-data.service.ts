@@ -1,7 +1,7 @@
 import "server-only";
 import { asc } from "drizzle-orm";
 import { db } from "@/db";
-import { industries, jobFunctions, serviceCategories, signalCategories, signalTypes } from "@/db/schema";
+import { industries, jobFunctions, opportunityTypes, serviceCategories, signalCategories, signalTypes } from "@/db/schema";
 import type { ReferenceData } from "@/lib/api/types";
 import { SIGNAL_CATEGORY_ORDER } from "@/lib/domain/signals";
 
@@ -13,12 +13,13 @@ const categoryRank = (slug: string) => {
 
 /** Global lookup lists used by the forms and the AI analysis. */
 export async function getReferenceData(): Promise<ReferenceData> {
-  const [categoryRows, industryRows, jobFunctionRows, signalCategoryRows, signalTypeRows] = await Promise.all([
+  const [categoryRows, industryRows, jobFunctionRows, signalCategoryRows, signalTypeRows, opportunityTypeRows] = await Promise.all([
     db.select().from(serviceCategories).orderBy(asc(serviceCategories.name)),
     db.select().from(industries).orderBy(asc(industries.name)),
     db.select().from(jobFunctions).orderBy(asc(jobFunctions.name)),
     db.select().from(signalCategories),
     db.select().from(signalTypes).orderBy(asc(signalTypes.name)),
+    db.select().from(opportunityTypes).orderBy(asc(opportunityTypes.name)),
   ]);
   return {
     serviceCategories: categoryRows,
@@ -28,5 +29,6 @@ export async function getReferenceData(): Promise<ReferenceData> {
       (a, b) => categoryRank(a.slug) - categoryRank(b.slug) || a.name.localeCompare(b.name),
     ),
     signalTypes: signalTypeRows,
+    opportunityTypes: opportunityTypeRows,
   };
 }

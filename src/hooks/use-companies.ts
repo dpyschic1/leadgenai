@@ -9,7 +9,10 @@ import { queryKeys } from "./query-keys";
 /** After any company or people change: cache the fresh detail and refetch lists (counts change). */
 function syncCompany(queryClient: QueryClient, company: CompanyDetail) {
   queryClient.setQueryData(queryKeys.company(company.id), company);
-  return queryClient.invalidateQueries({ queryKey: queryKeys.companyLists });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.companyLists }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+  ]);
 }
 
 export function useCompanies(search = "") {
@@ -47,7 +50,10 @@ export function useDeleteCompany() {
     mutationFn: companiesApi.remove,
     onSuccess: (_, id) => {
       queryClient.removeQueries({ queryKey: queryKeys.company(id) });
-      return queryClient.invalidateQueries({ queryKey: queryKeys.companyLists });
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.companyLists }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+      ]);
     },
   });
 }

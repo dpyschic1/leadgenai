@@ -2,7 +2,7 @@ import "server-only";
 import { and, asc, eq, ilike, or } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isForeignKeyViolation, isUniqueViolation } from "@/db/errors";
-import { auditLogs, companies, companyLocations, companyPeople } from "@/db/schema";
+import { auditLogs, companies, companyLocations, companyPeople, opportunities } from "@/db/schema";
 import type { CompanyDetail, CompanySummary } from "@/lib/api/types";
 import type { CompanyValues } from "@/lib/validation/companies";
 import type { AuthContext } from "@/server/auth/session";
@@ -56,13 +56,18 @@ export async function getCompany(auth: AuthContext, companyId: string): Promise<
     .limit(1);
   if (!company) throw notFound();
 
-  const [locations, companyPeopleRows] = await Promise.all([
+  const [locations, companyPeopleRows, [opportunity]] = await Promise.all([
     db
       .select()
       .from(companyLocations)
       .where(eq(companyLocations.companyId, company.id))
       .orderBy(asc(companyLocations.createdAt)),
     listCompanyPeople(auth, company.id),
+    db
+      .select({ id: opportunities.id, score: opportunities.opportunityScore, status: opportunities.status, scoreFactors: opportunities.scoreFactors })
+      .from(opportunities)
+      .where(eq(opportunities.companyId, company.id))
+      .limit(1),
   ]);
 
   return {
@@ -82,6 +87,10 @@ export async function getCompany(auth: AuthContext, companyId: string): Promise<
       postalCode: l.postalCode,
     })),
     people: companyPeopleRows,
+    // A row without factors has lost its last positive signal and is no longer scored.
+    opportunity: opportunity
+      ? { id: opportunity.id, score: "intent" in opportunity.scoreFactors ? opportunity.score : null, status: opportunity.status }
+      : null,
   };
 }
 
