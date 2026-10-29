@@ -553,7 +553,12 @@ export const scoringProfiles = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("scoring_profiles_workspace_idx").on(t.workspaceId)],
+  (t) => [
+    index("scoring_profiles_workspace_idx").on(t.workspaceId),
+    uniqueIndex("scoring_profiles_one_active_idx")
+      .on(t.workspaceId)
+      .where(sql`${t.active}`),
+  ],
 );
 
 /** Saved search / monitor definition (PRD §16). Scheduled runs come after the MVP. */

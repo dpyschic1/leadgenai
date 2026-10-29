@@ -36,6 +36,13 @@
       "when": 1793223365165,
       "tag": "0004_drop_denormalized_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793282229188,
+      "tag": "0005_scoring_profile_one_active",
+      "breakpoints": true
     }
   ]
 }

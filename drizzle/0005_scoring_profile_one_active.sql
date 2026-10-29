@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "scoring_profiles_one_active_idx" ON "scoring_profiles" USING btree ("workspace_id") WHERE "scoring_profiles"."active";

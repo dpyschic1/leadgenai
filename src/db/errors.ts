@@ -1,15 +1,23 @@
 const UNIQUE_VIOLATION = "23505";
+const FOREIGN_KEY_VIOLATION = "23503";
 
-/**
- * True when `error` is a Postgres unique-constraint violation, optionally on a specific
- * constraint/index. Drizzle wraps driver errors, so the Postgres error may be the `cause`.
- */
-export function isUniqueViolation(error: unknown, constraint?: string): boolean {
+type PgError = Error & { code?: string; constraint_name?: string };
+
+/** Finds the Postgres error with `code`. Drizzle wraps driver errors, so it may be the `cause`. */
+function findPgError(error: unknown, code: string): PgError | undefined {
   for (let e: unknown = error; e instanceof Error; e = e.cause) {
-    const pg = e as Error & { code?: string; constraint_name?: string };
-    if (pg.code === UNIQUE_VIOLATION) {
-      return constraint === undefined || pg.constraint_name === constraint;
-    }
+    if ((e as PgError).code === code) return e as PgError;
   }
-  return false;
+  return undefined;
+}
+
+/** True when `error` is a unique-constraint violation, optionally on a specific constraint/index. */
+export function isUniqueViolation(error: unknown, constraint?: string): boolean {
+  const pg = findPgError(error, UNIQUE_VIOLATION);
+  return pg !== undefined && (constraint === undefined || pg.constraint_name === constraint);
+}
+
+/** True when `error` is a foreign-key violation, e.g. an unknown lookup slug. */
+export function isForeignKeyViolation(error: unknown): boolean {
+  return findPgError(error, FOREIGN_KEY_VIOLATION) !== undefined;
 }

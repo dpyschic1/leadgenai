@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUniqueViolation } from "./errors";
+import { isForeignKeyViolation, isUniqueViolation } from "./errors";
 
 function pgError(code: string, constraint_name?: string) {
   return Object.assign(new Error("pg"), { code, constraint_name });
@@ -17,5 +17,15 @@ describe("isUniqueViolation", () => {
 
   it("ignores other Postgres errors", () => {
     expect(isUniqueViolation(pgError("23503"))).toBe(false);
+  });
+});
+
+describe("isForeignKeyViolation", () => {
+  it("detects a wrapped foreign-key violation", () => {
+    expect(isForeignKeyViolation(new Error("Failed query", { cause: pgError("23503") }))).toBe(true);
+  });
+
+  it("ignores unique violations", () => {
+    expect(isForeignKeyViolation(pgError("23505"))).toBe(false);
   });
 });
