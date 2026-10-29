@@ -7,9 +7,13 @@ import { SESSION_COOKIE } from "@/server/auth/constants";
  */
 
 const AUTH_PAGES = new Set(["/login", "/signup"]);
+/** Open to everyone, signed in or not: an invitation can be accepted from any browser. */
+const PUBLIC_PREFIXES = ["/invite/"];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return NextResponse.next();
+
   const hasSession = request.cookies.has(SESSION_COOKIE);
   const isAuthPage = AUTH_PAGES.has(pathname);
 

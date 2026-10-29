@@ -17,6 +17,8 @@ export const RATE_LIMITS = {
   loginIp: { limit: 50, windowSeconds: 15 * 60 },
   /** Per IP. */
   register: { limit: 5, windowSeconds: 60 * 60 },
+  /** Per IP: accepting with an existing account checks its password, so it's limited like sign-in. */
+  acceptInvitation: { limit: 10, windowSeconds: 15 * 60 },
   /** Per user. */
   aiAnalysis: { limit: 30, windowSeconds: 60 * 60 },
   /** Per workspace: the AI provider's daily quota is shared by everyone. */

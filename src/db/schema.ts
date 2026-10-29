@@ -34,6 +34,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { MEMBER_ROLES } from "@/lib/domain/members";
 import { OPPORTUNITY_STATUSES } from "@/lib/domain/opportunities";
 import { COMPANY_RELATIONSHIPS, LOCATION_TYPES, SENIORITY_LEVELS } from "@/lib/domain/people";
 import { EVIDENCE_LABELS, INTENT_LEVELS, SIGNAL_SOURCES, URGENCY_LEVELS } from "@/lib/domain/signals";
@@ -43,7 +44,7 @@ import { EVIDENCE_LABELS, INTENT_LEVELS, SIGNAL_SOURCES, URGENCY_LEVELS } from "
 // ---------------------------------------------------------------------------
 
 /** Workspace roles (SRS §3). Platform admin is an internal role, not a workspace member. */
-export const memberRole = pgEnum("user_role", ["owner", "admin", "manager", "member", "viewer"]);
+export const memberRole = pgEnum("user_role", MEMBER_ROLES);
 export const membershipStatus = pgEnum("membership_status", ["invited", "active", "deactivated"]);
 
 /** SRS Appendix B. */
@@ -180,6 +181,34 @@ export const workspaceMembers = pgTable(
   (t) => [
     primaryKey({ columns: [t.workspaceId, t.userId] }),
     index("workspace_members_user_idx").on(t.userId),
+  ],
+);
+
+/**
+ * A pending invitation to join a workspace (SRS FR-AUTH). The invitee follows a one-time link;
+ * only the token's SHA-256 is stored, so a leaked table can't be used to join. Accepting creates
+ * the `workspace_members` row and stamps `acceptedAt`; revoking deletes the invitation.
+ */
+export const workspaceInvitations = pgTable(
+  "workspace_invitations",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    /** Stored lowercased, like `users.email`. */
+    email: text().notNull(),
+    role: memberRole().notNull(),
+    tokenHash: text().notNull(),
+    invitedById: uuid().references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    acceptedAt: timestamp({ withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("workspace_invitations_token_idx").on(t.tokenHash),
+    // One open invitation per person per workspace; inviting again replaces it.
+    uniqueIndex("workspace_invitations_pending_idx")
+      .on(t.workspaceId, t.email)
+      .where(sql`${t.acceptedAt} is null`),
   ],
 );
 

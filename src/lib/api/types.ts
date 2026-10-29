@@ -28,6 +28,46 @@ export type Me = {
   workspace: Workspace;
 };
 
+/** Someone with access to the workspace. */
+export type TeamMember = {
+  userId: string;
+  name: string | null;
+  email: string;
+  role: UserRole;
+  joinedAt: string;
+  lastLoginAt: string | null;
+};
+
+/** An invitation that hasn't been accepted yet. Its link is only shown when it's created. */
+export type PendingInvitation = {
+  id: string;
+  email: string;
+  role: UserRole;
+  invitedBy: string | null;
+  createdAt: string;
+  expiresAt: string;
+  expired: boolean;
+};
+
+export type Team = {
+  members: TeamMember[];
+  /** Only owners and admins see invitations; empty for everyone else. */
+  invitations: PendingInvitation[];
+};
+
+/** Returned once when an invitation is created: the raw token is never stored, so it can't be shown again. */
+export type CreatedInvitation = { invitation: PendingInvitation; token: string };
+
+/** What someone opening an invitation link sees before accepting. */
+export type InvitationPreview = {
+  workspaceName: string;
+  email: string;
+  role: UserRole;
+  invitedBy: string | null;
+  /** True when the email already has a LeadGenAI account, so only the password is needed. */
+  accountExists: boolean;
+};
+
 /** An entry in a global lookup table (service categories, industries, job functions). */
 export type LookupOption = { slug: string; name: string };
 

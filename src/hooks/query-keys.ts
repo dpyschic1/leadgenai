@@ -1,6 +1,9 @@
 /** Central registry of TanStack Query keys, so invalidation never relies on retyped arrays. */
 export const queryKeys = {
   me: ["me"] as const,
+  /** Members and pending invitations of the current workspace. */
+  team: ["team"] as const,
+  invitation: (token: string) => ["invitation", token] as const,
   referenceData: ["reference-data"] as const,
   services: ["services"] as const,
   scoringProfile: ["scoring-profile"] as const,

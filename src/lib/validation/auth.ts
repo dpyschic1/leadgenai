@@ -2,23 +2,25 @@ import { z } from "zod";
 
 /** Shared by the client forms and the route handlers, so both validate identically. */
 
-const email = z
+export const email = z
   .string()
   .trim()
   .toLowerCase()
   .pipe(z.email("Enter a valid email address").max(254));
 
-const name = (label: string) =>
+export const personName = (label: string) =>
   z.string().trim().min(1, `${label} is required`).max(100, `${label} is too long`);
 
+export const newPassword = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .max(128, "Password must be at most 128 characters");
+
 export const registerSchema = z.object({
-  name: name("Name"),
+  name: personName("Name"),
   email,
-  password: z
-    .string()
-    .min(8, "Password must be at least 8 characters")
-    .max(128, "Password must be at most 128 characters"),
-  workspaceName: name("Workspace name"),
+  password: newPassword,
+  workspaceName: personName("Workspace name"),
 });
 
 export const loginSchema = z.object({
@@ -27,7 +29,7 @@ export const loginSchema = z.object({
 });
 
 export const updateWorkspaceSchema = z.object({
-  name: name("Workspace name"),
+  name: personName("Workspace name"),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
