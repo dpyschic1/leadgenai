@@ -2,18 +2,27 @@
 
 import { useId, type ComponentProps } from "react";
 import { Controller, type Control, type FieldValues, type Path } from "react-hook-form";
-import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
 type TextFieldProps<T extends FieldValues> = {
   control: Control<T>;
   name: Path<T>;
   label: string;
+  /** Hint shown under the input, e.g. password rules. */
+  description?: string;
 } & Omit<ComponentProps<typeof Input>, "name" | "id" | "value" | "onChange" | "onBlur">;
 
-/** A labelled text input bound to react-hook-form, with accessible error display. */
-export function TextField<T extends FieldValues>({ control, name, label, ...inputProps }: TextFieldProps<T>) {
+/** A labelled text input bound to react-hook-form, with accessible hint and error display. */
+export function TextField<T extends FieldValues>({
+  control,
+  name,
+  label,
+  description,
+  ...inputProps
+}: TextFieldProps<T>) {
   const id = useId();
+  const descriptionId = `${id}-description`;
 
   return (
     <Controller
@@ -22,7 +31,15 @@ export function TextField<T extends FieldValues>({ control, name, label, ...inpu
       render={({ field, fieldState }) => (
         <Field data-invalid={fieldState.invalid}>
           <FieldLabel htmlFor={id}>{label}</FieldLabel>
-          <Input {...inputProps} {...field} id={id} aria-invalid={fieldState.invalid} />
+          <Input
+            {...inputProps}
+            {...field}
+            id={id}
+            className="h-10"
+            aria-invalid={fieldState.invalid}
+            aria-describedby={description ? descriptionId : undefined}
+          />
+          {description && <FieldDescription id={descriptionId}>{description}</FieldDescription>}
           {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
         </Field>
       )}

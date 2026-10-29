@@ -4,13 +4,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { SubmitButton } from "@/components/forms/submit-button";
 import { TextField } from "@/components/forms/text-field";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { FieldError, FieldGroup } from "@/components/ui/field";
 import { useRegister } from "@/hooks/use-auth";
 import { applyApiError } from "@/lib/forms/apply-api-error";
 import { registerSchema, type RegisterInput } from "@/lib/validation/auth";
+import { AuthHeading } from "./auth-heading";
 
 const FIELDS = ["name", "email", "password", "workspaceName"] as const;
 
@@ -30,44 +30,41 @@ export function SignupForm() {
   );
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Create your workspace</CardTitle>
-        <CardDescription>Start finding evidence-backed opportunities.</CardDescription>
-      </CardHeader>
+    <>
+      <AuthHeading
+        title="Create your workspace"
+        description="Start with your account. You'll describe what you sell in the next step."
+      />
       <form onSubmit={onSubmit} noValidate>
-        <CardContent>
-          <FieldGroup>
-            <TextField control={form.control} name="name" label="Your name" autoComplete="name" />
-            <TextField control={form.control} name="email" label="Work email" type="email" autoComplete="email" />
-            <TextField
-              control={form.control}
-              name="password"
-              label="Password"
-              type="password"
-              autoComplete="new-password"
-            />
-            <TextField
-              control={form.control}
-              name="workspaceName"
-              label="Company / workspace name"
-              autoComplete="organization"
-            />
-            {form.formState.errors.root && <FieldError>{form.formState.errors.root.message}</FieldError>}
-          </FieldGroup>
-        </CardContent>
-        <CardFooter className="mt-6 flex flex-col gap-3">
-          <Button type="submit" className="w-full" disabled={register.isPending}>
-            {register.isPending ? "Creating workspace…" : "Create workspace"}
-          </Button>
-          <p className="text-sm text-muted-foreground">
-            Already have an account?{" "}
-            <Link href="/login" className="text-foreground underline underline-offset-4">
-              Sign in
-            </Link>
-          </p>
-        </CardFooter>
+        <FieldGroup>
+          <TextField control={form.control} name="name" label="Your name" autoComplete="name" />
+          <TextField control={form.control} name="email" label="Work email" type="email" autoComplete="email" />
+          <TextField
+            control={form.control}
+            name="password"
+            label="Password"
+            type="password"
+            autoComplete="new-password"
+            description="At least 8 characters."
+          />
+          <TextField
+            control={form.control}
+            name="workspaceName"
+            label="Company name"
+            autoComplete="organization"
+          />
+          {form.formState.errors.root && <FieldError>{form.formState.errors.root.message}</FieldError>}
+          <SubmitButton pending={register.isPending} pendingLabel="Creating workspace…">
+            Create workspace
+          </SubmitButton>
+        </FieldGroup>
       </form>
-    </Card>
+      <p className="mt-6 text-sm text-muted-foreground">
+        Already have an account?{" "}
+        <Link href="/login" className="font-medium text-primary hover:underline underline-offset-4">
+          Sign in
+        </Link>
+      </p>
+    </>
   );
 }
