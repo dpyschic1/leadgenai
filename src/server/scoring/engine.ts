@@ -210,7 +210,9 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
     icpFit: icpFactor(input.company, input.people, service, best?.fit ?? 0, labels),
     recency: recencyFactor(latestSignalAt, now),
     identity: identityFactor(input.company, person),
-    serviceFit: best ? { score: best.fit, reasons: best.reasons } : { score: 0, reasons: noServiceReason(input.services) },
+    serviceFit: best
+      ? { score: best.fit, reasons: best.reasons }
+      : { score: 0, reasons: noServiceReason(input.services, positives, labels) },
   };
 
   const factors = Object.fromEntries(
@@ -309,7 +311,11 @@ function recencyFactor(latest: Date, now: Date) {
   return { score: 100 * recencyMultiplier(days), reasons: [`Latest signal ${when}`] };
 }
 
-/** How well the signals' needs match a service; the best-matching service is chosen. */
+/**
+ * How well the signals' needs match a service; the best-matching service is chosen. A service
+ * with no overlap at all is never chosen, so the opportunity shows "No matching service" instead
+ * of a match that isn't one.
+ */
 function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels) {
   const categorised = positives.filter((s) => s.serviceCategories.length > 0);
   let best: { service: EngineService; fit: number; reasons: string[] } | null = null;
@@ -329,21 +335,19 @@ function pickService(services: EngineService[], positives: EngineSignal[], label
       total += weight;
     }
     const fit = total === 0 ? 0 : (weighted / total) * 100;
-    if (!best || fit > best.fit) {
-      const reasons =
-        categorised.length === 0
-          ? ["Signals don't point to any service category yet"]
-          : matched.size === 0
-            ? [`No overlap with ${service.name}`]
-            : [`Matches ${service.name}: ${[...matched].map(labels.category).join(", ")}`];
-      best = { service, fit, reasons };
+    if (fit > 0 && (!best || fit > best.fit)) {
+      best = { service, fit, reasons: [`Matches ${service.name}: ${[...matched].map(labels.category).join(", ")}`] };
     }
   }
   return best;
 }
 
-function noServiceReason(services: EngineService[]): string[] {
-  return services.length === 0 ? ["Add your services in Services & ICP to measure fit"] : ["No service matches"];
+/** Why no service was matched, so the score breakdown says what to change. */
+function noServiceReason(services: EngineService[], positives: EngineSignal[], labels: EngineLabels): string[] {
+  if (services.length === 0) return ["Add your services in Services & ICP to measure fit"];
+  const needed = [...new Set(positives.flatMap((s) => s.serviceCategories))];
+  if (needed.length === 0) return ["Signals don't point to any service category yet"];
+  return [`None of your services offer what the signals point to: ${needed.map(labels.category).join(", ")}`];
 }
 
 /**

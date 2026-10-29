@@ -123,6 +123,20 @@ describe("scoreCompany", () => {
     expect(result.type).toBe("staff_augmentation");
   });
 
+  it("matches no service when none offers what the signals need", () => {
+    const result = score({ signals: [signal({ serviceCategories: ["bpo"] })] });
+    expect(result.serviceId).toBeNull();
+    expect(result.factors.serviceFit.score).toBe(0);
+    expect(result.factors.serviceFit.reasons).toEqual(["None of your services offer what the signals point to: bpo"]);
+    expect(result.factors.icpFit.reasons).toEqual(["No matching service to compare against"]);
+  });
+
+  it("matches no service when the signals point to no category", () => {
+    const result = score({ signals: [signal({ serviceCategories: [] })] });
+    expect(result.serviceId).toBeNull();
+    expect(result.factors.serviceFit.reasons).toEqual(["Signals don't point to any service category yet"]);
+  });
+
   it("explains ICP misses, scoring unknown company data as half", () => {
     const result = score({ company: { ...base.company, industry: "retail", hqCountry: null, employeeCount: 500 } });
     expect(result.factors.icpFit.reasons).toContain("retail isn't a target industry");
