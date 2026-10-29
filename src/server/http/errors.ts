@@ -10,12 +10,15 @@ import {
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly fieldErrors?: FieldErrors;
+  /** Seconds until a RATE_LIMITED caller may retry; sent as the Retry-After header. */
+  readonly retryAfter?: number;
 
-  constructor(code: ErrorCode, message: string, fieldErrors?: FieldErrors) {
+  constructor(code: ErrorCode, message: string, fieldErrors?: FieldErrors, options: { retryAfter?: number } = {}) {
     super(message);
     this.name = "AppError";
     this.code = code;
     this.fieldErrors = fieldErrors;
+    this.retryAfter = options.retryAfter;
   }
 
   get status(): number {
@@ -34,7 +37,10 @@ export function errorResponse(error: unknown, requestId: string): Response {
         ...(error.fieldErrors && { field_errors: error.fieldErrors }),
       },
     };
-    return Response.json(body, { status: error.status });
+    return Response.json(body, {
+      status: error.status,
+      headers: error.retryAfter === undefined ? undefined : { "Retry-After": String(error.retryAfter) },
+    });
   }
 
   console.error(`[${requestId}] Unhandled error`, error);

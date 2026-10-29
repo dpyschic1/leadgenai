@@ -71,6 +71,13 @@
       "when": 1793299539265,
       "tag": "0009_lists_unique_name",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793301000497,
+      "tag": "0010_rate_limits",
+      "breakpoints": true
     }
   ]
 }

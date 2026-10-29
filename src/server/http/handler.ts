@@ -44,6 +44,9 @@ export function authedRoute<Ctx = unknown>(
     });
 }
 
+/** Largest JSON body accepted. The biggest real one is an 8,000-character pasted source (~32 KB worst case). */
+const MAX_BODY_BYTES = 100 * 1024;
+
 /** Parses and validates a JSON body; throws VALIDATION_FAILED with per-field messages. */
 export async function parseJsonBody<S extends z.ZodType>(
   request: NextRequest,
@@ -53,9 +56,16 @@ export async function parseJsonBody<S extends z.ZodType>(
     throw new AppError("UNSUPPORTED_MEDIA_TYPE", "Expected a JSON request body.");
   }
 
+  // Refuse oversized bodies before reading them when the size is declared, and check after
+  // reading when it isn't (chunked uploads).
+  const tooLarge = () => new AppError("PAYLOAD_TOO_LARGE", "The request is too large.");
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) throw tooLarge();
+  const text = await request.text();
+  if (Buffer.byteLength(text) > MAX_BODY_BYTES) throw tooLarge();
+
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(text);
   } catch {
     throw new AppError("VALIDATION_FAILED", "Request body is not valid JSON.");
   }

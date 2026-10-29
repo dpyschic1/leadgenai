@@ -717,3 +717,17 @@ export const auditLogs = pgTable(
   },
   (t) => [index("audit_logs_workspace_created_idx").on(t.workspaceId, t.createdAt)],
 );
+
+/**
+ * Fixed-window request counters for rate limiting (SRS §14). Kept in Postgres so limits hold
+ * across server instances. `key` is "<rule>:<sha256 of the subject>", so no emails or IPs are stored.
+ */
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    key: text().primaryKey(),
+    count: integer().notNull(),
+    windowStart: timestamp({ withTimezone: true }).notNull(),
+  },
+  (t) => [index("rate_limits_window_start_idx").on(t.windowStart)],
+);
