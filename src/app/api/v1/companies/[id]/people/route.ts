@@ -1,4 +1,4 @@
-import { CONFIG_ROLES } from "@/lib/permissions";
+import { EDITOR_ROLES } from "@/lib/permissions";
 import { personSchema } from "@/lib/validation/companies";
 import { authedRoute, parseJsonBody } from "@/server/http/handler";
 import { uuidParam } from "@/server/http/params";
@@ -15,5 +15,5 @@ export const POST = authedRoute<Context>(
     await addPerson(auth, companyId, input);
     return Response.json(await getCompany(auth, companyId), { status: 201 });
   },
-  { roles: CONFIG_ROLES },
+  { roles: EDITOR_ROLES },
 );

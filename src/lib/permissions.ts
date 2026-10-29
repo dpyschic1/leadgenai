@@ -11,3 +11,6 @@ export const ADMIN_ROLES = ["owner", "admin"] as const satisfies readonly UserRo
 export function hasRole(role: UserRole, allowed: readonly UserRole[]): boolean {
   return allowed.includes(role);
 }
+
+/** May add and edit the workspace's data: companies, people and signals. Viewers are read-only. */
+export const EDITOR_ROLES = ["owner", "admin", "manager", "member"] as const satisfies readonly UserRole[];

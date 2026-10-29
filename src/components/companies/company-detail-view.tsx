@@ -8,6 +8,7 @@ import {
   ExternalLinkIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  SparklesIcon,
   Trash2Icon,
   UserPlusIcon,
   UsersRoundIcon,
@@ -15,6 +16,8 @@ import {
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/forms/confirm-dialog";
 import { EditorSheet } from "@/components/forms/editor-sheet";
+import { CompanySignals } from "@/components/signals/company-signals";
+import { SignalForm } from "@/components/signals/signal-form";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,10 +30,10 @@ import { useCompany, useDeleteCompany, useRemovePerson } from "@/hooks/use-compa
 import { usePermission } from "@/hooks/use-permission";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import { ApiError } from "@/lib/api/client";
-import type { CompanyDetail, CompanyPerson } from "@/lib/api/types";
+import type { CompanyDetail, CompanyPerson, Signal } from "@/lib/api/types";
 import { countryName } from "@/lib/countries";
 import { formatEmployees, formatPlace } from "@/lib/format";
-import { CONFIG_ROLES } from "@/lib/permissions";
+import { EDITOR_ROLES } from "@/lib/permissions";
 import { CompanyAvatar } from "./company-avatar";
 import { CompanyForm } from "./company-form";
 import { PersonForm } from "./person-form";
@@ -38,6 +41,7 @@ import { PersonRow } from "./person-row";
 
 /** `null` = closed, `"new"` = adding, a person = editing them. */
 type PersonEditing = CompanyPerson | "new" | null;
+type SignalEditing = Signal | "new" | null;
 
 export function CompanyDetailView() {
   const { id } = useParams<{ id: string }>();
@@ -50,12 +54,13 @@ export function CompanyDetailView() {
 
 function CompanyDetailContent({ company }: { company: CompanyDetail }) {
   const router = useRouter();
-  const canEdit = usePermission(CONFIG_ROLES);
+  const canEdit = usePermission(EDITOR_ROLES);
   const names = useLookupNames();
   const [editingCompany, setEditingCompany] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editingPerson, setEditingPerson] = useState<PersonEditing>(null);
   const [removing, setRemoving] = useState<CompanyPerson | null>(null);
+  const [editingSignal, setEditingSignal] = useState<SignalEditing>(null);
   const deleteCompany = useDeleteCompany();
   const removePerson = useRemovePerson(company.id);
 
@@ -98,6 +103,10 @@ function CompanyDetailContent({ company }: { company: CompanyDetail }) {
         </div>
         {canEdit && (
           <div className="flex items-center gap-2">
+            <Button onClick={() => setEditingSignal("new")}>
+              <SparklesIcon />
+              Record signal
+            </Button>
             <Button variant="outline" onClick={() => setEditingCompany(true)}>
               <PencilIcon />
               Edit
@@ -120,55 +129,64 @@ function CompanyDetailContent({ company }: { company: CompanyDetail }) {
       </header>
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <section aria-labelledby="people-heading" className="rounded-xl border bg-card">
-          <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
-            <div>
-              <h2 id="people-heading" className="font-semibold">
-                People
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                {company.people.length === 0
-                  ? "No one added yet"
-                  : `${company.people.length} ${company.people.length === 1 ? "person" : "people"} at ${company.name}`}
-              </p>
-            </div>
-            {canEdit && company.people.length > 0 && (
-              <Button variant="outline" onClick={() => setEditingPerson("new")}>
-                <UserPlusIcon />
-                Add person
-              </Button>
-            )}
-          </div>
-          {company.people.length > 0 ? (
-            <ul className="divide-y">
-              {company.people.map((person) => (
-                <PersonRow
-                  key={person.id}
-                  person={person}
-                  canEdit={canEdit}
-                  onEdit={() => setEditingPerson(person)}
-                  onRemove={() => setRemoving(person)}
-                />
-              ))}
-            </ul>
-          ) : (
-            <div className="flex flex-col items-center px-6 py-12 text-center">
-              <span className="grid size-10 place-items-center rounded-full bg-signal-tint text-primary">
-                <UsersRoundIcon className="size-5" />
-              </span>
-              <p className="mt-3 font-medium">Who would you talk to here?</p>
-              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                Add the decision makers. They become the suggested contacts on this company&apos;s opportunities.
-              </p>
-              {canEdit && (
-                <Button className="mt-4" onClick={() => setEditingPerson("new")}>
+        <div className="min-w-0 space-y-6">
+          <CompanySignals
+            companyId={company.id}
+            people={company.people}
+            canEdit={canEdit}
+            onRecord={() => setEditingSignal("new")}
+            onEdit={setEditingSignal}
+          />
+          <section aria-labelledby="people-heading" className="rounded-xl border bg-card">
+            <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
+              <div>
+                <h2 id="people-heading" className="font-semibold">
+                  People
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  {company.people.length === 0
+                    ? "No one added yet"
+                    : `${company.people.length} ${company.people.length === 1 ? "person" : "people"} at ${company.name}`}
+                </p>
+              </div>
+              {canEdit && company.people.length > 0 && (
+                <Button variant="outline" onClick={() => setEditingPerson("new")}>
                   <UserPlusIcon />
                   Add person
                 </Button>
               )}
             </div>
-          )}
-        </section>
+            {company.people.length > 0 ? (
+              <ul className="divide-y">
+                {company.people.map((person) => (
+                  <PersonRow
+                    key={person.id}
+                    person={person}
+                    canEdit={canEdit}
+                    onEdit={() => setEditingPerson(person)}
+                    onRemove={() => setRemoving(person)}
+                  />
+                ))}
+              </ul>
+            ) : (
+              <div className="flex flex-col items-center px-6 py-12 text-center">
+                <span className="grid size-10 place-items-center rounded-full bg-signal-tint text-primary">
+                  <UsersRoundIcon className="size-5" />
+                </span>
+                <p className="mt-3 font-medium">Who would you talk to here?</p>
+                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                  Add the decision makers. They become the suggested contacts on this company&apos;s opportunities.
+                </p>
+                {canEdit && (
+                  <Button className="mt-4" onClick={() => setEditingPerson("new")}>
+                    <UserPlusIcon />
+                    Add person
+                  </Button>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
 
         <aside aria-labelledby="about-heading" className="rounded-xl border bg-card p-5">
           <h2 id="about-heading" className="font-semibold">
@@ -193,6 +211,25 @@ function CompanyDetailContent({ company }: { company: CompanyDetail }) {
         description="Changes apply everywhere this company appears."
       >
         <CompanyForm company={company} onDone={() => setEditingCompany(false)} onCancel={() => setEditingCompany(false)} />
+      </EditorSheet>
+
+      <EditorSheet
+        open={editingSignal !== null}
+        onClose={() => setEditingSignal(null)}
+        title={editingSignal === "new" ? `Record a signal for ${company.name}` : "Edit signal"}
+        description="A sign that this company may need what you sell, with the evidence behind it."
+      >
+        {editingSignal !== null && (
+          <SignalForm
+            key={editingSignal === "new" ? "new" : editingSignal.id}
+            companyId={company.id}
+            companyName={company.name}
+            people={company.people}
+            signal={editingSignal === "new" ? undefined : editingSignal}
+            onDone={() => setEditingSignal(null)}
+            onCancel={() => setEditingSignal(null)}
+          />
+        )}
       </EditorSheet>
 
       <EditorSheet

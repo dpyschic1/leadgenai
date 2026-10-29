@@ -43,6 +43,13 @@
       "when": 1793282229188,
       "tag": "0005_scoring_profile_one_active",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793288190596,
+      "tag": "0006_signal_provenance",
+      "breakpoints": true
     }
   ]
 }

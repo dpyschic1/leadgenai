@@ -14,7 +14,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 import type { Option } from "./chip-select";
 
-/** Searchable single-select. Picking the selected option again clears it (value becomes null). */
+/**
+ * Searchable single-select, optionally grouped under headings. Picking the selected option again
+ * clears it (value becomes null).
+ */
 export function Combobox({
   id,
   options,
@@ -68,24 +71,37 @@ export function Combobox({
           <CommandInput placeholder={searchPlaceholder} />
           <CommandList id={listId}>
             <CommandEmpty>{emptyText}</CommandEmpty>
-            <CommandGroup>
-              {options.map((option) => (
-                <CommandItem
-                  key={option.value}
-                  value={option.label}
-                  onSelect={() => {
-                    onChange(option.value === value ? null : option.value);
-                    setOpen(false);
-                  }}
-                >
-                  <CheckIcon className={cn("text-primary", option.value !== value && "invisible")} />
-                  {option.label}
-                </CommandItem>
-              ))}
-            </CommandGroup>
+            {groupOptions(options).map(([heading, items]) => (
+              <CommandGroup key={heading ?? "all"} heading={heading}>
+                {items.map((option) => (
+                  <CommandItem
+                    key={option.value}
+                    value={`${option.label} ${option.group ?? ""}`}
+                    onSelect={() => {
+                      onChange(option.value === value ? null : option.value);
+                      setOpen(false);
+                    }}
+                  >
+                    <CheckIcon className={cn("text-primary", option.value !== value && "invisible")} />
+                    {option.label}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            ))}
           </CommandList>
         </Command>
       </PopoverContent>
     </Popover>
   );
+}
+
+/** Options bucketed by `group`, keeping first-seen order of groups and options. */
+function groupOptions(options: Option[]): [string | undefined, Option[]][] {
+  const groups = new Map<string | undefined, Option[]>();
+  for (const option of options) {
+    const bucket = groups.get(option.group);
+    if (bucket) bucket.push(option);
+    else groups.set(option.group, [option]);
+  }
+  return [...groups];
 }

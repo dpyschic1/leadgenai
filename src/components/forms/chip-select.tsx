@@ -3,7 +3,7 @@
 import { CheckIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type Option = { value: string; label: string };
+export type Option = { value: string; label: string; /** Heading to group under (searchable lists only). */ group?: string };
 
 /** Multi-select shown as toggle chips. Best for short lists that people scan rather than search. */
 export function ChipSelect({

@@ -1,15 +1,32 @@
 import "server-only";
 import { asc } from "drizzle-orm";
 import { db } from "@/db";
-import { industries, jobFunctions, serviceCategories } from "@/db/schema";
+import { industries, jobFunctions, serviceCategories, signalCategories, signalTypes } from "@/db/schema";
 import type { ReferenceData } from "@/lib/api/types";
+import { SIGNAL_CATEGORY_ORDER } from "@/lib/domain/signals";
 
-/** Global lookup lists used by the service form. */
+/** Unknown (newly seeded) categories sort after the known ones. */
+const categoryRank = (slug: string) => {
+  const index = (SIGNAL_CATEGORY_ORDER as readonly string[]).indexOf(slug);
+  return index === -1 ? SIGNAL_CATEGORY_ORDER.length : index;
+};
+
+/** Global lookup lists used by the forms and the AI analysis. */
 export async function getReferenceData(): Promise<ReferenceData> {
-  const [categoryRows, industryRows, jobFunctionRows] = await Promise.all([
+  const [categoryRows, industryRows, jobFunctionRows, signalCategoryRows, signalTypeRows] = await Promise.all([
     db.select().from(serviceCategories).orderBy(asc(serviceCategories.name)),
     db.select().from(industries).orderBy(asc(industries.name)),
     db.select().from(jobFunctions).orderBy(asc(jobFunctions.name)),
+    db.select().from(signalCategories),
+    db.select().from(signalTypes).orderBy(asc(signalTypes.name)),
   ]);
-  return { serviceCategories: categoryRows, industries: industryRows, jobFunctions: jobFunctionRows };
+  return {
+    serviceCategories: categoryRows,
+    industries: industryRows,
+    jobFunctions: jobFunctionRows,
+    signalCategories: signalCategoryRows.sort(
+      (a, b) => categoryRank(a.slug) - categoryRank(b.slug) || a.name.localeCompare(b.name),
+    ),
+    signalTypes: signalTypeRows,
+  };
 }

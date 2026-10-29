@@ -20,9 +20,15 @@ export function useLookupNames() {
   const industries = index(data?.industries);
   const jobFunctions = index(data?.jobFunctions);
   const categories = index(data?.serviceCategories);
+  const signalTypes = new Map(data?.signalTypes.map((t) => [t.slug, t]));
+  const signalCategories = index(data?.signalCategories);
   return {
     industry: (slug: string) => industries.get(slug) ?? slug,
     jobFunction: (slug: string) => jobFunctions.get(slug) ?? slug,
     category: (slug: string) => categories.get(slug) ?? slug,
+    signalType: (slug: string) => signalTypes.get(slug)?.name ?? slug,
+    /** The taxonomy group a signal type belongs to, e.g. "website_redesign" -> "digital". */
+    signalCategoryOf: (typeSlug: string) => signalTypes.get(typeSlug)?.categorySlug ?? null,
+    signalCategory: (slug: string) => signalCategories.get(slug) ?? slug,
   };
 }

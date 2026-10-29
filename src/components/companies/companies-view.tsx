@@ -16,7 +16,7 @@ import { useLookupNames } from "@/hooks/use-reference-data";
 import type { CompanySummary } from "@/lib/api/types";
 import { countryName } from "@/lib/countries";
 import { formatPlace } from "@/lib/format";
-import { CONFIG_ROLES } from "@/lib/permissions";
+import { EDITOR_ROLES } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { CompanyAvatar } from "./company-avatar";
 import { CompanyForm } from "./company-form";
@@ -28,7 +28,7 @@ export function CompaniesView() {
   const [search, setSearch] = useState("");
   const query = useDebouncedValue(search.trim());
   const { data: companies, isPending, isFetching } = useCompanies(query);
-  const canEdit = usePermission(CONFIG_ROLES);
+  const canEdit = usePermission(EDITOR_ROLES);
   const [adding, setAdding] = useState(false);
 
   const isFirstLoad = isPending && !companies;
@@ -184,7 +184,7 @@ function EmptyCompanies({ canEdit, onAdd }: { canEdit: boolean; onAdd: () => voi
       <p className="mt-1.5 max-w-md text-sm text-muted-foreground">
         {canEdit
           ? "Companies hold the signals and people behind every opportunity. Start with one you already know."
-          : "An owner, admin or manager can add companies to this workspace."}
+          : "Viewers can browse companies but not add them. Ask a workspace admin for edit access."}
       </p>
       {canEdit && (
         <Button className="mt-5" onClick={onAdd}>

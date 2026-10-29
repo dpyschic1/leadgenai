@@ -8,4 +8,8 @@ export const queryKeys = {
   companyLists: ["companies"] as const,
   companies: (search: string) => ["companies", { search }] as const,
   company: (id: string) => ["company", id] as const,
+  /** Prefix of every signals query (per company and recent). */
+  signals: ["signals"] as const,
+  companySignals: (companyId: string) => ["signals", "company", companyId] as const,
+  recentSignals: (limit: number) => ["signals", "recent", limit] as const,
 };

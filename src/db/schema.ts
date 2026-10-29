@@ -35,6 +35,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { COMPANY_RELATIONSHIPS, LOCATION_TYPES, SENIORITY_LEVELS } from "@/lib/domain/people";
+import { EVIDENCE_LABELS, INTENT_LEVELS, SIGNAL_SOURCES, URGENCY_LEVELS } from "@/lib/domain/signals";
 
 // ---------------------------------------------------------------------------
 // Enums (closed sets that code branches on; open vocabularies are lookup tables)
@@ -45,9 +46,9 @@ export const memberRole = pgEnum("user_role", ["owner", "admin", "manager", "mem
 export const membershipStatus = pgEnum("membership_status", ["invited", "active", "deactivated"]);
 
 /** SRS Appendix B. */
-export const intentLevel = pgEnum("intent_level", ["explicit", "high", "medium", "low", "unknown"]);
+export const intentLevel = pgEnum("intent_level", INTENT_LEVELS);
 
-export const urgencyLevel = pgEnum("urgency_level", ["high", "medium", "low", "unknown"]);
+export const urgencyLevel = pgEnum("urgency_level", URGENCY_LEVELS);
 
 /** Whether a person/company match is trustworthy enough to show as fact (SRS Appendix B). */
 export const identityStatus = pgEnum("identity_status", [
@@ -75,12 +76,10 @@ export const companyRelationship = pgEnum("company_relationship", COMPANY_RELATI
 export const seniorityLevel = pgEnum("seniority_level", SENIORITY_LEVELS);
 
 /** How well a claim is supported (PRD §9). */
-export const evidenceLabel = pgEnum("evidence_label", [
-  "observed",
-  "derived",
-  "inferred",
-  "unknown",
-]);
+export const evidenceLabel = pgEnum("evidence_label", EVIDENCE_LABELS);
+
+/** Whether a signal was classified by hand or by AI (then reviewed by a person). */
+export const signalSource = pgEnum("signal_source", SIGNAL_SOURCES);
 
 /** How a signal contributes to an opportunity's signal stack. */
 export const signalRole = pgEnum("signal_role", ["primary", "corroborating", "negative"]);
@@ -365,16 +364,20 @@ export const signals = pgTable(
     urgency: urgencyLevel().notNull().default("unknown"),
     summary: text().notNull(),
     evidenceLabel: evidenceLabel().notNull().default("observed"),
+    source: signalSource().notNull().default("manual"),
+    /** Model confidence (0-100) for AI-classified signals; null when entered by hand. */
     confidence: score(),
     /** Type-specific details, e.g. { round, amount, currency } for funding. */
     metadata: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     /** When the underlying event happened / was published. Drives recency. */
     occurredAt: timestamp({ withTimezone: true }).notNull(),
+    createdById: uuid().references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
+    updatedAt: updatedAt(),
   },
   (t) => [
     index("signals_workspace_idx").on(t.workspaceId),
-    index("signals_company_idx").on(t.companyId),
+    index("signals_company_occurred_idx").on(t.companyId, t.occurredAt),
     unique("signals_id_workspace_uq").on(t.id, t.workspaceId),
     foreignKey({
       name: "signals_company_fk",

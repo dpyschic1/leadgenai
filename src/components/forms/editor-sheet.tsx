@@ -43,10 +43,13 @@ export function EditorBody({ children }: { children: ReactNode }) {
 export function EditorFooter({
   submitLabel,
   pending,
+  disabled = false,
   onCancel,
 }: {
   submitLabel: string;
   pending: boolean;
+  /** Blocks saving for a reason the form explains (e.g. a duplicate). */
+  disabled?: boolean;
   onCancel: () => void;
 }) {
   return (
@@ -54,7 +57,7 @@ export function EditorFooter({
       <Button type="button" variant="ghost" onClick={onCancel}>
         Cancel
       </Button>
-      <Button type="submit" disabled={pending} aria-busy={pending}>
+      <Button type="submit" disabled={pending || disabled} aria-busy={pending}>
         {pending && <Loader2Icon className="animate-spin" />}
         {submitLabel}
       </Button>

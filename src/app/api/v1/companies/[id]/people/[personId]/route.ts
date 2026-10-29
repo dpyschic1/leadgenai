@@ -1,4 +1,4 @@
-import { CONFIG_ROLES } from "@/lib/permissions";
+import { EDITOR_ROLES } from "@/lib/permissions";
 import { personSchema } from "@/lib/validation/companies";
 import { authedRoute, parseJsonBody } from "@/server/http/handler";
 import { uuidParam } from "@/server/http/params";
@@ -20,7 +20,7 @@ export const PATCH = authedRoute<Context>(
     await updatePerson(auth, companyId, personId, input);
     return Response.json(await getCompany(auth, companyId));
   },
-  { roles: CONFIG_ROLES },
+  { roles: EDITOR_ROLES },
 );
 
 /** Removes the person from the company; responds with the updated company. */
@@ -30,5 +30,5 @@ export const DELETE = authedRoute<Context>(
     await removePerson(auth, companyId, personId);
     return Response.json(await getCompany(auth, companyId));
   },
-  { roles: CONFIG_ROLES },
+  { roles: EDITOR_ROLES },
 );

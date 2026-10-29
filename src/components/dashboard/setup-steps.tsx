@@ -5,6 +5,7 @@ import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCompanies } from "@/hooks/use-companies";
 import { useServices } from "@/hooks/use-services";
+import { useRecentSignals } from "@/hooks/use-signals";
 import { cn } from "@/lib/utils";
 
 /**
@@ -24,7 +25,8 @@ const STEPS: { title: string; description: string; href?: string }[] = [
   },
   {
     title: "Record a signal",
-    description: "Paste a job post, request or news item. AI pulls out the problem, intent and urgency.",
+    description: "On a company page, paste a job post, request or news item. AI pulls out the intent and urgency.",
+    href: "/companies",
   },
   {
     title: "Review your first opportunity",
@@ -35,9 +37,10 @@ const STEPS: { title: string; description: string; href?: string }[] = [
 export function SetupSteps() {
   const services = useServices();
   const companies = useCompanies();
-  const isPending = services.isPending || companies.isPending;
+  const signals = useRecentSignals(1);
+  const isPending = services.isPending || companies.isPending || signals.isPending;
   // Steps complete in order, so progress is the run of finished steps from the start.
-  const finished = [Boolean(services.data?.length), Boolean(companies.data?.length)];
+  const finished = [Boolean(services.data?.length), Boolean(companies.data?.length), Boolean(signals.data?.length)];
   const firstUnfinished = finished.indexOf(false);
   const completed = firstUnfinished === -1 ? finished.length : firstUnfinished;
 

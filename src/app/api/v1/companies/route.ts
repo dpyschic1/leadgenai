@@ -1,4 +1,4 @@
-import { CONFIG_ROLES } from "@/lib/permissions";
+import { EDITOR_ROLES } from "@/lib/permissions";
 import { companyListQuerySchema, companySchema } from "@/lib/validation/companies";
 import { authedRoute, parseJsonBody, parseQuery } from "@/server/http/handler";
 import { createCompany, listCompanies } from "@/server/services/companies.service";
@@ -13,5 +13,5 @@ export const POST = authedRoute(
     const input = await parseJsonBody(request, companySchema);
     return Response.json(await createCompany(auth, input), { status: 201 });
   },
-  { roles: CONFIG_ROLES },
+  { roles: EDITOR_ROLES },
 );

@@ -1,6 +1,7 @@
 /** Response DTOs shared by the route handlers and the client. Only these shapes leave the server. */
 import type { memberRole } from "@/db/schema";
 import type { CompanyRelationship, LocationType, SeniorityLevel } from "@/lib/domain/people";
+import type { EvidenceLabel, IntentLevel, SignalSource, UrgencyLevel } from "@/lib/domain/signals";
 import type { ScoreWeights } from "@/lib/validation/scoring";
 
 export type UserRole = (typeof memberRole.enumValues)[number];
@@ -28,10 +29,15 @@ export type Me = {
 /** An entry in a global lookup table (service categories, industries, job functions). */
 export type LookupOption = { slug: string; name: string };
 
+export type SignalTypeOption = LookupOption & { categorySlug: string };
+
 export type ReferenceData = {
   serviceCategories: LookupOption[];
   industries: LookupOption[];
   jobFunctions: LookupOption[];
+  /** Taxonomy groups (PRD §10): explicit buying first, negative last. */
+  signalCategories: LookupOption[];
+  signalTypes: SignalTypeOption[];
 };
 
 /** Something the workspace sells, with who it is sold to. Empty targeting lists mean "any". */
@@ -95,4 +101,41 @@ export type CompanyDetail = {
   description: string | null;
   locations: CompanyLocation[];
   people: CompanyPerson[];
+};
+
+export type Signal = {
+  id: string;
+  companyId: string;
+  personId: string | null;
+  signalType: string;
+  intentLevel: IntentLevel;
+  urgency: UrgencyLevel;
+  serviceCategories: string[];
+  summary: string;
+  evidenceLabel: EvidenceLabel;
+  source: SignalSource;
+  confidence: number | null;
+  /** ISO date (YYYY-MM-DD) the underlying event happened or was published. */
+  occurredOn: string;
+  evidence: { sourceUrl: string | null; excerpt: string | null } | null;
+  createdAt: string;
+};
+
+/** AI suggestion for a pasted source; the user reviews it before saving. */
+export type SignalAnalysis = {
+  /** False when the text holds no business signal; the other fields are then best-effort. */
+  isSignal: boolean;
+  /** Null when there is no signal (`isSignal` false). */
+  signalType: string | null;
+  intentLevel: IntentLevel;
+  urgency: UrgencyLevel;
+  serviceCategories: string[];
+  summary: string;
+  /** Verbatim quote from the source; null when the model's quote couldn't be found in it. */
+  excerpt: string | null;
+  evidenceLabel: EvidenceLabel;
+  confidence: number;
+  /** Date mentioned in the source (YYYY-MM-DD), if any. */
+  occurredOn: string | null;
+  model: string;
 };
