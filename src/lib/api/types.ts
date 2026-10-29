@@ -181,4 +181,20 @@ export type OpportunityDetail = OpportunitySummary & {
   signals: OpportunitySignal[];
   contactDetails: CompanyPerson | null;
   scoredAt: string;
+  /** Saved lists this opportunity is on. */
+  listIds: string[];
+};
+
+/** A saved list of opportunities (PRD §8.10), e.g. "Contact today". */
+export type SavedList = {
+  id: string;
+  name: string;
+  opportunityCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SavedListDetail = SavedList & {
+  /** Highest priority first, whatever their status. */
+  items: OpportunitySummary[];
 };

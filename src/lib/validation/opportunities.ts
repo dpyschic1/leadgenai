@@ -8,6 +8,11 @@ export const opportunityListQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
 });
 
+/** CSV export: one saved list (any status), or the feed as filtered by status group and search. */
+export const opportunityExportQuerySchema = opportunityListQuerySchema.extend({
+  listId: z.uuid("Unknown list").optional(),
+});
+
 export const updateOpportunitySchema = z
   .object({
     status: z.enum(OPPORTUNITY_STATUSES).optional(),
@@ -21,5 +26,6 @@ export const updateOpportunitySchema = z
   .refine((value) => value.status !== undefined || value.notes !== undefined, "Nothing to update");
 
 export type OpportunityListQuery = z.input<typeof opportunityListQuerySchema>;
+export type OpportunityExportQuery = z.input<typeof opportunityExportQuerySchema>;
 export type UpdateOpportunityInput = z.input<typeof updateOpportunitySchema>;
 export type UpdateOpportunityValues = z.output<typeof updateOpportunitySchema>;

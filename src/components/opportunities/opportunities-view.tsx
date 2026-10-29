@@ -2,20 +2,17 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { BriefcaseBusinessIcon, CalendarIcon, RadioTowerIcon, SearchIcon, TargetIcon, UserRoundIcon } from "lucide-react";
+import { SearchIcon, TargetIcon } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
-import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useOpportunities } from "@/hooks/use-opportunities";
-import { useLookupNames } from "@/hooks/use-reference-data";
-import type { OpportunitySummary } from "@/lib/api/types";
 import type { StatusGroup } from "@/lib/domain/opportunities";
 import { cn } from "@/lib/utils";
-import { ScoreRing } from "./score-ring";
-import { StatusBadge } from "./status-badge";
+import { ExportButton } from "./export-button";
+import { OpportunityCard } from "./opportunity-card";
 
 const TABS: { group: StatusGroup; label: string }[] = [
   { group: "open", label: "Open" },
@@ -31,8 +28,6 @@ const EMPTY_TAB: Record<StatusGroup, string> = {
   closed: "Nothing lost or dismissed.",
 };
 
-const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-
 export function OpportunitiesView() {
   const [group, setGroup] = useState<StatusGroup>("open");
   const [search, setSearch] = useState("");
@@ -46,6 +41,7 @@ export function OpportunitiesView() {
       <PageHeader
         title="Opportunities"
         description="Companies showing a reason to buy what you sell, ranked by priority. The score ranks who to look at first; it doesn't predict a sale."
+        action={hasAny && <ExportButton query={{ group, q: query || undefined }} disabled={!data.items.length} />}
       />
 
       {data && !hasAny && !query ? (
@@ -104,64 +100,6 @@ export function OpportunitiesView() {
         </>
       )}
     </div>
-  );
-}
-
-function OpportunityCard({ opportunity, rank }: { opportunity: OpportunitySummary; rank: number | null }) {
-  const names = useLookupNames();
-  const latest = opportunity.latestSignalOn && dateFormat.format(new Date(`${opportunity.latestSignalOn}T12:00:00`));
-
-  return (
-    <li>
-      <Link
-        href={`/opportunities/${opportunity.id}`}
-        className="group flex gap-4 rounded-xl border bg-card p-4 transition-shadow hover:shadow-[0_8px_24px_-12px_rgba(27,36,51,0.18)] sm:gap-5 sm:p-5"
-      >
-        <div className="flex flex-col items-center gap-1">
-          <ScoreRing score={opportunity.score} />
-          {rank !== null && <span className="text-xs tabular-nums text-muted-foreground">#{rank}</span>}
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-            <div className="min-w-0">
-              <p className="truncate font-semibold group-hover:text-primary">{opportunity.company.name}</p>
-              <p className="text-sm text-muted-foreground">{names.opportunityType(opportunity.type)}</p>
-            </div>
-            <StatusBadge status={opportunity.status} />
-          </div>
-
-          {opportunity.problem && <p className="mt-2 line-clamp-2 text-sm leading-relaxed">{opportunity.problem}</p>}
-
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            {opportunity.service && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/15 bg-signal-tint px-2 py-0.5 font-medium text-[var(--signal-deep)]">
-                <BriefcaseBusinessIcon className="size-3" />
-                {opportunity.service.name}
-              </span>
-            )}
-            {opportunity.urgency !== "unknown" && <UrgencyBadge level={opportunity.urgency} />}
-            {opportunity.contact && (
-              <span className="inline-flex items-center gap-1">
-                <UserRoundIcon className="size-3.5" />
-                {opportunity.contact.name}
-                {opportunity.contact.title && `, ${opportunity.contact.title}`}
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1">
-              <RadioTowerIcon className="size-3.5" />
-              {opportunity.signalCount} {opportunity.signalCount === 1 ? "signal" : "signals"}
-            </span>
-            {latest && (
-              <span className="inline-flex items-center gap-1">
-                <CalendarIcon className="size-3.5" />
-                Latest {latest}
-              </span>
-            )}
-          </div>
-        </div>
-      </Link>
-    </li>
   );
 }
 

@@ -41,3 +41,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (!response.ok) throw new ApiError(response.status, data as Partial<ApiErrorBody> | null);
   return data as T;
 }
+
+export type DownloadedFile = { blob: Blob; filename: string };
+
+/** Fetches a file from `/api/v1` (e.g. a CSV export). Throws `ApiError` on non-2xx like `apiRequest`. */
+export async function apiDownload(path: string, fallbackName: string): Promise<DownloadedFile> {
+  const response = await fetch(`/api/v1${path}`, { credentials: "same-origin" });
+  if (!response.ok) {
+    const data: unknown = await response.json().catch(() => null);
+    throw new ApiError(response.status, data as Partial<ApiErrorBody> | null);
+  }
+  const filename = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? fallbackName;
+  return { blob: await response.blob(), filename };
+}

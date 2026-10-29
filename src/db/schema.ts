@@ -665,9 +665,12 @@ export const lists = pgTable(
     workspaceId: workspaceRef(),
     name: text().notNull(),
     createdAt: createdAt(),
+    updatedAt: updatedAt(),
   },
   (t) => [
     index("lists_workspace_idx").on(t.workspaceId),
+    // Names are how people pick a list, so two lists can't differ only by letter case.
+    uniqueIndex("lists_workspace_name_uq").on(t.workspaceId, sql`lower(${t.name})`),
     unique("lists_id_workspace_uq").on(t.id, t.workspaceId),
   ],
 );

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeftIcon, Building2Icon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
+import { SaveToListMenu } from "@/components/lists/save-to-list-menu";
 import { SignalTimeline } from "@/components/signals/signal-timeline";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { Button } from "@/components/ui/button";
@@ -88,22 +89,25 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
             </Link>
           </div>
         </div>
-        <div className="sm:w-52">
-          <label htmlFor="status" className="mb-1.5 block text-xs text-muted-foreground">
-            Status
-          </label>
-          <Select value={opportunity.status} onValueChange={(value) => changeStatus(value as OpportunityStatus)} disabled={!canEdit || update.isPending}>
-            <SelectTrigger id="status" className="h-10! w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {OPPORTUNITY_STATUSES.map((status) => (
-                <SelectItem key={status} value={status}>
-                  {STATUS_LABELS[status]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="flex flex-wrap items-end gap-2">
+          {canEdit && <SaveToListMenu opportunity={opportunity} />}
+          <div className="w-full sm:w-52">
+            <label htmlFor="status" className="mb-1.5 block text-xs text-muted-foreground">
+              Status
+            </label>
+            <Select value={opportunity.status} onValueChange={(value) => changeStatus(value as OpportunityStatus)} disabled={!canEdit || update.isPending}>
+              <SelectTrigger id="status" className="h-10! w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {OPPORTUNITY_STATUSES.map((status) => (
+                  <SelectItem key={status} value={status}>
+                    {STATUS_LABELS[status]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </header>
 

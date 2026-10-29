@@ -16,4 +16,8 @@ export const queryKeys = {
   opportunities: ["opportunities"] as const,
   opportunityList: (group: string, search: string) => ["opportunities", "list", group, search] as const,
   opportunity: (id: string) => ["opportunities", "detail", id] as const,
+  /** The saved lists with their counts. */
+  lists: ["lists"] as const,
+  /** One list's opportunities: under the opportunities prefix so re-scores and status changes refresh it. */
+  list: (id: string) => ["opportunities", "saved-list", id] as const,
 };

@@ -64,6 +64,13 @@
       "when": 1793293550684,
       "tag": "0008_opportunity_scored_at",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793299539265,
+      "tag": "0009_lists_unique_name",
+      "breakpoints": true
     }
   ]
 }

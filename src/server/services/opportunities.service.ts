@@ -1,7 +1,7 @@
 import "server-only";
-import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLogs, companies, companyPeople, opportunities, opportunitySignals, people, services } from "@/db/schema";
+import { auditLogs, companies, companyPeople, opportunities, opportunitySignals, people, savedOpportunities, services } from "@/db/schema";
 import type { OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
 import { STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
 import type { OpportunityListQuery, UpdateOpportunityValues } from "@/lib/validation/opportunities";
@@ -25,7 +25,7 @@ const summaryColumns = {
   signalCount: sql<number>`(select count(*)::int from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
 };
 
-type SummaryRow = {
+export type SummaryRow = {
   opportunity: typeof opportunities.$inferSelect;
   companyName: string;
   companyDomain: string | null;
@@ -35,7 +35,8 @@ type SummaryRow = {
   signalCount: number;
 };
 
-function baseQuery() {
+/** Opportunities joined to what a summary shows (company, service, contact). Callers add where/order. */
+export function summaryQuery() {
   return db
     .select(summaryColumns)
     .from(opportunities)
@@ -53,19 +54,12 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
   await refreshStaleScores(auth.workspaceId);
 
   const group: StatusGroup = query.group ?? "open";
-  const pattern = query.q ? `%${query.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : undefined;
-  const search = pattern ? or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern)) : undefined;
+  const search = companySearch(query.q);
 
   const [rows, countRows] = await Promise.all([
-    baseQuery()
-      .where(
-        and(
-          eq(opportunities.workspaceId, auth.workspaceId),
-          inArray(opportunities.status, [...STATUS_GROUPS[group]]),
-          search,
-        ),
-      )
-      .orderBy(sql`${opportunities.opportunityScore} desc nulls last`, desc(opportunities.latestSignalAt), asc(companies.canonicalName))
+    summaryQuery()
+      .where(feedFilter(auth.workspaceId, group, query.q))
+      .orderBy(...priorityOrder())
       .limit(LIST_LIMIT),
     db
       .select({ status: opportunities.status, count: sql<number>`count(*)::int` })
@@ -85,17 +79,45 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
   return { items: rows.map(toSummary), counts };
 }
 
+/** Feed order: highest priority first, unscored last, then freshest evidence, then by name. */
+export function priorityOrder() {
+  return [
+    sql`${opportunities.opportunityScore} desc nulls last`,
+    desc(opportunities.latestSignalAt),
+    asc(companies.canonicalName),
+  ] as const;
+}
+
+/** One status tab of the feed plus an optional company search. Expects `companies` to be joined. */
+export function feedFilter(workspaceId: string, group: StatusGroup, q: string | undefined): SQL | undefined {
+  return and(
+    eq(opportunities.workspaceId, workspaceId),
+    inArray(opportunities.status, [...STATUS_GROUPS[group]]),
+    companySearch(q),
+  );
+}
+
+function companySearch(q: string | undefined): SQL | undefined {
+  if (!q) return undefined;
+  const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  return or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern));
+}
+
 export async function getOpportunity(auth: AuthContext, opportunityId: string): Promise<OpportunityDetail> {
   const row = await findRow(auth, opportunityId);
   const { opportunity } = row;
 
-  const [links, companySignals, companyPeople] = await Promise.all([
+  const [links, companySignals, companyPeople, saved] = await Promise.all([
     db
       .select({ signalId: opportunitySignals.signalId, role: opportunitySignals.role })
       .from(opportunitySignals)
       .where(eq(opportunitySignals.opportunityId, opportunity.id)),
     listCompanySignals(auth, opportunity.companyId),
     loadCompanyPeople(auth.workspaceId, opportunity.companyId),
+    db
+      .select({ listId: savedOpportunities.listId })
+      .from(savedOpportunities)
+      .where(and(eq(savedOpportunities.opportunityId, opportunity.id), eq(savedOpportunities.workspaceId, auth.workspaceId))),
   ]);
   const roleOf = new Map(links.map((l) => [l.signalId, l.role]));
   const roleOrder = { primary: 0, corroborating: 1, negative: 2 } as const;
@@ -111,6 +133,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .sort((a, b) => roleOrder[a.role] - roleOrder[b.role] || b.occurredOn.localeCompare(a.occurredOn)),
     contactDetails: companyPeople.find((p) => p.id === opportunity.primaryPersonId) ?? null,
     scoredAt: opportunity.scoredAt.toISOString(),
+    listIds: saved.map((s) => s.listId),
   };
 }
 
@@ -143,21 +166,19 @@ export async function updateOpportunity(
   return getOpportunity(auth, opportunityId);
 }
 
-/** Re-scores one opportunity now (e.g. before showing it if its score has aged). */
-
 async function findRow(auth: AuthContext, opportunityId: string): Promise<SummaryRow> {
-  const [row] = await baseQuery()
+  const [row] = await summaryQuery()
     .where(and(eq(opportunities.id, opportunityId), eq(opportunities.workspaceId, auth.workspaceId)))
     .limit(1);
   if (!row) throw new AppError("NOT_FOUND", "Opportunity not found.");
   return row;
 }
 
-function hasFactors(value: unknown): value is Record<ScoreFactor, OpportunityFactor> {
+export function hasFactors(value: unknown): value is Record<ScoreFactor, OpportunityFactor> {
   return typeof value === "object" && value !== null && "intent" in value;
 }
 
-function toSummary(row: SummaryRow): OpportunitySummary {
+export function toSummary(row: SummaryRow): OpportunitySummary {
   const { opportunity } = row;
   const factors = hasFactors(opportunity.scoreFactors) ? opportunity.scoreFactors : null;
   return {
