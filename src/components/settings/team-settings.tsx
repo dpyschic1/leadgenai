@@ -129,7 +129,8 @@ function MemberRow({
       <span className="grid size-9 shrink-0 place-items-center rounded-full bg-foreground text-xs font-semibold text-background">
         {initials(displayName)}
       </span>
-      <div className="min-w-0 flex-1">
+      {/* A minimum width so on phones the role controls wrap below instead of squeezing the name. */}
+      <div className="min-w-0 flex-1 basis-48">
         <p className="truncate text-sm font-medium">
           {displayName}
           {isYou && <span className="ml-2 rounded-full bg-secondary px-2 py-0.5 text-xs font-normal text-muted-foreground">You</span>}
@@ -141,7 +142,7 @@ function MemberRow({
         </p>
       </div>
       {manageable ? (
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 pl-13 sm:pl-0">
           <RoleSelect
             value={member.role as AssignableRole}
             aria-label={`Role of ${displayName}`}
@@ -172,7 +173,7 @@ function MemberRow({
           </DropdownMenu>
         </div>
       ) : (
-        <span className="rounded-full border px-2.5 py-0.5 text-xs font-medium">{ROLE_LABELS[member.role]}</span>
+        <span className="ml-13 rounded-full border px-2.5 py-0.5 text-xs font-medium sm:ml-0">{ROLE_LABELS[member.role]}</span>
       )}
     </li>
   );

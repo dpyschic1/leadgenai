@@ -56,6 +56,26 @@ npm run dev               # http://localhost:3000
 
 Health check: `GET /api/v1/health`.
 
+### Demo data
+
+```sh
+npm run db:seed:demo
+```
+
+Creates the workspace **Northwind Digital (demo)**: sign in as `demo@leadgenai.example` / `Demo@12345`
+(teammate: `priya@leadgenai.example`, same password). It covers the three MVP workflows from the
+Product Specification (§13.1) with fictional companies (`.example` domains):
+
+| Workflow | Companies | Shows |
+| --- | --- | --- |
+| Website / digital | Harbourside Legal, BrightSmile Dental, Calder & Co | explicit vendor search, stacked signals, a weak (low-score) rebrand |
+| Staff augmentation | Ledgerline Payments, Freightly, Quillstack | hiring surge, long-open vacancy, a hiring freeze lowering the score |
+| Startup / MVP | Medora Health, Tidepool Robotics | seed funding + a direct request for a development partner, a new startup |
+
+It also adds lists, opportunities in progress (contacted, meeting), team feedback, and people with
+different identity and email-verification states. Re-running it replaces the demo workspace and
+leaves every other workspace alone.
+
 ### Backup and restore
 
 ```sh
@@ -77,6 +97,7 @@ Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (form
 | `npm run db:generate` | Generate a migration from `src/db/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:studio` | Browse the database with Drizzle Studio |
+| `npm run db:seed:demo` | Create (or reset) the demo workspace |
 
 ## Architecture
 
