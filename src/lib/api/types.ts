@@ -1,5 +1,6 @@
 /** Response DTOs shared by the route handlers and the client. Only these shapes leave the server. */
 import type { memberRole, signalRole } from "@/db/schema";
+import type { FeedbackVerdict } from "@/lib/domain/feedback";
 import type { OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
 import type { CompanyRelationship, LocationType, SeniorityLevel } from "@/lib/domain/people";
 import type { EvidenceLabel, IntentLevel, SignalSource, UrgencyLevel } from "@/lib/domain/signals";
@@ -204,6 +205,8 @@ export type OpportunitySummary = {
   latestSignalOn: string | null;
   signalCount: number;
   contact: { id: string; name: string; title: string | null } | null;
+  /** Who on the team judged it and how, newest first; the card shows these as "1 good fit" / "2 flagged". */
+  feedbackVotes: FeedbackVote[];
   updatedAt: string;
 };
 
@@ -224,6 +227,26 @@ export type OpportunityDetail = OpportunitySummary & {
   scoredAt: string;
   /** Saved lists this opportunity is on. */
   listIds: string[];
+  /** The team's verdicts, newest first. */
+  feedback: OpportunityFeedback[];
+};
+
+/** A teammate's verdict as the feed shows it: who, and what they said. */
+export type FeedbackVote = { name: string; verdict: FeedbackVerdict };
+
+/** One teammate's verdict on an opportunity, with what was being judged at the time. */
+export type OpportunityFeedback = {
+  id: string;
+  verdict: FeedbackVerdict;
+  reason: string | null;
+  author: { id: string; name: string } | null;
+  /** Given by the signed-in user, who can change or remove it. */
+  isMine: boolean;
+  /** The suggested contact, matched service and score when the verdict was given. */
+  personName: string | null;
+  serviceName: string | null;
+  scoreAtFeedback: number | null;
+  updatedAt: string;
 };
 
 /** What the AI search understood: filters the user can inspect and change, plus what it couldn't express. */

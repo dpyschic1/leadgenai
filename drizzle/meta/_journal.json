@@ -85,6 +85,13 @@
       "when": 1793307665821,
       "tag": "0011_workspace_invitations",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793627224900,
+      "tag": "0012_opportunity_feedback",
+      "breakpoints": true
     }
   ]
 }

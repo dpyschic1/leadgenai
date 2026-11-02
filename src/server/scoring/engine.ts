@@ -74,6 +74,8 @@ export type EngineInput = {
   weights: ScoreWeights;
   labels: EngineLabels;
   now: Date;
+  /** Matches the team flagged as wrong (feedback): never suggested again for this company. */
+  rejected?: { personIds: string[]; serviceIds: string[] };
 };
 
 export type FactorResult = { score: number; weight: number; contribution: number; reasons: string[] };
@@ -201,9 +203,20 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
   const lead = ranked[0];
   const latestSignalAt = new Date(Math.max(...positives.map((s) => s.occurredAt.getTime())));
 
-  const best = pickService(input.services, positives, labels);
+  const rejectedServices = new Set(input.rejected?.serviceIds);
+  const rejectedPeople = new Set(input.rejected?.personIds);
+  const candidates = input.services.filter((s) => !rejectedServices.has(s.id));
+  const skipped = input.services
+    .filter((s) => rejectedServices.has(s.id))
+    .map((s) => `Not matched to ${s.name}: your team flagged it as the wrong service`);
+
+  const best = pickService(candidates, positives, labels);
   const service = best?.service ?? null;
-  const person = pickPerson(input.people, lead, service);
+  const person = pickPerson(
+    input.people.filter((p) => !rejectedPeople.has(p.id)),
+    lead,
+    service,
+  );
 
   const raw: Record<ScoreFactor, { score: number; reasons: string[] }> = {
     intent: intentFactor(ranked, negatives, now, labels),
@@ -211,8 +224,12 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
     recency: recencyFactor(latestSignalAt, now),
     identity: identityFactor(input.company, person),
     serviceFit: best
-      ? { score: best.fit, reasons: best.reasons }
-      : { score: 0, reasons: noServiceReason(input.services, positives, labels) },
+      ? { score: best.fit, reasons: [...best.reasons, ...skipped] }
+      : {
+          score: 0,
+          // Explain both the flagged services and why none of the others fit.
+          reasons: [...skipped, ...(candidates.length > 0 || skipped.length === 0 ? noServiceReason(candidates, positives, labels) : [])],
+        },
   };
 
   const factors = Object.fromEntries(

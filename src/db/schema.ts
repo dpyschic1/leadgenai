@@ -34,6 +34,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { FEEDBACK_VERDICTS } from "@/lib/domain/feedback";
 import { MEMBER_ROLES } from "@/lib/domain/members";
 import { OPPORTUNITY_STATUSES } from "@/lib/domain/opportunities";
 import { COMPANY_RELATIONSHIPS, LOCATION_TYPES, SENIORITY_LEVELS } from "@/lib/domain/people";
@@ -88,6 +89,9 @@ export const signalRole = pgEnum("signal_role", ["primary", "corroborating", "ne
 
 /** Opportunity lifecycle (SRS Appendix B). */
 export const opportunityStatus = pgEnum("opportunity_status", OPPORTUNITY_STATUSES);
+
+/** A teammate's quality verdict on an opportunity. */
+export const feedbackVerdict = pgEnum("feedback_verdict", FEEDBACK_VERDICTS);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -679,6 +683,42 @@ export const opportunitySignals = pgTable(
       name: "opportunity_signals_signal_fk",
       columns: [t.signalId, t.workspaceId],
       foreignColumns: [signals.id, signals.workspaceId],
+    }).onDelete("cascade"),
+  ],
+);
+
+/**
+ * A teammate's verdict on an opportunity (launch checklist: users flag incorrect matches and
+ * opportunity quality). Each person has at most one opinion (good fit / not relevant) and one
+ * wrong-company flag per opportunity, plus one flag per contact or service they rejected, so
+ * flagging a second wrong contact doesn't bring back the first. It records what was judged at
+ * that moment, so it stays a true label for learning later (PRD §21) after re-scoring.
+ */
+export const opportunityFeedback = pgTable(
+  "opportunity_feedback",
+  {
+    id: id(),
+    workspaceId: uuid().notNull(),
+    opportunityId: uuid().notNull(),
+    userId: uuid().references(() => users.id, { onDelete: "set null" }),
+    verdict: feedbackVerdict().notNull(),
+    reason: text(),
+    /** The contact this verdict was about; for wrong_person the engine stops suggesting them. */
+    personId: uuid().references(() => people.id, { onDelete: "set null" }),
+    /** The matched service; for wrong_service the engine stops matching it. */
+    serviceId: uuid().references(() => services.id, { onDelete: "set null" }),
+    /** Snapshot: the opportunity score when the verdict was given. */
+    scoreAtFeedback: score(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("opportunity_feedback_opportunity_idx").on(t.opportunityId),
+    index("opportunity_feedback_workspace_idx").on(t.workspaceId),
+    foreignKey({
+      name: "opportunity_feedback_opportunity_fk",
+      columns: [t.opportunityId, t.workspaceId],
+      foreignColumns: [opportunities.id, opportunities.workspaceId],
     }).onDelete("cascade"),
   ],
 );

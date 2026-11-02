@@ -7,20 +7,23 @@ import {
   companyLocations,
   companyPeople,
   opportunities,
+  opportunityFeedback,
   opportunitySignals,
   people,
   savedOpportunities,
   services,
   signals,
   signalTypes,
+  users,
 } from "@/db/schema";
-import type { OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
+import type { FeedbackVote, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
 import { STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
 import type { OpportunityFilters, OpportunityListQuery, UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import type { ScoreFactor } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { refreshStaleScores } from "@/server/scoring/rescore";
+import { listFeedback } from "./feedback.service";
 import { loadCompanyPeople } from "./people.service";
 import { listCompanySignals } from "./signals.service";
 
@@ -35,6 +38,11 @@ const summaryColumns = {
   contactName: people.name,
   contactTitle: companyPeople.title,
   signalCount: sql<number>`(select count(*)::int from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
+  feedbackVotes: sql<FeedbackVote[]>`(
+    select coalesce(json_agg(json_build_object('name', coalesce(${users.name}, ${users.email}, 'A former teammate'), 'verdict', ${opportunityFeedback.verdict}) order by ${opportunityFeedback.updatedAt} desc), '[]')
+    from ${opportunityFeedback} left join ${users} on ${users.id} = ${opportunityFeedback.userId}
+    where ${opportunityFeedback.opportunityId} = ${opportunities.id}
+  )`,
 };
 
 export type SummaryRow = {
@@ -45,6 +53,7 @@ export type SummaryRow = {
   contactName: string | null;
   contactTitle: string | null;
   signalCount: number;
+  feedbackVotes: FeedbackVote[];
 };
 
 /** Opportunities joined to what a summary shows (company, service, contact). Callers add where/order. */
@@ -149,7 +158,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
   const row = await findRow(auth, opportunityId);
   const { opportunity } = row;
 
-  const [links, companySignals, companyPeople, saved] = await Promise.all([
+  const [links, companySignals, companyPeople, saved, feedback] = await Promise.all([
     db
       .select({ signalId: opportunitySignals.signalId, role: opportunitySignals.role })
       .from(opportunitySignals)
@@ -160,6 +169,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .select({ listId: savedOpportunities.listId })
       .from(savedOpportunities)
       .where(and(eq(savedOpportunities.opportunityId, opportunity.id), eq(savedOpportunities.workspaceId, auth.workspaceId))),
+    listFeedback(auth, opportunity.id),
   ]);
   const roleOf = new Map(links.map((l) => [l.signalId, l.role]));
   const roleOrder = { primary: 0, corroborating: 1, negative: 2 } as const;
@@ -176,6 +186,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
     contactDetails: companyPeople.find((p) => p.id === opportunity.primaryPersonId) ?? null,
     scoredAt: opportunity.scoredAt.toISOString(),
     listIds: saved.map((s) => s.listId),
+    feedback,
   };
 }
 
@@ -247,6 +258,7 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
       opportunity.primaryPersonId && row.contactName
         ? { id: opportunity.primaryPersonId, name: row.contactName, title: row.contactTitle }
         : null,
+    feedbackVotes: row.feedbackVotes,
     updatedAt: opportunity.updatedAt.toISOString(),
   };
 }

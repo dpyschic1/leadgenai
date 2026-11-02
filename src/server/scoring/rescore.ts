@@ -5,12 +5,14 @@ import {
   companies,
   companyLocations,
   opportunities,
+  opportunityFeedback,
   opportunitySignals,
   signalEvidence,
   signalServiceCategories,
   signals,
   signalTypes,
 } from "@/db/schema";
+import { CORRECTING_VERDICTS } from "@/lib/domain/feedback";
 import { getReferenceData } from "@/server/services/reference-data.service";
 import { loadCompanyPeople } from "@/server/services/people.service";
 import { loadWeights } from "@/server/services/scoring.service";
@@ -147,7 +149,7 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
     .limit(1);
   if (!company) return null;
 
-  const [signalRows, people, services, weights, ref] = await Promise.all([
+  const [signalRows, people, services, weights, ref, flags] = await Promise.all([
     db
       .select({ signal: signals, category: signalTypes.categorySlug })
       .from(signals)
@@ -157,6 +159,18 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
     loadServices(workspaceId),
     loadWeights(workspaceId),
     getReferenceData(),
+    // Contacts and services the team flagged as wrong for this company's opportunity.
+    db
+      .select({ verdict: opportunityFeedback.verdict, personId: opportunityFeedback.personId, serviceId: opportunityFeedback.serviceId })
+      .from(opportunityFeedback)
+      .innerJoin(opportunities, eq(opportunities.id, opportunityFeedback.opportunityId))
+      .where(
+        and(
+          eq(opportunities.companyId, companyId),
+          eq(opportunityFeedback.workspaceId, workspaceId),
+          inArray(opportunityFeedback.verdict, [...CORRECTING_VERDICTS]),
+        ),
+      ),
   ]);
 
   const ids = signalRows.map((r) => r.signal.id);
@@ -213,6 +227,10 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
       weights,
       labels,
       now: new Date(),
+      rejected: {
+        personIds: flags.flatMap((f) => (f.verdict === "wrong_person" && f.personId ? [f.personId] : [])),
+        serviceIds: flags.flatMap((f) => (f.verdict === "wrong_service" && f.serviceId ? [f.serviceId] : [])),
+      },
     },
   };
 }

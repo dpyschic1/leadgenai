@@ -6,6 +6,7 @@ import { BriefcaseBusinessIcon, CalendarIcon, RadioTowerIcon, UserRoundIcon } fr
 import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import type { OpportunitySummary } from "@/lib/api/types";
+import { FeedbackVotes } from "./feedback-votes";
 import { ScoreRing } from "./score-ring";
 import { StatusBadge } from "./status-badge";
 
@@ -78,6 +79,7 @@ export function OpportunityCard({
               Latest {latest}
             </span>
           )}
+          <FeedbackVotes votes={opportunity.feedbackVotes} />
         </div>
       </div>
     </li>

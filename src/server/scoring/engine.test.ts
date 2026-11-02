@@ -131,6 +131,33 @@ describe("scoreCompany", () => {
     expect(result.factors.icpFit.reasons).toEqual(["No matching service to compare against"]);
   });
 
+  it("never matches a service the team flagged as wrong, and says so", () => {
+    const result = score({ rejected: { personIds: [], serviceIds: ["web"] } });
+    expect(result.serviceId).toBeNull();
+    expect(result.factors.serviceFit.reasons).toEqual([
+      "Not matched to Website redesign: your team flagged it as the wrong service",
+      "None of your services offer what the signals point to: web_development, seo",
+    ]);
+
+    const fallback = score({ signals: [signal({ serviceCategories: ["web_development", "staff_augmentation"] })], rejected: { personIds: [], serviceIds: ["web"] } });
+    expect(fallback.serviceId).toBe("dev");
+    expect(fallback.factors.serviceFit.reasons).toContain("Not matched to Website redesign: your team flagged it as the wrong service");
+  });
+
+  it("suggests someone else when the team flagged the contact as wrong", () => {
+    const people = [
+      ...base.people,
+      { id: "p2", name: "Tom Reid", seniority: "manager" as const, jobFunction: "marketing", hasEmail: true, hasPhone: true },
+    ];
+    expect(score({ people }).primaryPersonId).toBe("p1");
+    expect(score({ people, rejected: { personIds: ["p1"], serviceIds: [] } }).primaryPersonId).toBe("p2");
+    // Even when the flagged person is named on the lead signal.
+    expect(
+      score({ people, signals: [signal({ personId: "p1" })], rejected: { personIds: ["p1"], serviceIds: [] } }).primaryPersonId,
+    ).toBe("p2");
+    expect(score({ rejected: { personIds: ["p1"], serviceIds: [] } }).primaryPersonId).toBeNull();
+  });
+
   it("matches no service when the signals point to no category", () => {
     const result = score({ signals: [signal({ serviceCategories: [] })] });
     expect(result.serviceId).toBeNull();

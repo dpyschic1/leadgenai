@@ -20,6 +20,7 @@ import type { OpportunityDetail } from "@/lib/api/types";
 import { OPPORTUNITY_STATUSES, STATUS_LABELS, type OpportunityStatus } from "@/lib/domain/opportunities";
 import { SENIORITY_LABELS } from "@/lib/domain/people";
 import { EDITOR_ROLES } from "@/lib/permissions";
+import { FeedbackPanel } from "./feedback-panel";
 import { ScoreBreakdown } from "./score-breakdown";
 import { ScoreRing } from "./score-ring";
 
@@ -151,6 +152,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
 
         <aside className="space-y-6">
           <ContactCard opportunity={opportunity} />
+          <FeedbackPanel opportunity={opportunity} canEdit={canEdit} />
           <NotesCard key={opportunity.notes ?? ""} opportunity={opportunity} canEdit={canEdit} />
         </aside>
       </div>

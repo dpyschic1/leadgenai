@@ -1,4 +1,5 @@
 import type { StatusGroup } from "@/lib/domain/opportunities";
+import type { FeedbackInput } from "@/lib/validation/feedback";
 import type { InterpretSearchInput, OpportunityFilters, UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { apiRequest } from "./client";
 import type { InterpretedSearch, OpportunityDetail, OpportunityList } from "./types";
@@ -19,6 +20,11 @@ export const opportunitiesApi = {
   get: (id: string, signal?: AbortSignal) => apiRequest<OpportunityDetail>(`/opportunities/${id}`, { signal }),
   update: (id: string, input: UpdateOpportunityValues) =>
     apiRequest<OpportunityDetail>(`/opportunities/${id}`, { method: "PATCH", body: input }),
+  /** Gives the signed-in user's verdict; resolves with the opportunity, re-matched if it corrects it. */
+  giveFeedback: (id: string, input: FeedbackInput) =>
+    apiRequest<OpportunityDetail>(`/opportunities/${id}/feedback`, { method: "POST", body: input }),
+  removeFeedback: (id: string, feedbackId: string) =>
+    apiRequest<OpportunityDetail>(`/opportunities/${id}/feedback/${feedbackId}`, { method: "DELETE" }),
   /** AI search: turns a plain-language request into filters. */
   interpret: (input: InterpretSearchInput) =>
     apiRequest<InterpretedSearch>("/opportunities/interpret", { method: "POST", body: input }),
