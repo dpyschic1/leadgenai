@@ -5,8 +5,9 @@ import * as schema from "./schema";
 
 const globalForDb = globalThis as unknown as { pg?: ReturnType<typeof postgres> };
 
-// Reuse one connection pool across hot reloads in development.
-const client = globalForDb.pg ?? postgres(process.env.DATABASE_URL!);
+// Reuse one connection pool across hot reloads in development. Prepared statements are off because
+// hosted poolers (e.g. Neon's PgBouncer, transaction mode) don't keep them between transactions.
+const client = globalForDb.pg ?? postgres(process.env.DATABASE_URL!, { prepare: false });
 if (process.env.NODE_ENV !== "production") globalForDb.pg = client;
 
 export const db = drizzle(client, { schema, casing: "snake_case" });

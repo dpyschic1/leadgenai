@@ -7,7 +7,8 @@ export default defineConfig({
   dialect: "postgresql",
   casing: "snake_case",
   dbCredentials: {
-    url: process.env.DATABASE_URL!,
+    // Migrations need a direct connection; hosted databases (Neon) give a separate unpooled URL.
+    url: process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL!,
   },
   strict: true,
 });
