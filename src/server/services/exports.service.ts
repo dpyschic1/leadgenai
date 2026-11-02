@@ -17,7 +17,6 @@ import {
   signals,
 } from "@/db/schema";
 import { toCsv, type CsvValue } from "@/lib/csv";
-import type { StatusGroup } from "@/lib/domain/opportunities";
 import type { OpportunityExportQuery } from "@/lib/validation/opportunities";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
@@ -106,8 +105,8 @@ export type OpportunityExport = { filename: string; csv: string; count: number }
 export async function exportOpportunities(auth: AuthContext, query: OpportunityExportQuery): Promise<OpportunityExport> {
   await refreshStaleScores(auth.workspaceId);
 
-  const list = query.listId ? await findList(auth, query.listId) : null;
-  const group: StatusGroup = query.group ?? "open";
+  const { listId, group, ...filters } = query;
+  const list = listId ? await findList(auth, listId) : null;
 
   const base = db
     .select(exportColumns)
@@ -125,7 +124,7 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
     ? base
         .innerJoin(savedOpportunities, eq(savedOpportunities.opportunityId, opportunities.id))
         .where(and(eq(savedOpportunities.listId, list.id), eq(opportunities.workspaceId, auth.workspaceId)))
-    : base.where(feedFilter(auth.workspaceId, group, query.q))
+    : base.where(feedFilter(auth.workspaceId, group, filters))
   )
     .orderBy(...priorityOrder())
     .limit(EXPORT_LIMIT);
@@ -136,7 +135,7 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
     action: "opportunities.exported",
     entityType: list ? "list" : "opportunity",
     entityId: list?.id,
-    metadata: { format: "csv", count: rows.length, ...(list ? { listId: list.id } : { group, q: query.q ?? null }) },
+    metadata: { format: "csv", count: rows.length, ...(list ? { listId: list.id } : { group, filters }) },
   });
 
   const csv = toCsv(

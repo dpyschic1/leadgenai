@@ -50,7 +50,7 @@ function ListDetailContent({ list }: { list: SavedListDetail }) {
         </div>
         {canEdit && (
           <div className="flex items-center gap-2">
-            <ExportButton query={{ listId: list.id }} disabled={list.items.length === 0} />
+            <ExportButton request={{ listId: list.id }} disabled={list.items.length === 0} />
             <Button variant="outline" onClick={() => setRenaming(true)}>
               <PencilIcon />
               Rename

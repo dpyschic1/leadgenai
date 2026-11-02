@@ -1,3 +1,5 @@
+import type { OpportunityFilters } from "@/lib/validation/opportunities";
+
 /** Central registry of TanStack Query keys, so invalidation never relies on retyped arrays. */
 export const queryKeys = {
   me: ["me"] as const,
@@ -17,7 +19,7 @@ export const queryKeys = {
   recentSignals: (limit: number) => ["signals", "recent", limit] as const,
   /** Prefix of every opportunity query; invalidate it after anything that changes scores. */
   opportunities: ["opportunities"] as const,
-  opportunityList: (group: string, search: string) => ["opportunities", "list", group, search] as const,
+  opportunityList: (group: string, filters: OpportunityFilters) => ["opportunities", "list", group, filters] as const,
   opportunity: (id: string) => ["opportunities", "detail", id] as const,
   /** The saved lists with their counts. */
   lists: ["lists"] as const,

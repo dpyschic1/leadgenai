@@ -1,15 +1,17 @@
-import type { OpportunityExportQuery } from "@/lib/validation/opportunities";
+import type { StatusGroup } from "@/lib/domain/opportunities";
+import type { OpportunityFilters } from "@/lib/validation/opportunities";
 import { apiDownload } from "./client";
+import { setFilterParams } from "./opportunities";
+
+/** What to export: one saved list, or the feed exactly as filtered on screen. */
+export type ExportRequest = { listId: string } | { group: StatusGroup; filters: OpportunityFilters };
 
 export const exportsApi = {
-  /** CSV of one saved list, or of the feed filtered by status group and search. */
-  opportunities: (query: OpportunityExportQuery) => {
-    const params = new URLSearchParams();
-    if (query.listId) params.set("listId", query.listId);
-    else {
-      if (query.group) params.set("group", query.group);
-      if (query.q) params.set("q", query.q);
-    }
+  opportunities: (request: ExportRequest) => {
+    const params =
+      "listId" in request
+        ? new URLSearchParams({ listId: request.listId })
+        : setFilterParams(new URLSearchParams({ group: request.group }), request.filters);
     return apiDownload(`/exports/opportunities?${params}`, "opportunities.csv");
   },
 };

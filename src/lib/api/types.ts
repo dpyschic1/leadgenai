@@ -3,6 +3,7 @@ import type { memberRole, signalRole } from "@/db/schema";
 import type { OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
 import type { CompanyRelationship, LocationType, SeniorityLevel } from "@/lib/domain/people";
 import type { EvidenceLabel, IntentLevel, SignalSource, UrgencyLevel } from "@/lib/domain/signals";
+import type { OpportunityFilters } from "@/lib/validation/opportunities";
 import type { ScoreFactor, ScoreWeights } from "@/lib/validation/scoring";
 
 export type UserRole = (typeof memberRole.enumValues)[number];
@@ -223,6 +224,13 @@ export type OpportunityDetail = OpportunitySummary & {
   scoredAt: string;
   /** Saved lists this opportunity is on. */
   listIds: string[];
+};
+
+/** What the AI search understood: filters the user can inspect and change, plus what it couldn't express. */
+export type InterpretedSearch = {
+  filters: OpportunityFilters;
+  /** Parts of the request no filter covers, e.g. "React experience". */
+  unmatched: string[];
 };
 
 /** A saved list of opportunities (PRD §8.10), e.g. "Contact today". */

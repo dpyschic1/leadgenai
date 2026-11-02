@@ -19,10 +19,12 @@ export const RATE_LIMITS = {
   register: { limit: 5, windowSeconds: 60 * 60 },
   /** Per IP: accepting with an existing account checks its password, so it's limited like sign-in. */
   acceptInvitation: { limit: 10, windowSeconds: 15 * 60 },
-  /** Per user. */
+  /** Per user: AI signal analysis. */
   aiAnalysis: { limit: 30, windowSeconds: 60 * 60 },
-  /** Per workspace: the AI provider's daily quota is shared by everyone. */
-  aiAnalysisWorkspace: { limit: 200, windowSeconds: 24 * 60 * 60 },
+  /** Per user: AI search (short requests, so cheaper than analysis). */
+  aiSearch: { limit: 60, windowSeconds: 60 * 60 },
+  /** Per workspace, across every AI feature: the AI provider's daily quota is shared by everyone. */
+  aiWorkspace: { limit: 300, windowSeconds: 24 * 60 * 60 },
   /** Per user. */
   export: { limit: 30, windowSeconds: 60 * 60 },
 } as const satisfies Record<string, { limit: number; windowSeconds: number }>;

@@ -19,22 +19,51 @@ Specs live in `docs/`:
 ## Stack
 
 - Next.js 16 (App Router, Cache Components), React 19, TypeScript, Tailwind CSS 4
-- PostgreSQL 17 via Docker Compose
+- PostgreSQL 17 (installed locally)
 - Drizzle ORM + drizzle-kit migrations, `postgres` driver, Zod
 
 ## Getting started
 
-Requires Node 22+ and Docker Desktop.
+Requires Node 22+ and PostgreSQL 17.
+
+### 1. Install PostgreSQL 17
+
+Download the installer from [postgresql.org/download/windows](https://www.postgresql.org/download/windows/)
+(EDB installer, **17.x**, Windows x86-64; the file is `postgresql-17.x-…-windows-x64.exe`, not `pgadmin4-…`).
+In the installer keep **PostgreSQL Server** and **Command Line Tools**, set a password for the
+`postgres` superuser and note the **port** you choose (default `5432`). It runs as the Windows
+service `postgresql-x64-17` and starts with Windows. pgAdmin 4 is the optional graphical tool.
+
+### 2. Create the app's login and database
+
+In pgAdmin (Login/Group Roles → Create, then Databases → Create) or with `psql`:
+
+```sh
+psql -U postgres -p <port> -c "CREATE ROLE leadgenai LOGIN PASSWORD 'leadgenai';"
+psql -U postgres -p <port> -c "CREATE DATABASE leadgenai OWNER leadgenai;"
+```
+
+`psql` lives in `C:\Program Files\PostgreSQL\17\bin`; add that folder to `PATH` to run it by name.
+
+### 3. Configure and run
 
 ```sh
 npm install
-cp .env.example .env      # DATABASE_URL for the local container
-npm run db:up             # start Postgres
-npm run db:migrate        # apply migrations
+cp .env.example .env      # set DATABASE_URL's port to the one PostgreSQL listens on
+npm run db:migrate        # create the tables and reference data
 npm run dev               # http://localhost:3000
 ```
 
 Health check: `GET /api/v1/health`.
+
+### Backup and restore
+
+```sh
+pg_dump -U leadgenai -h localhost -p <port> -d leadgenai -Fc -f leadgenai.dump
+pg_restore -U leadgenai -h localhost -p <port> -d leadgenai --no-owner leadgenai.dump   # into an empty database
+```
+
+Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (format *Custom*).
 
 ## Scripts
 
@@ -44,7 +73,7 @@ Health check: `GET /api/v1/health`.
 | `npm run build` | Production build |
 | `npm run lint` / `npm run typecheck` | Static checks |
 | `npm test` / `npm run test:watch` | Unit tests (Vitest) |
-| `npm run db:up` | Start Postgres (Docker) |
+| `npm run test:integration` | Database tests (tenant isolation, team, filters); need the database from `.env`, and clean up after themselves |
 | `npm run db:generate` | Generate a migration from `src/db/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:studio` | Browse the database with Drizzle Studio |
@@ -94,12 +123,12 @@ The schema (`src/db/schema.ts`) is normalized so post-MVP features can be added 
 
 | Area | Tables |
 | --- | --- |
-| Identity & tenancy | `users` (login identity), `workspaces`, `workspace_members` (role per workspace), `sessions` |
+| Identity & tenancy | `users` (login identity), `workspaces`, `workspace_members` (role per workspace), `workspace_invitations`, `sessions` |
 | Entities | `companies`, `company_locations`, `people`, `contact_points`, `company_people` (title, seniority, job function) |
 | Signals | `signals`, `signal_evidence`, `signal_service_categories` |
 | Customer config | `services` + `service_service_categories`, `service_target_industries`, `service_target_job_functions`, `service_target_countries`; `scoring_profiles`, `recipes` |
 | Opportunities | `opportunities`, `opportunity_signals`, `lists`, `saved_opportunities` |
-| Governance | `audit_logs` |
+| Governance | `audit_logs`, `rate_limits` |
 | Reference data (global, seeded) | `signal_categories`, `signal_types`, `service_categories`, `industries`, `job_functions`, `opportunity_types` |
 
 Rules:

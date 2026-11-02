@@ -6,6 +6,7 @@ import { users, workspaces } from "@/db/schema";
 import { listSchema } from "@/lib/validation/lists";
 import { companySchema, personSchema } from "@/lib/validation/companies";
 import { serviceSchema } from "@/lib/validation/services";
+import { opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
 import { signalSchema, todayIso } from "@/lib/validation/signals";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
@@ -47,6 +48,8 @@ import {
  */
 
 const run = randomUUID().slice(0, 8);
+/** The open tab with no filters, parsed the way the route parses it. */
+const openFeed = opportunityListQuerySchema.parse({ group: "open" });
 const service = serviceSchema.parse({
   name: "MVP Development",
   description: "",
@@ -133,7 +136,7 @@ beforeAll(async () => {
   a.personId = (await listCompanyPeople(a.auth, a.companyId))[0].id;
   a.signalId = (await createSignal(a.auth, a.companyId, signal(a.personId))).id;
   await rescoreCompany(a.auth.workspaceId, a.companyId);
-  a.opportunityId = (await listOpportunities(a.auth, { group: "open" })).items[0].id;
+  a.opportunityId = (await listOpportunities(a.auth, openFeed)).items[0].id;
   a.listId = (await createList(a.auth, listSchema.parse({ name: "Contact today" }))).id;
   await addToList(a.auth, a.listId, a.opportunityId);
 
@@ -154,13 +157,13 @@ describe("another workspace's lists show none of A's data", () => {
     expect((await listCompanies(b)).map((c) => c.id)).toEqual([bCompanyId]);
     expect(await listServices(b)).toEqual([]);
     expect(await listRecentSignals(b, 50)).toEqual([]);
-    expect((await listOpportunities(b, { group: "open" })).items).toEqual([]);
+    expect((await listOpportunities(b, openFeed)).items).toEqual([]);
     expect((await listLists(b)).map((l) => l.id)).toEqual([bListId]);
     expect(await listCompanyPeople(b, a.companyId)).toEqual([]);
   });
 
   it("CSV export", async () => {
-    const { csv, count } = await exportOpportunities(b, { group: "open" });
+    const { csv, count } = await exportOpportunities(b, opportunityExportQuerySchema.parse({ group: "open" }));
     expect(count).toBe(0);
     expect(csv).not.toContain("Isolated Corp");
     expect(csv).not.toContain(person.email!);
@@ -173,7 +176,7 @@ describe("reading A's records by id", () => {
     await expectNotFound(listCompanySignals(b, a.companyId));
     await expectNotFound(getOpportunity(b, a.opportunityId));
     await expectNotFound(getList(b, a.listId));
-    await expectNotFound(exportOpportunities(b, { listId: a.listId }));
+    await expectNotFound(exportOpportunities(b, opportunityExportQuerySchema.parse({ listId: a.listId })));
   });
 
   it("includes AI analysis, which never reaches the AI provider", async () => {

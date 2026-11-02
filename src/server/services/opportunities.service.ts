@@ -1,10 +1,22 @@
 import "server-only";
-import { and, asc, desc, eq, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLogs, companies, companyPeople, opportunities, opportunitySignals, people, savedOpportunities, services } from "@/db/schema";
+import {
+  auditLogs,
+  companies,
+  companyLocations,
+  companyPeople,
+  opportunities,
+  opportunitySignals,
+  people,
+  savedOpportunities,
+  services,
+  signals,
+  signalTypes,
+} from "@/db/schema";
 import type { OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
 import { STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
-import type { OpportunityListQuery, UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import type { OpportunityFilters, OpportunityListQuery, UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import type { ScoreFactor } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
@@ -53,19 +65,17 @@ export function summaryQuery() {
 export async function listOpportunities(auth: AuthContext, query: OpportunityListQuery): Promise<OpportunityList> {
   await refreshStaleScores(auth.workspaceId);
 
-  const group: StatusGroup = query.group ?? "open";
-  const search = companySearch(query.q);
-
   const [rows, countRows] = await Promise.all([
     summaryQuery()
-      .where(feedFilter(auth.workspaceId, group, query.q))
+      .where(feedFilter(auth.workspaceId, query.group, query))
       .orderBy(...priorityOrder())
       .limit(LIST_LIMIT),
+    // Tab counts follow the same filters, so each tab says how many it would show.
     db
       .select({ status: opportunities.status, count: sql<number>`count(*)::int` })
       .from(opportunities)
       .innerJoin(companies, eq(companies.id, opportunities.companyId))
-      .where(and(eq(opportunities.workspaceId, auth.workspaceId), search))
+      .where(matchesFilters(auth.workspaceId, query))
       .groupBy(opportunities.status),
   ]);
 
@@ -88,16 +98,48 @@ export function priorityOrder() {
   ] as const;
 }
 
-/** One status tab of the feed plus an optional company search. Expects `companies` to be joined. */
-export function feedFilter(workspaceId: string, group: StatusGroup, q: string | undefined): SQL | undefined {
+/** One status tab of the feed, narrowed by `filters`. Expects `companies` to be joined. */
+export function feedFilter(workspaceId: string, group: StatusGroup, filters: OpportunityFilters): SQL | undefined {
+  return and(matchesFilters(workspaceId, filters), inArray(opportunities.status, [...STATUS_GROUPS[group]]));
+}
+
+/** Every filter except status. Empty filters add no condition. Expects `companies` to be joined. */
+function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL | undefined {
+  const any = <T>(values: T[], condition: (values: T[]) => SQL) => (values.length > 0 ? condition(values) : undefined);
   return and(
     eq(opportunities.workspaceId, workspaceId),
-    inArray(opportunities.status, [...STATUS_GROUPS[group]]),
-    companySearch(q),
+    companySearch(filters.q),
+    any(filters.types, (types) => inArray(opportunities.type, types)),
+    any(filters.services, (ids) => inArray(opportunities.serviceId, ids)),
+    any(filters.urgency, (levels) => inArray(opportunities.urgency, levels)),
+    any(filters.industries, (slugs) => inArray(companies.industry, slugs)),
+    any(
+      filters.countries,
+      (codes) => sql`exists (
+        select 1 from ${companyLocations}
+        where ${companyLocations.companyId} = ${companies.id} and ${companyLocations.type} = 'headquarters'
+          and ${inArray(companyLocations.country, codes)}
+      )`,
+    ),
+    // At least one supporting (non-negative) signal in one of the categories.
+    any(
+      filters.signals,
+      (categories) => sql`exists (
+        select 1 from ${opportunitySignals}
+        join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+        join ${signalTypes} on ${signalTypes.slug} = ${signals.signalType}
+        where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+          and ${inArray(signalTypes.categorySlug, categories)}
+      )`,
+    ),
+    filters.minScore === null ? undefined : gte(opportunities.opportunityScore, filters.minScore),
+    filters.withinDays === null
+      ? undefined
+      : gte(opportunities.latestSignalAt, sql`now() - make_interval(days => ${filters.withinDays})`),
   );
 }
 
-function companySearch(q: string | undefined): SQL | undefined {
+function companySearch(q: string): SQL | undefined {
   if (!q) return undefined;
   const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
   return or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern));

@@ -9,7 +9,7 @@ export const POST = authedRoute(
   async ({ request, auth }) => {
     const input = await parseJsonBody(request, analyzeSignalSchema);
     await rateLimit("aiAnalysis", auth.userId);
-    await rateLimit("aiAnalysisWorkspace", auth.workspaceId);
+    await rateLimit("aiWorkspace", auth.workspaceId);
     return Response.json(await suggestSignal(auth, input));
   },
   { roles: EDITOR_ROLES },
