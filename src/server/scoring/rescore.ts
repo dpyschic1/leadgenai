@@ -13,6 +13,7 @@ import {
   signalTypes,
 } from "@/db/schema";
 import { CORRECTING_VERDICTS } from "@/lib/domain/feedback";
+import { isSuggestable } from "@/lib/domain/people";
 import { getReferenceData } from "@/server/services/reference-data.service";
 import { loadCompanyPeople } from "@/server/services/people.service";
 import { loadWeights } from "@/server/services/scoring.service";
@@ -207,8 +208,11 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
         name: p.name,
         seniority: p.seniority,
         jobFunction: p.jobFunction,
-        hasEmail: p.email !== null,
-        hasPhone: p.phone !== null,
+        // An address known to bounce doesn't make someone reachable.
+        hasEmail: p.email !== null && p.emailVerification?.state !== "invalid",
+        hasPhone: p.phone !== null && p.phoneVerification?.state !== "invalid",
+        suggestable: isSuggestable(p.identity),
+        verifiedContact: p.emailVerification?.state === "valid" || p.phoneVerification?.state === "valid",
       })),
       signals: signalRows.map(({ signal, category }) => ({
         id: signal.id,

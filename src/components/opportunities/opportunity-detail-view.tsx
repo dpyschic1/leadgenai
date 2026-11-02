@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeftIcon, Building2Icon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
+import { IdentityBadge, VerificationMark } from "@/components/companies/contact-status";
 import { SaveToListMenu } from "@/components/lists/save-to-list-menu";
 import { SignalTimeline } from "@/components/signals/signal-timeline";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
@@ -165,7 +166,7 @@ function ContactLink({ href, label, icon: Icon, external }: { href: string; labe
     <a
       href={href}
       {...(external && { target: "_blank", rel: "noopener noreferrer" })}
-      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+      className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
     >
       <Icon className="size-4 text-muted-foreground" />
       <span className="truncate">{label}</span>
@@ -185,15 +186,28 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
               <UserRoundIcon className="size-4" />
             </span>
             <div className="min-w-0">
-              <p className="truncate font-medium">{person.name}</p>
+              <div className="flex items-center gap-2">
+                <p className="truncate font-medium">{person.name}</p>
+                <IdentityBadge level={person.identity} confidence={person.identityConfidence} />
+              </div>
               <p className="truncate text-sm text-muted-foreground">
                 {[person.title, person.seniority !== "unknown" ? SENIORITY_LABELS[person.seniority] : null].filter(Boolean).join(", ") || "Title unknown"}
               </p>
             </div>
           </div>
           <div className="mt-3 space-y-0.5">
-            {person.email && <ContactLink href={`mailto:${person.email}`} label={person.email} icon={MailIcon} />}
-            {person.phone && <ContactLink href={`tel:${person.phone.replace(/[^\d+]/g, "")}`} label={person.phone} icon={PhoneIcon} />}
+            {person.email && (
+              <div className="flex items-center justify-between gap-2">
+                <ContactLink href={`mailto:${person.email}`} label={person.email} icon={MailIcon} />
+                {person.emailVerification && <VerificationMark kind="Email" check={person.emailVerification} inline />}
+              </div>
+            )}
+            {person.phone && (
+              <div className="flex items-center justify-between gap-2">
+                <ContactLink href={`tel:${person.phone.replace(/[^\d+]/g, "")}`} label={person.phone} icon={PhoneIcon} />
+                {person.phoneVerification && <VerificationMark kind="Phone" check={person.phoneVerification} inline />}
+              </div>
+            )}
             {person.professionalUrl && <ContactLink href={person.professionalUrl} label="Profile" icon={LinkIcon} external />}
           </div>
         </div>

@@ -55,8 +55,13 @@ export type EnginePerson = {
   name: string;
   seniority: SeniorityLevel;
   jobFunction: string | null;
+  /** An email/phone that isn't known to be invalid. */
   hasEmail: boolean;
   hasPhone: boolean;
+  /** Identity confidence passes the threshold (PRD §22); only these are suggested as the contact. */
+  suggestable: boolean;
+  /** Whether the email or phone has been verified, for the identity reasons. */
+  verifiedContact: boolean;
 };
 
 export type EngineLabels = {
@@ -212,8 +217,9 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
 
   const best = pickService(candidates, positives, labels);
   const service = best?.service ?? null;
+  // Never suggest someone the team flagged, or isn't sure is the right person.
   const person = pickPerson(
-    input.people.filter((p) => !rejectedPeople.has(p.id)),
+    input.people.filter((p) => p.suggestable && !rejectedPeople.has(p.id)),
     lead,
     service,
   );
@@ -428,7 +434,11 @@ function identityFactor(company: EngineCompany, person: EnginePerson | null) {
     [company.industry !== null, 10, "Industry known"],
     [company.employeeCount !== null, 5, "Size known"],
     [person !== null, 20, person ? `Contact identified: ${person.name}` : "No contact identified"],
-    [person !== null && (person.hasEmail || person.hasPhone), 20, "Contact has email or phone"],
+    [
+      person !== null && (person.hasEmail || person.hasPhone),
+      20,
+      person?.verifiedContact ? "Contact has a verified email or phone" : "Contact has email or phone",
+    ],
   ];
   const score = parts.reduce((sum, [ok, points]) => sum + (ok ? points : 0), 0);
   const reasons = parts.filter(([ok, , label]) => ok || label === "No contact identified").map(([, , label]) => label);

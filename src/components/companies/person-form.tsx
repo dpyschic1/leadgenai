@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, type Control } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Combobox } from "@/components/forms/combobox";
@@ -12,12 +12,17 @@ import { FieldError, FieldGroup } from "@/components/ui/field";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useSavePerson } from "@/hooks/use-companies";
 import { useReferenceData } from "@/hooks/use-reference-data";
-import type { CompanyPerson } from "@/lib/api/types";
+import type { CompanyPerson, ContactCheck } from "@/lib/api/types";
 import {
   COMPANY_RELATIONSHIPS,
+  IDENTITY_DESCRIPTIONS,
+  IDENTITY_LABELS,
+  IDENTITY_LEVELS,
+  MANUAL_VERIFICATIONS,
   RELATIONSHIP_LABELS,
   SENIORITY_LABELS,
   SENIORITY_LEVELS,
+  type ManualVerification,
 } from "@/lib/domain/people";
 import { applyApiError } from "@/lib/forms/apply-api-error";
 import { personSchema, type PersonInput, type PersonValues } from "@/lib/validation/companies";
@@ -32,6 +37,9 @@ const FIELDS = [
   "phone",
   "professionalUrl",
   "location",
+  "identity",
+  "emailVerification",
+  "phoneVerification",
 ] as const;
 
 const EMPTY: PersonInput = {
@@ -44,7 +52,14 @@ const EMPTY: PersonInput = {
   phone: "",
   professionalUrl: "",
   location: "",
+  identity: "likely",
+  emailVerification: "unknown",
+  phoneVerification: "unknown",
 };
+
+/** States only a data provider reports (e.g. "accept-all") show as "Not checked" when edited by hand. */
+const manual = (check: ContactCheck | null): ManualVerification =>
+  check && (MANUAL_VERIFICATIONS as readonly string[]).includes(check.state) ? (check.state as ManualVerification) : "unknown";
 
 function toFormValues(person: CompanyPerson): PersonInput {
   return {
@@ -57,6 +72,9 @@ function toFormValues(person: CompanyPerson): PersonInput {
     phone: person.phone ?? "",
     professionalUrl: person.professionalUrl ?? "",
     location: person.location ?? "",
+    identity: person.identity,
+    emailVerification: manual(person.emailVerification),
+    phoneVerification: manual(person.phoneVerification),
   };
 }
 
@@ -152,14 +170,42 @@ export function PersonForm({
                 )}
               </ControlledField>
             </div>
+            <ControlledField
+              control={form.control}
+              name="identity"
+              label="How sure are you this is the right person?"
+              description="Only Confirmed and Likely people are suggested as an opportunity's contact."
+            >
+              {({ field, id, invalid, describedBy }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger id={id} aria-invalid={invalid} aria-describedby={describedBy} className="h-10! w-full">
+                    <SelectValue>{IDENTITY_LABELS[field.value ?? "likely"]}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {IDENTITY_LEVELS.map((level) => (
+                      <SelectItem key={level} value={level} className="py-2">
+                        <div>
+                          <p className="font-medium">{IDENTITY_LABELS[level]}</p>
+                          <p className="text-xs text-muted-foreground">{IDENTITY_DESCRIPTIONS[level]}</p>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </ControlledField>
           </FieldGroup>
         </FormSection>
 
         <FormSection title="Contact" description="Business contact details only. Leave blank if you don't have them.">
           <FieldGroup>
-            <div className="grid gap-6 sm:grid-cols-2">
+            <div className="grid gap-6 sm:grid-cols-[minmax(0,1fr)_11rem]">
               <TextField control={form.control} name="email" label="Work email" type="email" placeholder="emma@hartleyco.co.uk" autoComplete="off" />
+              <VerificationField control={form.control} name="emailVerification" label="Email status" />
+            </div>
+            <div className="grid gap-6 sm:grid-cols-[minmax(0,1fr)_11rem]">
               <TextField control={form.control} name="phone" label="Phone" type="tel" placeholder="+44 113 496 0000" autoComplete="off" />
+              <VerificationField control={form.control} name="phoneVerification" label="Phone status" />
             </div>
             <div className="grid gap-6 sm:grid-cols-2">
               <TextField
@@ -177,5 +223,41 @@ export function PersonForm({
       </EditorBody>
       <EditorFooter submitLabel={person ? "Save changes" : "Add person"} pending={save.isPending} onCancel={onCancel} />
     </form>
+  );
+}
+
+/** What someone entering a contact by hand can say about it. */
+const MANUAL_VERIFICATION_LABELS: Record<ManualVerification, string> = {
+  unknown: "Not checked",
+  valid: "Verified, it works",
+  invalid: "Invalid, it bounced",
+};
+
+function VerificationField({
+  control,
+  name,
+  label,
+}: {
+  control: Control<PersonInput, unknown, PersonValues>;
+  name: "emailVerification" | "phoneVerification";
+  label: string;
+}) {
+  return (
+    <ControlledField control={control} name={name} label={label}>
+      {({ field, id, invalid }) => (
+        <Select value={field.value ?? "unknown"} onValueChange={field.onChange}>
+          <SelectTrigger id={id} aria-invalid={invalid} className="h-10! w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {MANUAL_VERIFICATIONS.map((state) => (
+              <SelectItem key={state} value={state}>
+                {MANUAL_VERIFICATION_LABELS[state]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </ControlledField>
   );
 }

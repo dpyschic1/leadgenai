@@ -37,7 +37,13 @@ import { sql } from "drizzle-orm";
 import { FEEDBACK_VERDICTS } from "@/lib/domain/feedback";
 import { MEMBER_ROLES } from "@/lib/domain/members";
 import { OPPORTUNITY_STATUSES } from "@/lib/domain/opportunities";
-import { COMPANY_RELATIONSHIPS, LOCATION_TYPES, SENIORITY_LEVELS } from "@/lib/domain/people";
+import {
+  COMPANY_RELATIONSHIPS,
+  CONTACT_VERIFICATIONS,
+  IDENTITY_STATUSES,
+  LOCATION_TYPES,
+  SENIORITY_LEVELS,
+} from "@/lib/domain/people";
 import { EVIDENCE_LABELS, INTENT_LEVELS, SIGNAL_SOURCES, URGENCY_LEVELS } from "@/lib/domain/signals";
 
 // ---------------------------------------------------------------------------
@@ -54,23 +60,11 @@ export const intentLevel = pgEnum("intent_level", INTENT_LEVELS);
 export const urgencyLevel = pgEnum("urgency_level", URGENCY_LEVELS);
 
 /** Whether a person/company match is trustworthy enough to show as fact (SRS Appendix B). */
-export const identityStatus = pgEnum("identity_status", [
-  "resolved",
-  "ambiguous",
-  "unresolved",
-  "suppressed",
-]);
+export const identityStatus = pgEnum("identity_status", IDENTITY_STATUSES);
 
 export const contactPointType = pgEnum("contact_point_type", ["email", "phone"]);
 
-export const contactVerification = pgEnum("contact_verification", [
-  "valid",
-  "invalid",
-  "accept_all",
-  "webmail",
-  "disposable",
-  "unknown",
-]);
+export const contactVerification = pgEnum("contact_verification", CONTACT_VERIFICATIONS);
 
 export const locationType = pgEnum("location_type", LOCATION_TYPES);
 

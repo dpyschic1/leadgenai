@@ -2,7 +2,13 @@
 import type { memberRole, signalRole } from "@/db/schema";
 import type { FeedbackVerdict } from "@/lib/domain/feedback";
 import type { OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
-import type { CompanyRelationship, LocationType, SeniorityLevel } from "@/lib/domain/people";
+import type {
+  CompanyRelationship,
+  ContactVerification,
+  IdentityLevel,
+  LocationType,
+  SeniorityLevel,
+} from "@/lib/domain/people";
 import type { EvidenceLabel, IntentLevel, SignalSource, UrgencyLevel } from "@/lib/domain/signals";
 import type { OpportunityFilters } from "@/lib/validation/opportunities";
 import type { ScoreFactor, ScoreWeights } from "@/lib/validation/scoring";
@@ -135,7 +141,16 @@ export type CompanyPerson = {
   phone: string | null;
   professionalUrl: string | null;
   location: string | null;
+  /** How sure the team is that this is the right person, and the underlying 0-100 confidence. */
+  identity: IdentityLevel;
+  identityConfidence: number | null;
+  /** Deliverability of the email/phone above, and when it was last checked. */
+  emailVerification: ContactCheck | null;
+  phoneVerification: ContactCheck | null;
 };
+
+/** A contact point's verification state (PRD §22: "contact verification state is displayed"). */
+export type ContactCheck = { state: ContactVerification; checkedAt: string | null };
 
 export type CompanyDetail = {
   id: string;

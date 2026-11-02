@@ -3,7 +3,8 @@ import { and, asc, eq, inArray, notExists } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isForeignKeyViolation } from "@/db/errors";
 import { auditLogs, companies, companyPeople, contactPoints, people } from "@/db/schema";
-import type { CompanyPerson } from "@/lib/api/types";
+import type { CompanyPerson, ContactCheck } from "@/lib/api/types";
+import { identityColumns, identityLevel, type ManualVerification } from "@/lib/domain/people";
 import type { PersonValues } from "@/lib/validation/companies";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
@@ -28,7 +29,13 @@ export async function loadCompanyPeople(workspaceId: string, companyId: string):
   if (rows.length === 0) return [];
 
   const contacts = await db
-    .select({ personId: contactPoints.personId, type: contactPoints.type, value: contactPoints.value })
+    .select({
+      personId: contactPoints.personId,
+      type: contactPoints.type,
+      value: contactPoints.value,
+      verification: contactPoints.verification,
+      verifiedAt: contactPoints.verifiedAt,
+    })
     .from(contactPoints)
     .where(
       and(
@@ -40,20 +47,30 @@ export async function loadCompanyPeople(workspaceId: string, companyId: string):
       ),
     );
   const primary = (personId: string, type: "email" | "phone") =>
-    contacts.find((c) => c.personId === personId && c.type === type)?.value ?? null;
+    contacts.find((c) => c.personId === personId && c.type === type);
+  const check = (contact: (typeof contacts)[number] | undefined): ContactCheck | null =>
+    contact ? { state: contact.verification, checkedAt: contact.verifiedAt?.toISOString() ?? null } : null;
 
-  return rows.map(({ person, role }) => ({
-    id: person.id,
-    name: person.name,
-    title: role.title,
-    seniority: role.seniority,
-    jobFunction: role.jobFunction,
-    relationship: role.relationship,
-    email: primary(person.id, "email"),
-    phone: primary(person.id, "phone"),
-    professionalUrl: person.professionalUrl,
-    location: person.location,
-  }));
+  return rows.map(({ person, role }) => {
+    const email = primary(person.id, "email");
+    const phone = primary(person.id, "phone");
+    return {
+      id: person.id,
+      name: person.name,
+      title: role.title,
+      seniority: role.seniority,
+      jobFunction: role.jobFunction,
+      relationship: role.relationship,
+      email: email?.value ?? null,
+      phone: phone?.value ?? null,
+      professionalUrl: person.professionalUrl,
+      location: person.location,
+      identity: identityLevel(person.identityStatus, person.identityConfidence),
+      identityConfidence: person.identityConfidence,
+      emailVerification: check(email),
+      phoneVerification: check(phone),
+    };
+  });
 }
 
 export async function addPerson(auth: AuthContext, companyId: string, input: PersonValues): Promise<void> {
@@ -62,12 +79,7 @@ export async function addPerson(auth: AuthContext, companyId: string, input: Per
     db.transaction(async (tx) => {
       const [person] = await tx
         .insert(people)
-        .values({
-          workspaceId: auth.workspaceId,
-          ...personColumns(input),
-          // Entered by a user who knows them, so the identity is not in doubt.
-          identityStatus: "resolved",
-        })
+        .values({ workspaceId: auth.workspaceId, ...personColumns(input) })
         .returning({ id: people.id });
       await tx.insert(companyPeople).values({
         workspaceId: auth.workspaceId,
@@ -125,7 +137,12 @@ function linkOf(auth: AuthContext, companyId: string, personId: string) {
 }
 
 function personColumns(input: PersonValues) {
-  return { name: input.name, location: input.location, professionalUrl: input.professionalUrl };
+  return {
+    name: input.name,
+    location: input.location,
+    professionalUrl: input.professionalUrl,
+    ...identityColumns(input.identity),
+  };
 }
 
 function roleColumns(input: PersonValues) {
@@ -137,16 +154,32 @@ function roleColumns(input: PersonValues) {
   };
 }
 
-/** Manually entered email/phone replace the previous manual ones; provider-sourced values are kept. */
+/**
+ * Manually entered email/phone replace the previous manual ones; provider-sourced values are kept.
+ * A contact that's unchanged and still marked the same way keeps the date it was checked.
+ */
 async function replaceManualContacts(tx: Tx, personId: string, input: PersonValues): Promise<void> {
-  await tx
+  const previous = await tx
     .delete(contactPoints)
-    .where(and(eq(contactPoints.personId, personId), eq(contactPoints.source, "manual")));
+    .where(and(eq(contactPoints.personId, personId), eq(contactPoints.source, "manual")))
+    .returning({
+      type: contactPoints.type,
+      value: contactPoints.value,
+      verification: contactPoints.verification,
+      verifiedAt: contactPoints.verifiedAt,
+    });
 
+  const contact = (type: "email" | "phone", value: string | null, verification: ManualVerification) => {
+    if (!value) return null;
+    const before = previous.find((p) => p.type === type && p.value === value && p.verification === verification);
+    // "Not checked" has no date; a fresh verdict is dated now.
+    const verifiedAt = verification === "unknown" ? null : (before?.verifiedAt ?? new Date());
+    return { personId, type, value, isPrimary: true, verification, verifiedAt };
+  };
   const values = [
-    input.email && { personId, type: "email" as const, value: input.email, isPrimary: true },
-    input.phone && { personId, type: "phone" as const, value: input.phone, isPrimary: true },
-  ].filter((value) => !!value);
+    contact("email", input.email, input.emailVerification),
+    contact("phone", input.phone, input.phoneVerification),
+  ].filter((value) => value !== null);
   if (values.length > 0) await tx.insert(contactPoints).values(values);
 }
 

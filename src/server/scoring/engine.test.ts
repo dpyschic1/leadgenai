@@ -27,7 +27,7 @@ const hiring = (overrides: Partial<EngineSignal> = {}) =>
 
 const base: EngineInput = {
   company: { name: "Northbridge Legal", domain: "northbridgelegal.co.uk", industry: "legal", employeeCount: 85, hqCountry: "GB", hasHeadquarters: true },
-  people: [{ id: "p1", name: "Olivia Bennett", seniority: "owner", jobFunction: "founder_executive", hasEmail: true, hasPhone: false }],
+  people: [{ id: "p1", name: "Olivia Bennett", seniority: "owner", jobFunction: "founder_executive", hasEmail: true, hasPhone: false, suggestable: true, verifiedContact: false }],
   signals: [signal()],
   services: [
     {
@@ -147,7 +147,7 @@ describe("scoreCompany", () => {
   it("suggests someone else when the team flagged the contact as wrong", () => {
     const people = [
       ...base.people,
-      { id: "p2", name: "Tom Reid", seniority: "manager" as const, jobFunction: "marketing", hasEmail: true, hasPhone: true },
+      { id: "p2", name: "Tom Reid", seniority: "manager" as const, jobFunction: "marketing", hasEmail: true, hasPhone: true, suggestable: true, verifiedContact: false },
     ];
     expect(score({ people }).primaryPersonId).toBe("p1");
     expect(score({ people, rejected: { personIds: ["p1"], serviceIds: [] } }).primaryPersonId).toBe("p2");
@@ -156,6 +156,20 @@ describe("scoreCompany", () => {
       score({ people, signals: [signal({ personId: "p1" })], rejected: { personIds: ["p1"], serviceIds: [] } }).primaryPersonId,
     ).toBe("p2");
     expect(score({ rejected: { personIds: ["p1"], serviceIds: [] } }).primaryPersonId).toBeNull();
+  });
+
+  it("only suggests people whose identity is confirmed or likely (PRD §22 threshold)", () => {
+    const unsure = { ...base.people[0], suggestable: false };
+    const result = score({ people: [unsure] });
+    expect(result.primaryPersonId).toBeNull();
+    expect(result.factors.identity.reasons).toContain("No contact identified");
+  });
+
+  it("doesn't count an email or phone known to be invalid, and credits verified ones", () => {
+    const bounced = { ...base.people[0], hasEmail: false, hasPhone: false };
+    expect(score({ people: [bounced] }).factors.identity.reasons).not.toContain("Contact has email or phone");
+    const verified = { ...base.people[0], verifiedContact: true };
+    expect(score({ people: [verified] }).factors.identity.reasons).toContain("Contact has a verified email or phone");
   });
 
   it("matches no service when the signals point to no category", () => {
@@ -173,7 +187,7 @@ describe("scoreCompany", () => {
   });
 
   it("prefers the person behind the lead signal as the contact", () => {
-    const people = [...base.people, { id: "p2", name: "James Whitaker", seniority: "manager" as const, jobFunction: "marketing", hasEmail: true, hasPhone: false }];
+    const people = [...base.people, { id: "p2", name: "James Whitaker", seniority: "manager" as const, jobFunction: "marketing", hasEmail: true, hasPhone: false, suggestable: true, verifiedContact: false }];
     expect(score({ people }).primaryPersonId).toBe("p1");
     expect(score({ people, signals: [signal({ personId: "p2" })] }).primaryPersonId).toBe("p2");
   });

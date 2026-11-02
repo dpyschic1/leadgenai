@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { COUNTRY_CODES } from "@/lib/countries";
-import { COMPANY_RELATIONSHIPS, SENIORITY_LEVELS } from "@/lib/domain/people";
+import { COMPANY_RELATIONSHIPS, IDENTITY_LEVELS, MANUAL_VERIFICATIONS, SENIORITY_LEVELS } from "@/lib/domain/people";
 
 /**
  * Shared by the company/person forms and the route handlers. Optional fields accept "" (from a
@@ -74,6 +74,10 @@ export const personSchema = z.object({
     invalidMessage: "Enter a full link starting with https://",
   }),
   location: optionalText(200, "Location"),
+  /** How sure the team is that this is the right person (see IDENTITY_LEVELS). */
+  identity: z.enum(IDENTITY_LEVELS).default("likely"),
+  emailVerification: z.enum(MANUAL_VERIFICATIONS).default("unknown"),
+  phoneVerification: z.enum(MANUAL_VERIFICATIONS).default("unknown"),
 });
 
 export const companyListQuerySchema = z.object({
