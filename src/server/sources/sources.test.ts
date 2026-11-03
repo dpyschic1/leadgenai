@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { boardFromUrl, boardsFromIndexPage, jobInCountries, nameFromBoardTitle } from "./board-directory";
+import { boardFromUrl, boardsFromIndexPage, cleanBoardName, jobInCountries, nameFromBoardTitle } from "./board-directory";
 import { finalizeFacts } from "@/server/ai/website-extract";
 import { formationSignal, newLocationSignal, signalFromAnalysis } from "@/server/ingestion/found-signal";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { industryForSicCodes } from "@/lib/domain/uk-codes";
 import { pickCompanyNumber, toFoundCompany, toFoundPeople } from "./companies-house";
 import { deflateRawSync } from "node:zlib";
-import { csvFromZip, parseDirectory, providersFor, toFoundCompany as toCqcCompany, toLocationDetail } from "./cqc";
+import { csvFromZip, parseDirectory, providersFor, providerWebsite, toFoundCompany as toCqcCompany, toLocationDetail } from "./cqc";
 import {
   emailFromPattern,
   emailPatternOf,
@@ -28,6 +28,7 @@ import {
   websiteFindings,
   type SiteChecks,
   emailsFrom,
+  usableEmails,
   extractLinks,
   jobBoardFromHtml,
   phonesFrom,
@@ -179,6 +180,22 @@ describe("company websites", () => {
     expect(emailsFrom(html, "brightsmile.co.uk")).toEqual(["hello@brightsmile.co.uk"]);
     expect(phonesFrom(html)).toEqual(["+441134960000"]);
     expect(phonesFrom("<p>Call us on 0113 496 0000 today</p>")).toEqual(["01134960000"]);
+  });
+
+  it("keeps only addresses that belong to the business, shared inboxes first", () => {
+    // Own domain: a named person's address comes after info@.
+    expect(usableEmails(["anil.gupta@dmchealthcare.co.uk", "info@dmchealthcare.co.uk"], "dmchealthcare.co.uk")).toEqual([
+      "info@dmchealthcare.co.uk",
+      "anil.gupta@dmchealthcare.co.uk",
+    ]);
+    // No address on its own domain: one naming the business is kept, the web designer's isn't.
+    expect(usableEmails(["kensingtondentists@gmail.com", "by.blossom@yahoo.com"], "kensington-dentist.com")).toEqual(["kensingtondentists@gmail.com"]);
+    expect(usableEmails(["hannah_m_smith@hotmail.com"], "hannahhealthvisitor.org")).toEqual(["hannah_m_smith@hotmail.com"]);
+    // NHS-issued mail is the practice's own.
+    expect(usableEmails(["ccf-tr.info.clinic@nhs.net"], "clatterbridgeprivate.co.uk")).toEqual(["ccf-tr.info.clinic@nhs.net"]);
+    // Template leftovers are never contacts.
+    expect(usableEmails(["changeme@client-domain.co.uk"], "theroxtonpractice.nhs.uk")).toEqual([]);
+    expect(usableEmails(["email@domain.com", "you@yourdomain.co.uk", "info@acme.co.uk"], "acme.co.uk")).toEqual(["info@acme.co.uk"]);
   });
 });
 
@@ -385,6 +402,27 @@ describe("CQC directory", () => {
     expect(newLocationSignal({ ...base, registeredOn: "2014-11-12" }, [], now)).toBeNull();
     expect(newLocationSignal({ ...base, registeredOn: null }, [], now)).toBeNull();
   });
+
+  it("dates a new practice of a followed provider by when it first appeared, without the API", () => {
+    const now = new Date("2026-11-03T12:00:00Z");
+    const signal = newLocationSignal(
+      { providerName: "Rodericks Dental Partners Limited", name: "Banbury Dental", registeredOn: null, firstListedOn: "2026-11-03", url: null },
+      ["web_development"],
+      now,
+    );
+    expect(signal).toMatchObject({ signalType: "new_location", occurredOn: "2026-11-03", confidence: 85, evidenceLabel: "observed" });
+    expect(signal?.summary).toContain("first appeared on the CQC register on 3 November 2026");
+  });
+
+  it("gives a chain the website most of its practices list", () => {
+    const many = (site: string, n: number) => Array.from({ length: n }, () => site);
+    expect(providerWebsite([...many("rodericksdental.co.uk", 5), "banburydental.co.uk", "leysdental.co.uk", null, null])).toBe("rodericksdental.co.uk");
+    expect(providerWebsite(["acme.co.uk", null, "acme.co.uk"])).toBe("acme.co.uk");
+    // Each practice its own site, or a tie: no provider website.
+    expect(providerWebsite(["a-surgery.nhs.uk", "b-surgery.nhs.uk"])).toBeNull();
+    expect(providerWebsite([...many("one.co.uk", 2), ...many("two.co.uk", 2)])).toBeNull();
+    expect(providerWebsite([null])).toBeNull();
+  });
 });
 
 describe("Companies House number lookup", () => {
@@ -504,6 +542,17 @@ describe("job-board discovery", () => {
     expect(nameFromBoardTitle("Acme Health - Careers")).toBe("Acme Health");
     expect(nameFromBoardTitle("Acme Health | Lever")).toBe("Acme Health");
     expect(nameFromBoardTitle("Jobs")).toBeNull();
+  });
+
+  it("cleans board names down to the company's", () => {
+    expect(cleanBoardName("TPG Careers Page")).toBe("TPG");
+    expect(cleanBoardName("Acme Jobs")).toBe("Acme");
+    expect(cleanBoardName("Careers at Acme Health")).toBe("Acme Health");
+    expect(cleanBoardName("TraceLink, Inc")).toBe("TraceLink, Inc");
+    expect(cleanBoardName("Jobber")).toBe("Jobber");
+    expect(cleanBoardName("Acme Recruiting")).toBe("Acme Recruiting");
+    expect(cleanBoardName("Careers")).toBeNull();
+    expect(cleanBoardName(null)).toBeNull();
   });
 
   it("keeps jobs in the workspace's countries, and remote roles open worldwide", () => {

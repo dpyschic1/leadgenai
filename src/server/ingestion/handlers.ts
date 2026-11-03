@@ -1,6 +1,6 @@
 import "server-only";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type Tx } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
 import {
   companies,
@@ -27,16 +27,16 @@ import { getReferenceData } from "@/server/services/reference-data.service";
 import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal } from "@/server/services/signals.service";
-import { boardJobsFor, jobInCountries } from "@/server/sources/board-directory";
+import { boardJobsFor, cleanBoardName, jobInCountries } from "@/server/sources/board-directory";
 import { companiesHouse, findCompanyNumber } from "@/server/sources/companies-house";
-import { findWebsite, readWebsite, websiteFindings } from "@/server/sources/company-website";
-import { fetchLocationDetail, loadDirectory, providersFor, toFoundCompany as toCqcCompany } from "@/server/sources/cqc";
+import { findWebsite, readWebsite, usableEmails, websiteFindings } from "@/server/sources/company-website";
+import { fetchLocationDetail, loadDirectory, providersFor, providerWebsite, toFoundCompany as toCqcCompany, type CqcLocation } from "@/server/sources/cqc";
 import { domainReceivesEmail } from "@/server/sources/http";
 import { emailFromPattern, emailPatternOf, inferEmailPattern, jobFunctionFromTitle, seniorityFromTitle, type EmailPattern } from "@/server/sources/names";
 import { searchTenders, tenderSourceText } from "@/server/sources/uk-tenders";
 import { formationSignal, NEW_COMPANY_DAYS, newLocationSignal, signalFromAnalysis } from "./found-signal";
 import { sourceRunnable, type JobRow } from "./queue";
-import { addCompanyContacts, addFoundPeople, knownIdentifiers, resolveCompany, saveSourceLocations, saveSourceRecord } from "./resolve";
+import { addFoundPeople, knownIdentifiers, replaceCompanyContacts, resolveCompany, saveSourceLocations, saveSourceRecord } from "./resolve";
 
 /**
  * One handler per kind of background job (Spec §11). Each does a small piece of work, records
@@ -147,9 +147,11 @@ async function discoverCqc({ actor }: JobContext): Promise<JobResult> {
     return { followUps: [], skipped: true };
   }
 
+  const directory = await loadDirectory();
   const known = await knownIdentifiers(db, actor.workspaceId, "gb_cqc_provider");
+  await newPracticesOfKnownProviders(actor, directory, industries, icp.categories);
   // Providers that list a website first: they can be read and checked further.
-  const providers = providersFor(await loadDirectory(), industries)
+  const providers = providersFor(directory, industries)
     .filter((p) => !known.has(p.providerId))
     .sort((a, b) => Number(b.locations.some((l) => l.website)) - Number(a.locations.some((l) => l.website)))
     .slice(0, CQC_PROVIDERS_PER_RUN);
@@ -166,17 +168,9 @@ async function discoverCqc({ actor }: JobContext): Promise<JobResult> {
         tx,
         resolved.companyId,
         "cqc",
-        provider.locations.map((l) => ({
-          externalId: l.locationId,
-          name: l.name,
-          address: l.address,
-          city: l.address?.split(",").at(-1)?.trim() ?? null,
-          region: l.region,
-          postalCode: l.postcode,
-          website: l.website,
-          phone: l.phone,
-        })),
+        provider.locations.map(toSavedLocation),
       );
+      await rememberPractices(tx, actor.workspaceId, resolved.companyId, provider.providerId, directory);
       let signalCreated = false;
       for (const [index, detail] of details.entries()) {
         if (!detail) continue;
@@ -191,6 +185,80 @@ async function discoverCqc({ actor }: JobContext): Promise<JobResult> {
     followUps.push({ kind: "enrich_company", entityId: result.companyId });
   }
   return { followUps };
+}
+
+/** Practices of one provider seen in the directory, kept so next week's new ones stand out. */
+async function rememberPractices(tx: Tx, workspaceId: string, companyId: string, providerId: string, directory: CqcLocation[]) {
+  const locationIds = directory.filter((l) => l.providerId === providerId).map((l) => l.locationId);
+  await saveSourceRecord(
+    tx,
+    workspaceId,
+    { sourceSlug: "cqc", externalId: `locations:${providerId}`, url: `https://www.cqc.org.uk/provider/${providerId}`, recordType: "cqc_locations", publishedAt: null, data: { locationIds } },
+    companyId,
+  );
+}
+
+/**
+ * Providers the workspace already follows that opened a practice since the last directory: the
+ * new practice is saved with its phone and recorded as a "new location" signal, dated when it
+ * first appeared. Every practice of the provider is remembered (not only the ICP's service types),
+ * so widening the ICP later never makes old practices look new. The first run for a provider only
+ * remembers its practices.
+ */
+async function newPracticesOfKnownProviders(actor: Actor, directory: CqcLocation[], industries: string[], categories: string[]): Promise<void> {
+  const followed = await db
+    .select({ providerId: companyIdentifiers.value, companyId: companyIdentifiers.companyId, data: sourceRecords.data })
+    .from(companyIdentifiers)
+    .leftJoin(
+      sourceRecords,
+      and(eq(sourceRecords.workspaceId, actor.workspaceId), eq(sourceRecords.sourceSlug, "cqc"), eq(sourceRecords.externalId, sql`'locations:' || ${companyIdentifiers.value}`)),
+    )
+    .where(and(eq(companyIdentifiers.workspaceId, actor.workspaceId), eq(companyIdentifiers.scheme, "gb_cqc_provider")));
+  if (followed.length === 0) return;
+
+  const ids = new Set(followed.map((f) => f.providerId));
+  const ofFollowed = directory.filter((l) => ids.has(l.providerId));
+  const wanted = new Map(providersFor(ofFollowed, industries).map((p) => [p.providerId, p]));
+  const today = new Date().toISOString().slice(0, 10);
+  for (const { providerId, companyId, data } of followed) {
+    const before = new Set((data as { locationIds?: string[] } | null)?.locationIds ?? []);
+    const isFirstLook = !data;
+    const current = ofFollowed.filter((l) => l.providerId === providerId);
+    if (!isFirstLook && current.every((l) => before.has(l.locationId))) continue;
+    const opened = isFirstLook ? [] : (wanted.get(providerId)?.locations ?? []).filter((l) => !before.has(l.locationId));
+
+    // The API (when configured) gives the real registration date; otherwise it's the day first seen.
+    const details = await Promise.all(opened.slice(0, CQC_API_LOCATIONS_PER_PROVIDER).map(fetchLocationDetail));
+    const signals = opened.slice(0, CQC_API_LOCATIONS_PER_PROVIDER).flatMap((location, index) => {
+      const signal = newLocationSignal(
+        { providerName: location.providerName, name: location.name, registeredOn: details[index]?.registeredOn ?? null, firstListedOn: today, url: location.url },
+        categories,
+      );
+      return signal ? [signal] : [];
+    });
+
+    const signalCreated = await db.transaction(async (tx) => {
+      await rememberPractices(tx, actor.workspaceId, companyId, providerId, current);
+      if (opened.length > 0) await saveSourceLocations(tx, companyId, "cqc", opened.map(toSavedLocation));
+      let created = false;
+      for (const signal of signals) created = (await insertDetectedSignal(tx, actor, companyId, signal)).created || created;
+      return created;
+    });
+    if (signalCreated) await rescoreAfterCompanyChange(actor.workspaceId, companyId);
+  }
+}
+
+function toSavedLocation(l: CqcLocation) {
+  return {
+    externalId: l.locationId,
+    name: l.name,
+    address: l.address,
+    city: l.address?.split(",").at(-1)?.trim() ?? null,
+    region: l.region,
+    postalCode: l.postcode,
+    website: l.website,
+    phone: l.phone,
+  };
 }
 
 // --- evaluate_boards: shared job boards judged against this workspace's ICP and services --------
@@ -281,17 +349,19 @@ async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
       continue;
     }
 
+    // The board's own name for the company ("TPG Careers Page" → "TPG"); only the board address
+    // when the provider gives none.
+    const boardName = cleanBoardName(board.board_name);
     const companyId = await db.transaction(async (tx) => {
       const resolved = await resolveCompany(tx, actor, {
-        // The board's own name for the company; only the board address when the provider gives none.
-        name: board.board_name ?? titleFromToken(token),
+        name: boardName ?? titleFromToken(token),
         domain: null,
         industry: null,
         hq: null,
         identifiers: [],
         identity: "provisional",
         foundedOn: null,
-        record: outcome({ relevant: true, nameFrom: board.board_name ? "board" : "board_address", candidateWebsite: candidateWebsite(jobs) }),
+        record: outcome({ relevant: true, nameFrom: boardName ? "board" : "board_address", candidateWebsite: candidateWebsite(jobs) }),
       });
       await tx
         .insert(companyJobBoards)
@@ -346,9 +416,11 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
 
   let domain = company.domain;
   if (!domain && (await sourceRunnable(actor.workspaceId, "company_website"))) {
-    // A job board's own candidate site first (only accepted if that site links back to the board),
-    // then the official-name search, which needs the company number or the name plus its town.
-    let site: WebsiteEvidence | null = await candidateFromBoard(actor, company.id);
+    // The site most of its practices gave the regulator first, then a job board's own candidate
+    // site (only accepted if that site links back to the board), then the official-name search,
+    // which needs the company number or the name plus its town.
+    let site: WebsiteEvidence | null = await websiteFromRegister(company.id);
+    site ??= await candidateFromBoard(actor, company.id);
     if (!site) {
       const found = await findWebsite({ name: company.name, companyNumber: company.companyNumber, city: company.city });
       site = found ? { ...found, matchedBy: found.confidence >= 95 ? "company_number" : "name" } : null;
@@ -359,7 +431,18 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
   return { followUps: domain ? [{ kind: "scan_website", entityId: company.id }] : [] };
 }
 
-type WebsiteEvidence = { domain: string; confidence: number; matchedBy: "company_number" | "name" | "job_board_link" };
+type WebsiteEvidence = { domain: string; confidence: number; matchedBy: "company_number" | "name" | "job_board_link" | "regulator_listing" };
+
+/** The provider's own site, from the websites its CQC locations list (see `providerWebsite`). */
+async function websiteFromRegister(companyId: string): Promise<WebsiteEvidence | null> {
+  const sites = await db
+    .select({ website: companyLocations.website })
+    .from(companyLocations)
+    .where(and(eq(companyLocations.companyId, companyId), eq(companyLocations.sourceSlug, "cqc")));
+  const domain = providerWebsite(sites.map((s) => s.website));
+  // Given to the regulator by the provider for its own practices.
+  return domain ? { domain, confidence: 90, matchedBy: "regulator_listing" } : null;
+}
 
 /**
  * Sets a company's website from evidence and records why. A provisional company becomes partly
@@ -423,6 +506,11 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
 
   const site = await readWebsite(company.domain);
   if (!site) return { followUps: [recheck] };
+  // What the site publishes now, from its pages and its structured data. It replaces what an
+  // earlier read found, so an address the site dropped (or a placeholder) doesn't linger.
+  const structured = site.structured;
+  const emails = usableEmails([...site.emails, ...(structured.email ? [structured.email] : [])], site.domain);
+  const phones = [...new Set([...site.phones, ...(structured.telephone ? [structured.telephone.replace(/[^\d+]/g, "")] : [])])];
 
   const saved = await db.transaction(async (tx) => {
     const records = [];
@@ -435,7 +523,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
       );
       records.push({ ...page, ...record });
     }
-    await addCompanyContacts(tx, company.id, { emails: site.emails, phones: site.phones }, { slug: "company_website", url: site.pages.find((p) => p.kind === "contact")?.url ?? site.pages[0].url });
+    await replaceCompanyContacts(tx, company.id, { emails, phones }, { slug: "company_website", url: site.pages.find((p) => p.kind === "contact")?.url ?? site.pages[0].url });
     return records;
   });
   const followUps: FollowUp[] = [recheck];
@@ -478,8 +566,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
   }
 
   // What the site states about itself in structured data: no AI needed.
-  const structured = site.structured;
-  if (structured.people.length > 0 || structured.employees || structured.telephone || structured.email) {
+  if (structured.people.length > 0 || structured.employees) {
     peopleAdded += await db.transaction(async (tx) => {
       if (structured.employees) {
         await tx
@@ -487,12 +574,6 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
           .set({ employeeCount: structured.employees })
           .where(and(eq(companies.id, company.id), sql`${companies.employeeCount} is null`));
       }
-      await addCompanyContacts(
-        tx,
-        company.id,
-        { emails: structured.email ? [structured.email] : [], phones: structured.telephone ? [structured.telephone.replace(/[^\d+]/g, "")] : [] },
-        { slug: "company_website", url: site.checks.homeUrl },
-      );
       return addFoundPeople(
         tx,
         actor,
@@ -511,7 +592,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     });
   }
 
-  await attachEmails(actor, company.id, site.domain, [...site.emails, ...(structured.email ? [structured.email] : [])]);
+  await attachEmails(actor, company.id, site.domain, emails);
 
   // Possible website problems, by fixed rules: recorded only for workspaces selling a fix.
   let signalsCreated = 0;

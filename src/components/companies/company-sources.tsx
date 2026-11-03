@@ -13,6 +13,7 @@ const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short",
 const RECORD_LABELS: Record<string, string> = {
   company_profile: "Register entry",
   cqc_provider: "CQC register entry",
+  cqc_locations: "CQC practices",
   job_board: "Job board",
   officer_list: "Directors",
   tender: "Public tender",
@@ -22,6 +23,14 @@ const RECORD_LABELS: Record<string, string> = {
   "web_page:contact": "Website: contact",
   "web_page:careers": "Website: careers",
   "web_page:news": "Website: news",
+};
+
+/** Why the website was accepted as the company's (the evidence recorded with it). */
+const WEBSITE_MATCH: Record<string, string> = {
+  company_number: "Shows the company number",
+  name: "Shows the company name",
+  job_board_link: "Links to the company's job board",
+  regulator_listing: "Listed for its practices on the CQC register",
 };
 
 /** Where the company's information came from, when it was last checked, and its published contacts. */
@@ -97,7 +106,7 @@ export function CompanySourcesCard({ companyId, canEdit }: { companyId: string; 
                   <dd>
                     {data.website.domain}
                     <span className="block text-xs text-muted-foreground">
-                      {data.website.matchedBy === "company_number" ? "Shows the company number" : "Shows the company name"} ·{" "}
+                      {WEBSITE_MATCH[data.website.matchedBy] ?? "Shows the company name"} ·{" "}
                       {data.website.confidence}% sure
                     </span>
                   </dd>

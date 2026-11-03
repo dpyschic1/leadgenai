@@ -39,10 +39,18 @@ export const companyPhone = sql<string | null>`coalesce(
       where ${companyLocations.companyId} = ${opportunities.companyId} and ${companyLocations.phone} is not null
       order by ${companyLocations.name} limit 1))`;
 
-/** The company's published email (info@, reception@), the website's own first. */
+/**
+ * Best company contact first: the website's own, then a shared inbox (info@, reception@) over a
+ * named person's address, then the newest. The same order on the card, the export and the page.
+ */
+const contactPriority = sql`(${companyContactPoints.sourceSlug} = 'company_website') desc,
+    (split_part(${companyContactPoints.value}, '@', 1) ~ '^(info|enquir|inquir|hello|contact|reception|office|admin|team|bookings?|appointments?|general|mail|sales|support|practice|surgery|clinic)') desc,
+    ${companyContactPoints.observedAt} desc`;
+
+/** The company's published email (info@, reception@). */
 export const companyEmail = sql<string | null>`(select ${companyContactPoints.value} from ${companyContactPoints}
     where ${companyContactPoints.companyId} = ${opportunities.companyId} and ${companyContactPoints.type} = 'email'
-    order by (${companyContactPoints.sourceSlug} = 'company_website') desc, ${companyContactPoints.observedAt} desc limit 1)`;
+    order by ${contactPriority} limit 1)`;
 
 const summaryColumns = {
   opportunity: opportunities,
@@ -224,7 +232,7 @@ async function loadCompanyContacts(companyId: string): Promise<CompanyContact[]>
       .select()
       .from(companyContactPoints)
       .where(eq(companyContactPoints.companyId, companyId))
-      .orderBy(sql`(${companyContactPoints.sourceSlug} = 'company_website') desc`, asc(companyContactPoints.type)),
+      .orderBy(asc(companyContactPoints.type), contactPriority),
     db
       .select({ name: companyLocations.name, phone: companyLocations.phone, website: companyLocations.website, sourceSlug: companyLocations.sourceSlug })
       .from(companyLocations)

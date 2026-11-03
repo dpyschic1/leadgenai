@@ -44,12 +44,20 @@ export const NEW_COMPANY_DAYS = 365;
  * Null for registrations older than a year.
  */
 export function newLocationSignal(
-  location: { providerName: string; name: string; registeredOn: string | null; url: string | null },
+  location: {
+    providerName: string;
+    name: string;
+    registeredOn: string | null;
+    url: string | null;
+    /** When it first appeared in the weekly directory, for a provider we already follow (no API date needed). */
+    firstListedOn?: string;
+  },
   serviceCategories: string[],
   now = new Date(),
 ): DetectedSignalValues | null {
-  if (!location.registeredOn) return null;
-  const registered = new Date(`${location.registeredOn}T12:00:00Z`);
+  const on = location.registeredOn ?? location.firstListedOn;
+  if (!on) return null;
+  const registered = new Date(`${on}T12:00:00Z`);
   const age = (now.getTime() - registered.getTime()) / DAY_MS;
   if (Number.isNaN(age) || age < 0 || age > NEW_COMPANY_DAYS) return null;
   const date = registered.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
@@ -58,15 +66,17 @@ export function newLocationSignal(
     intentLevel: "low",
     urgency: "unknown",
     serviceCategories,
-    summary: `${location.providerName} registered a new location, ${location.name}, with the CQC on ${date}.`,
+    summary: location.registeredOn
+      ? `${location.providerName} registered a new location, ${location.name}, with the CQC on ${date}.`
+      : `${location.providerName} added a new location, ${location.name}: it first appeared on the CQC register on ${date}.`,
     personId: null,
-    occurredOn: location.registeredOn,
+    occurredOn: on,
     sourceUrl: location.url,
     excerpt: null,
     evidenceLabel: "observed",
     source: "provider",
-    // Stated by the regulator.
-    confidence: 95,
+    // Stated by the regulator; a first-seen date is up to a week after the registration itself.
+    confidence: location.registeredOn ? 95 : 85,
   };
 }
 

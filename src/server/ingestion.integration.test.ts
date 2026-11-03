@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, like } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { companies, companyIdentifiers, companyJobBoards, companyLocations, contactPoints, ingestionJobs, jobBoardDirectory, users, workspaces } from "@/db/schema";
+import { companies, companyIdentifiers, companyJobBoards, companyLocations, contactPoints, ingestionJobs, jobBoardDirectory, signals, users, workspaces } from "@/db/schema";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { personSchema } from "@/lib/validation/companies";
 import { opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
@@ -18,7 +18,7 @@ import { systemActor } from "@/server/auth/actor";
 import { rescoreCompany } from "@/server/scoring/rescore";
 import { registerOwner } from "@/server/services/auth.service";
 import { getCompany, listCompanies } from "@/server/services/companies.service";
-import { getCompanySources, setDataSourceEnabled } from "@/server/services/data-sources.service";
+import { getCompanySources, refreshCompany, setDataSourceEnabled } from "@/server/services/data-sources.service";
 import { exportOpportunities } from "@/server/services/exports.service";
 import { getOpportunity, listOpportunities } from "@/server/services/opportunities.service";
 import { listCompanyPeople, updatePerson } from "@/server/services/people.service";
@@ -271,6 +271,24 @@ describe("automatic ingestion", () => {
     expect(queued[0].runAfter.getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
   });
 
+  it("replaces the website's contacts when it is read again, never keeping a placeholder", async () => {
+    const newsmile = await companyNamed(owner, REGISTER[0].name);
+    const domain = `newsmile-${run}.example`;
+    const usual = vi.mocked(readWebsite).getMockImplementation()!;
+    vi.mocked(readWebsite).mockImplementation(async (d) => ({
+      ...(await usual(d))!,
+      // The site changed its address; a template leftover is on the page too.
+      emails: [`info@${domain}`, "changeme@client-domain.co.uk"],
+      phones: [],
+    }));
+    await refreshCompany(owner, newsmile!.id);
+    await drain(owner);
+    vi.mocked(readWebsite).mockImplementation(usual);
+    const sources = await getCompanySources(owner, newsmile!.id);
+    // The old hello@ is gone; the phone stays, since this read found none rather than a new one.
+    expect(sources.contacts.map((c) => c.value).sort()).toEqual(["01134960000", `info@${domain}`]);
+  });
+
   it("skips a source the workspace switched off", async () => {
     await setDataSourceEnabled(owner, "uk_tenders", false);
     await runNow(owner);
@@ -439,6 +457,34 @@ describe("CQC providers and their practices", () => {
     const { csv } = await exportOpportunities(owner, opportunityExportQuerySchema.parse({ group: "open", q: `Smiles Group ${run}` }));
     expect(csv.split(/\r?\n/)[0]).toContain("company_phone,company_email");
     expect(csv).toContain("01134960000");
+    vi.mocked(loadDirectory).mockResolvedValue([]);
+  });
+
+  it("gives a chain the website most practices list, and records a practice it opens later as a signal", async () => {
+    const chain = (id: string, name: string, website: string | null, serviceTypes = ["Dentist"]): CqcLocation => ({
+      ...practice(id, name, "LS2 7EE", website),
+      providerId: `2-prov-${run}`,
+      providerName: `Brightway Dental ${run} Ltd`,
+      serviceTypes,
+    });
+    const site = `brightway-${run}.example`;
+    const opening = [chain("2-a", "Brightway Leeds", site), chain("2-b", "Brightway Otley", site), chain("2-c", "Otley Smiles", `otley-${run}.example`)];
+    vi.mocked(loadDirectory).mockResolvedValue(opening);
+    await runNow(owner);
+    const found = (await listCompanies(owner, `Brightway Dental ${run}`)).items[0];
+    expect(found.domain).toBe(site);
+    const signalsOf = () => db.select({ type: signals.signalType, summary: signals.summary }).from(signals).where(eq(signals.companyId, found.id));
+    expect((await signalsOf()).filter((s) => s.type === "new_location")).toEqual([]);
+
+    // Next week: one new dental practice, plus a care home that was never part of the ICP.
+    vi.mocked(loadDirectory).mockResolvedValue([...opening, chain("2-d", "Brightway Ilkley", site), chain("2-e", "Brightway Care Home", null, ["Residential homes"])]);
+    await runNow(owner);
+    await runNow(owner); // seen once, signalled once
+    const opened = (await signalsOf()).filter((s) => s.type === "new_location");
+    expect(opened).toHaveLength(1);
+    expect(opened[0].summary).toContain("Brightway Ilkley");
+    const sites = await db.select({ name: companyLocations.name }).from(companyLocations).where(eq(companyLocations.companyId, found.id));
+    expect(sites.map((s) => s.name).sort()).toEqual(["Brightway Ilkley", "Brightway Leeds", "Brightway Otley", "Otley Smiles"]);
     vi.mocked(loadDirectory).mockResolvedValue([]);
   });
 });

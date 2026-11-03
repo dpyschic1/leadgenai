@@ -261,16 +261,43 @@ export function jobBoardFromHtml(html: string): { provider: JobBoardProvider; bo
   return null;
 }
 
-/** Business email addresses the site publishes, on its own domain first. */
+/** Business email addresses the site publishes: the company's own, shared inboxes (info@) first. */
 export function emailsFrom(html: string, site: string): string[] {
   const found = new Set<string>();
-  for (const match of decodeEntities(html).matchAll(/(?:mailto:)?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/gi)) {
-    const email = match[1].toLowerCase();
-    if (/\.(png|jpe?g|gif|svg|webp)$/.test(email) || /example\.|sentry|wixpress|@2x/.test(email)) continue;
-    found.add(email);
-  }
-  const own = [...found].filter((e) => e.endsWith(`@${site}`) || e.endsWith(`.${site}`));
-  return (own.length > 0 ? own : [...found]).slice(0, 3);
+  for (const match of decodeEntities(html).matchAll(/(?:mailto:)?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/gi)) found.add(match[1].toLowerCase());
+  return usableEmails([...found], site).slice(0, 3);
+}
+
+/** Template and tooling addresses that sites carry by mistake (changeme@client-domain.co.uk, sentry, image names). */
+const PLACEHOLDER_EMAIL =
+  /\.(png|jpe?g|gif|svg|webp)$|@2x|example\.|sentry|wixpress|changeme|client-?domain|your-?(domain|company|email|name)|^(name|email|user|test|someone|username|noreply|no-reply|donotreply)@|@(domain|email|company)\.(com|co\.uk)$/;
+/** Shared inboxes: the right way into a company, and what the company itself publishes for contact. */
+const ROLE_INBOX = /^(info|enquir|inquir|hello|contact|reception|office|admin|team|bookings?|appointments?|general|mail|sales|support|practice|surgery|clinic)/;
+/** Mail services a small practice may use for its own address; anyone else's (a web designer's) uses one too. */
+const NHS_MAIL = /@nhs\.net$/;
+/** Words too common in practice names to tie an address to one business. */
+const GENERIC_WORDS = new Set(["info", "mail", "dental", "dentist", "dentists", "medical", "health", "healthcare", "clinic", "care", "practice", "surgery", "group", "services", "centre", "center", "online", "the", "and", "london", "limited"]);
+
+const wordsOf = (text: string) => text.split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && !GENERIC_WORDS.has(w));
+
+/**
+ * The addresses that really belong to the business at `site`, shared inboxes first. Placeholders
+ * are dropped. An address on another domain (gmail, nhs.net) is kept only when the site has none
+ * of its own and the address names the business (kensingtondentists@gmail.com on
+ * kensington-dentist.com, not the web designer's by.blossom@yahoo.com); nhs.net addresses are
+ * NHS-issued, so they're kept too. Pure.
+ */
+export function usableEmails(emails: string[], site: string): string[] {
+  const real = [...new Set(emails.map((e) => e.trim().toLowerCase()))].filter((e) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(e) && !PLACEHOLDER_EMAIL.test(e));
+  const own = real.filter((e) => e.endsWith(`@${site}`) || e.endsWith(`.${site}`));
+  const siteWords = wordsOf(site.split(".")[0]);
+  const label = site.split(".")[0];
+  const namesBusiness = (email: string) => {
+    const local = email.split("@")[0];
+    return siteWords.some((w) => local.includes(w)) || wordsOf(local).some((w) => label.includes(w));
+  };
+  const kept = own.length > 0 ? own : real.filter((e) => NHS_MAIL.test(e) || namesBusiness(e));
+  return kept.sort((a, b) => Number(ROLE_INBOX.test(b)) - Number(ROLE_INBOX.test(a)));
 }
 
 /** UK phone numbers from tel: links, or written out on the page. */

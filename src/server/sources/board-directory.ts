@@ -85,7 +85,19 @@ export function nameFromBoardTitle(title: string | null | undefined): string | n
     .split(/\s+[|–—-]\s+/)
     .map((part) => part.trim())
     .filter((part) => part && !GENERIC_TITLE.test(part) && !/^(lever|ashby|greenhouse|powered by .*)$/i.test(part))[0];
-  return cleaned && cleaned.length >= 2 && cleaned.length <= 120 ? cleaned : null;
+  return cleanBoardName(cleaned);
+}
+
+/** "TPG Careers Page", "Acme Jobs", "Careers at Acme" → the company's own name ("TPG", "Acme"). Pure. */
+export function cleanBoardName(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const cleaned = decodeEntities(name)
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^(jobs|careers|open roles|open positions|work)\s+(at|with)\s+/i, "")
+    .replace(/[\s,:–—-]*\b(careers?|jobs?|job board|job openings|open roles|open positions)(\s+(page|site|portal|board))?$/i, "")
+    .trim();
+  return cleaned.length >= 2 && cleaned.length <= 120 && !GENERIC_TITLE.test(cleaned) ? cleaned : null;
 }
 
 /** The board's own name for the company: Greenhouse's API gives it; Lever and Ashby put it in the page title. */
@@ -93,7 +105,7 @@ async function boardName(provider: JobBoardProvider, token: string): Promise<str
   try {
     if (provider === "greenhouse") {
       const page = await politeGet(`https://boards-api.greenhouse.io/v1/boards/${token}`, { sameSite: false, timeoutMs: 10_000 });
-      return page.status === 200 ? (JSON.parse(page.body) as { name?: string }).name?.trim() || null : null;
+      return page.status === 200 ? cleanBoardName((JSON.parse(page.body) as { name?: string }).name) : null;
     }
     const page = await politeGet(provider === "lever" ? `https://jobs.lever.co/${token}` : `https://jobs.ashbyhq.com/${token}`, { timeoutMs: 10_000 });
     return page.status === 200 ? nameFromBoardTitle(page.body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]) : null;

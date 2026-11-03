@@ -160,15 +160,24 @@ function industryOf(provider: CqcProvider, industries: string[]): string | null 
 }
 
 /**
- * The provider as a found company. Its website is set only when every location that lists one
- * lists the same site (the provider's own, as given to the regulator); otherwise each practice
- * keeps its own website on its location. Pure.
+ * The provider's own website, from the sites its locations gave the regulator: the only one listed,
+ * or the one most locations share (rodericksdental.co.uk for 5 of a chain's practices, each other
+ * site once). Null when no site stands out; each practice then keeps its own on its location. Pure.
  */
+export function providerWebsite(websites: (string | null)[]): string | null {
+  const counts = new Map<string, number>();
+  for (const site of websites) if (site) counts.set(site, (counts.get(site) ?? 0) + 1);
+  const [first, second] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  if (!first) return null;
+  if (!second) return first[0];
+  return first[1] >= 2 && first[1] > second[1] ? first[0] : null;
+}
+
+/** The provider as a found company, with its own website when one stands out (see `providerWebsite`). Pure. */
 export function toFoundCompany(provider: CqcProvider, industries: string[], companyNumber: string | null): FoundCompany {
-  const sites = [...new Set(provider.locations.map((l) => l.website).filter((w): w is string => w !== null))];
   return {
     name: titleCaseCompanyName(provider.providerName),
-    domain: sites.length === 1 ? sites[0] : null,
+    domain: providerWebsite(provider.locations.map((l) => l.website)),
     industry: industryOf(provider, industries),
     hq: null,
     identifiers: [

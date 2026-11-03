@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { db, Tx } from "@/db";
 import {
   auditLogs,
@@ -237,13 +237,31 @@ export async function saveSourceLocations(
   }
 }
 
-/** Records the company's published email/phone (switchboard, info@). */
-export async function addCompanyContacts(
+/**
+ * Records what one source currently publishes as the company's email/phone (switchboard, info@),
+ * replacing what it published before: an address the source no longer shows is removed. A type
+ * the read found nothing of is left alone, so a contact page that failed to load once doesn't
+ * wipe the company's numbers. Other sources' contacts are never touched.
+ */
+export async function replaceCompanyContacts(
   tx: Tx,
   companyId: string,
   contacts: { emails: string[]; phones: string[] },
   source: { slug: SourceSlug; url: string | null },
 ): Promise<void> {
+  for (const [type, values] of [["email", contacts.emails], ["phone", contacts.phones]] as const) {
+    if (values.length === 0) continue;
+    await tx
+      .delete(companyContactPoints)
+      .where(
+        and(
+          eq(companyContactPoints.companyId, companyId),
+          eq(companyContactPoints.sourceSlug, source.slug),
+          eq(companyContactPoints.type, type),
+          notInArray(companyContactPoints.value, [...values]),
+        ),
+      );
+  }
   const rows = [
     ...contacts.emails.map((value) => ({ type: "email" as const, value })),
     ...contacts.phones.map((value) => ({ type: "phone" as const, value })),
