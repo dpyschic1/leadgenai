@@ -196,7 +196,8 @@ function SignalItem({
               AI{signal.confidence !== null && `, ${signal.confidence}% confidence`}
             </span>
           ) : signal.source === "provider" ? (
-            <span>Stated by the source</span>
+            // Website problems come from our own fixed checks; register facts are stated by the register.
+            <span>{signal.origin === "company_website" ? "Automatic website check" : "Stated by the source"}</span>
           ) : (
             <span>Added manually</span>
           )}

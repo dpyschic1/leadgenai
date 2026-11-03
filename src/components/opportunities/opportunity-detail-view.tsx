@@ -17,9 +17,10 @@ import { useOpportunity, useUpdateOpportunity } from "@/hooks/use-opportunities"
 import { usePermission } from "@/hooks/use-permission";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import { ApiError } from "@/lib/api/client";
-import type { OpportunityDetail } from "@/lib/api/types";
+import type { CompanyContact, OpportunityDetail } from "@/lib/api/types";
 import { OPPORTUNITY_STATUSES, STATUS_LABELS, type OpportunityStatus } from "@/lib/domain/opportunities";
 import { SENIORITY_LABELS } from "@/lib/domain/people";
+import { SOURCE_LABELS } from "@/lib/domain/sources";
 import { EDITOR_ROLES } from "@/lib/permissions";
 import { FeedbackPanel } from "./feedback-panel";
 import { ScoreBreakdown } from "./score-breakdown";
@@ -219,7 +220,29 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
           </Link>
         </p>
       )}
+      {opportunity.companyContacts.length > 0 && <CompanyContacts contacts={opportunity.companyContacts} />}
     </section>
+  );
+}
+
+/** The company's published lines (switchboard, info@, each practice's phone), with where each came from. */
+function CompanyContacts({ contacts }: { contacts: CompanyContact[] }) {
+  return (
+    <div className="mt-4 border-t pt-4">
+      <h3 className="text-sm font-medium">Company contact</h3>
+      <ul className="mt-2 space-y-0.5">
+        {contacts.map((contact) => (
+          <li key={`${contact.type}:${contact.value}`}>
+            <ContactLink
+              href={contact.type === "email" ? `mailto:${contact.value}` : `tel:${contact.value.replace(/[^\d+]/g, "")}`}
+              label={contact.label ? `${contact.value} · ${contact.label}` : contact.value}
+              icon={contact.type === "email" ? MailIcon : PhoneIcon}
+            />
+            {contact.source && <p className="pl-8 text-xs text-muted-foreground">Published, from {SOURCE_LABELS[contact.source]}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

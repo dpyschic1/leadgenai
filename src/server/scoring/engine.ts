@@ -452,8 +452,16 @@ function pickPerson(people: EnginePerson[], lead: EngineSignal, service: EngineS
   const fromSignal = lead.personId ? people.find((p) => p.id === lead.personId) : undefined;
   if (fromSignal) return fromSignal;
   const bySeniority = [...people].sort((a, b) => (SENIORITY_RANK.get(a.seniority) ?? 99) - (SENIORITY_RANK.get(b.seniority) ?? 99));
-  const buyer = service ? bySeniority.find((p) => p.jobFunction && service.targetJobFunctions.includes(p.jobFunction)) : undefined;
-  return buyer ?? bySeniority[0] ?? null;
+  const isBuyer = (p: EnginePerson) => Boolean(service && p.jobFunction && service.targetJobFunctions.includes(p.jobFunction));
+  // Someone the team can actually email or call beats a name alone (e.g. a director from the register).
+  const reachable = (p: EnginePerson) => p.hasEmail || p.hasPhone;
+  return (
+    bySeniority.find((p) => isBuyer(p) && reachable(p)) ??
+    bySeniority.find(reachable) ??
+    bySeniority.find(isBuyer) ??
+    bySeniority[0] ??
+    null
+  );
 }
 
 function opportunityType(lead: EngineSignal, service: EngineService | null): string {

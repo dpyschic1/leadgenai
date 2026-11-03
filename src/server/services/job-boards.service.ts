@@ -9,7 +9,8 @@ import { analyzeSignal } from "@/server/ai/signal-analysis";
 import type { Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
 import { rateLimit } from "@/server/http/rate-limit";
-import { fetchBoardJobs, MAX_JOBS_PER_BOARD } from "@/server/jobs/fetch-jobs";
+import { MAX_JOBS_PER_BOARD } from "@/server/jobs/fetch-jobs";
+import { BOARD_FRESH_MS, boardJobsFor, jobInCountries, type CachedJob } from "@/server/sources/board-directory";
 import {
   jobSignalValues,
   jobSourceText,
@@ -18,7 +19,6 @@ import {
   roleKey,
   SIGNAL_DELETED_REASON,
 } from "@/server/jobs/job-signal";
-import type { NormalizedJob } from "@/server/jobs/types";
 import { getReferenceData } from "./reference-data.service";
 import { loadServices } from "./services.service";
 import { insertDetectedSignal } from "./signals.service";
@@ -32,6 +32,9 @@ import { insertDetectedSignal } from "./signals.service";
  * then a full signal analysis only for the relevant ones, a few per run. Whatever is left waits
  * for the next run (a few minutes later). The caller re-scores the company afterwards.
  */
+
+/** Why a job was skipped without the AI: it is outside every country the workspace sells to. */
+export const OUTSIDE_REGIONS = "Outside the countries your services target";
 
 /** What one sync of a board did. */
 export type JobFetchResult = {
@@ -90,7 +93,11 @@ export async function connectDetectedBoard(
  * Refreshes the company's jobs and records the relevant ones as signals (background ingestion,
  * `actor.userId` null). The caller re-scores the company afterwards.
  */
-export async function syncCompanyJobs(auth: Actor, companyId: string): Promise<JobFetchResult> {
+export async function syncCompanyJobs(
+  auth: Actor,
+  companyId: string,
+  { freshWithinMs = BOARD_FRESH_MS }: { freshWithinMs?: number } = {},
+): Promise<JobFetchResult> {
   const company = await loadCompany(auth, companyId);
   const [board] = await db.select().from(companyJobBoards).where(boardOf(auth, companyId)).limit(1);
   if (!board) throw new AppError("NOT_FOUND", "Connect a job board first.");
@@ -99,9 +106,10 @@ export async function syncCompanyJobs(auth: Actor, companyId: string): Promise<J
     throw new AppError("VALIDATION_FAILED", "Add your services first (Services & ICP), so the AI knows which jobs matter to you.");
   }
 
-  let fetched: NormalizedJob[];
+  // From the shared cache: a board several workspaces watch is downloaded once.
+  let fetched: CachedJob[];
   try {
-    fetched = await fetchBoardJobs(board.provider, board.boardToken);
+    fetched = await boardJobsFor(board.provider, board.boardToken, freshWithinMs);
   } catch (error) {
     const message = error instanceof AppError ? error.message : "The job board couldn't be reached.";
     await db.update(companyJobBoards).set({ lastError: message, lastFetchedAt: new Date() }).where(boardOf(auth, companyId));
@@ -141,6 +149,15 @@ export async function syncCompanyJobs(auth: Actor, companyId: string): Promise<J
       return false;
     }
   };
+
+  // Jobs outside the countries the workspace sells to are skipped without asking the AI.
+  const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
+  const pendingNow = await openJobs(auth, companyId, eq(jobPostings.triage, "pending"), MAX_JOBS_PER_BOARD);
+  const outside = pendingNow.filter((job) => !jobInCountries(job.location, countries)).map((job) => job.id);
+  if (outside.length > 0) {
+    skipped += outside.length;
+    await db.update(jobPostings).set({ triage: "skipped", triageReason: OUTSIDE_REGIONS }).where(inArray(jobPostings.id, outside));
+  }
 
   // Stage 1: title check for jobs the AI hasn't seen yet.
   const untriaged = await openJobs(auth, companyId, eq(jobPostings.triage, "pending"), MAX_TRIAGE_PER_FETCH);
@@ -228,7 +245,7 @@ export async function syncCompanyJobs(auth: Actor, companyId: string): Promise<J
  * Saves the board's current jobs: new ones are added, known ones refreshed, and jobs no longer on
  * the board are marked closed. One transaction, so `now()` is the same instant throughout.
  */
-async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: NormalizedJob[]) {
+async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: CachedJob[]) {
   return db.transaction(async (tx) => {
     let added = 0;
     for (let start = 0; start < jobs.length; start += UPSERT_CHUNK) {
@@ -243,6 +260,7 @@ async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: 
         url: job.url,
         description: job.description?.slice(0, MAX_SOURCE_TEXT) ?? null,
         postedAt: job.postedAt,
+        boardJobId: job.boardJobId,
       }));
       const result = await tx
         .insert(jobPostings)
@@ -256,6 +274,7 @@ async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: 
             url: sql`excluded.url`,
             description: sql`excluded.description`,
             postedAt: sql`excluded.posted_at`,
+            boardJobId: sql`excluded.board_job_id`,
             lastSeenAt: sql`now()`,
             closedAt: null,
           },

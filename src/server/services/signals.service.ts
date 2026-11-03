@@ -162,8 +162,8 @@ function signalColumns(input: DetectedSignalValues) {
     summary: input.summary,
     evidenceLabel: input.evidenceLabel,
     source: input.source,
-    // Confidence describes the model's classification; it has no meaning for manual entries.
-    confidence: input.source === "ai" ? input.confidence : null,
+    // Confidence describes how sure the AI or a source's rule is; it has no meaning for manual entries.
+    confidence: input.source === "manual" ? null : input.confidence,
     occurredAt: toOccurredAt(input.occurredOn),
   };
 }

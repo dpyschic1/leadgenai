@@ -62,9 +62,19 @@ const VERIFICATION_STYLE: Record<ContactVerification, { icon: LucideIcon; classN
 const checkedFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
 
 /** One line for an email/phone's state, e.g. "Verified · 2 Nov 2026" or "Not checked". */
+const ORIGIN_LABELS: Record<ContactCheck["origin"], string | null> = {
+  entered: null,
+  published: "Published on the company's website",
+  inferred: "Inferred from the website's email pattern, not verified",
+};
+
 export function verificationText(check: ContactCheck): string {
   const label = VERIFICATION_LABELS[check.state];
-  return check.checkedAt ? `${label} · ${checkedFormat.format(new Date(check.checkedAt))}` : label;
+  const state = check.checkedAt ? `${label} · ${checkedFormat.format(new Date(check.checkedAt))}` : label;
+  const origin = ORIGIN_LABELS[check.origin];
+  // An inferred address is never verified; its origin says so instead of a second "not checked".
+  if (check.origin === "inferred" && check.state === "unknown") return origin!;
+  return origin ? `${origin} · ${state}` : state;
 }
 
 /** A small icon for an email/phone's state, explained on hover. `inline` also writes the label. */

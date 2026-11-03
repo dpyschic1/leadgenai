@@ -5,7 +5,7 @@ import { AppError } from "@/server/http/errors";
 import { runTick } from "@/server/ingestion/worker";
 
 /**
- * The scheduler's entry point: starts due recipes and processes queued jobs for every workspace.
+ * The scheduler's entry point: queues daily checks and processes queued jobs for every workspace.
  * Called every few minutes by an external cron (cron-job.org) with POST, and daily by Vercel Cron
  * with GET; both send `Authorization: Bearer <CRON_SECRET>`.
  */

@@ -1,5 +1,5 @@
 import "server-only";
-import { lookup } from "node:dns/promises";
+import { lookup, resolveMx } from "node:dns/promises";
 import { isIP } from "node:net";
 
 /**
@@ -20,7 +20,8 @@ const ROBOTS_TTL_MS = 60 * 60 * 1000;
 
 export class FetchBlockedError extends Error {}
 
-export type FetchedPage = { url: string; status: number; contentType: string; body: string };
+/** `body` is the text; `bytes` the raw download, for files (e.g. a zip). */
+export type FetchedPage = { url: string; status: number; contentType: string; body: string; bytes: Buffer };
 
 const lastRequestAt = new Map<string, number>();
 const robotsCache = new Map<string, { rules: RobotsRules | null; at: number }>();
@@ -55,6 +56,18 @@ async function assertPublicHost(hostname: string): Promise<void> {
   }
 }
 
+/**
+ * True when the domain has mail servers (MX records). This only shows the domain receives email,
+ * not that any particular mailbox exists.
+ */
+export async function domainReceivesEmail(domain: string): Promise<boolean> {
+  try {
+    return (await resolveMx(domain)).some((record) => record.exchange && record.exchange !== ".");
+  } catch {
+    return false;
+  }
+}
+
 /** True when the host name exists in DNS: a cheap first check before fetching a guessed domain. */
 export async function hostResolves(hostname: string): Promise<boolean> {
   try {
@@ -73,8 +86,8 @@ async function throttle(site: string): Promise<void> {
   lastRequestAt.set(site, Date.now());
 }
 
-async function readCapped(response: Response): Promise<string> {
-  if (!response.body) return "";
+async function readCapped(response: Response, maxBytes = MAX_BYTES): Promise<Buffer> {
+  if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -82,13 +95,18 @@ async function readCapped(response: Response): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel();
       break;
     }
     chunks.push(value);
   }
-  return new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks));
+  return Buffer.concat(chunks);
+}
+
+async function decode(response: Response, maxBytes: number): Promise<{ body: string; bytes: Buffer }> {
+  const bytes = await readCapped(response, maxBytes);
+  return { body: new TextDecoder("utf-8", { fatal: false }).decode(bytes), bytes };
 }
 
 /**
@@ -97,7 +115,18 @@ async function readCapped(response: Response): Promise<string> {
  */
 export async function politeGet(
   url: string,
-  { sameSite = true, headers = {}, timeoutMs = TIMEOUT_MS }: { sameSite?: boolean; headers?: Record<string, string>; timeoutMs?: number } = {},
+  {
+    sameSite = true,
+    headers = {},
+    timeoutMs = TIMEOUT_MS,
+    maxBytes = MAX_BYTES,
+  }: {
+    sameSite?: boolean;
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+    /** For a known large file (e.g. a register's weekly download); pages stay at the default cap. */
+    maxBytes?: number;
+  } = {},
 ): Promise<FetchedPage> {
   let current = new URL(url);
   const site = siteOf(current.hostname);
@@ -124,7 +153,7 @@ export async function politeGet(
       url: current.toString(),
       status: response.status,
       contentType: response.headers.get("content-type") ?? "",
-      body: await readCapped(response),
+      ...(await decode(response, maxBytes)),
     };
   }
   throw new FetchBlockedError("Too many redirects");
@@ -144,7 +173,7 @@ async function robotsAllow(url: URL): Promise<boolean> {
         cache: "no-store",
         signal: AbortSignal.timeout(ROBOTS_TIMEOUT_MS),
       });
-      if (response.ok) rules = parseRobots((await readCapped(response)).slice(0, 200_000), "LeadGenAIBot");
+      if (response.ok) rules = parseRobots((await readCapped(response)).subarray(0, 200_000).toString("utf8"), "LeadGenAIBot");
       else await response.body?.cancel();
     } catch {
       rules = null;

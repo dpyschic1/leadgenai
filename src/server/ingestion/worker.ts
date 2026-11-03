@@ -1,7 +1,9 @@
 import "server-only";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
+import { sources } from "@/db/schema";
 import { AppError } from "@/server/http/errors";
+import { collectFromArchive, validateDueBoards } from "@/server/sources/board-directory";
 import { HANDLERS, jobContext } from "./handlers";
 import { claimNext, enqueue, markDone, markFailed, postpone, type JobRow } from "./queue";
 
@@ -17,7 +19,7 @@ export type TickResult = { processed: number; failed: number; postponed: number 
 const DEFAULT_BUDGET_MS = 40_000;
 
 /** Workspace-wide checks that run once a day for every workspace with services. */
-const DAILY_KINDS = ["discover_companies", "scan_tenders"] as const;
+const DAILY_KINDS = ["discover_companies", "discover_cqc", "evaluate_boards", "scan_tenders"] as const;
 
 /**
  * Queues today's discovery and tender checks for workspaces that have services, each a day after
@@ -47,10 +49,37 @@ export async function queueChecksNow(workspaceId: string): Promise<void> {
   }
 }
 
+/** Share of a tick's budget given to shared job-board discovery before workspace jobs run. */
+const SHARED_SHARE = 0.4;
+/** Below this many boards waiting to be checked, read more candidates from the archive. */
+const MIN_UNCHECKED = 25;
+/** Boards checked per tick (one request each to the provider). */
+const BOARDS_PER_TICK = 10;
+
+/**
+ * Job-board discovery shared by every workspace: read more candidates from the archive when few
+ * are waiting, then validate and cache the boards that are due. Skipped when the source is not
+ * approved platform-wide. A failure here never stops the workspace jobs.
+ */
+async function runSharedStep(deadline: number): Promise<void> {
+  try {
+    const [source] = await db.select({ status: sources.authorizationStatus }).from(sources).where(eq(sources.slug, "board_directory"));
+    if (source?.status !== "approved") return;
+    const [{ waiting }] = await db.execute<{ waiting: number }>(sql`
+      select count(*)::int as waiting from job_board_directory where validation_status = 'unverified'`);
+    if (waiting < MIN_UNCHECKED && Date.now() < deadline) await collectFromArchive();
+    if (Date.now() < deadline) await validateDueBoards({ limit: BOARDS_PER_TICK, deadline });
+  } catch (error) {
+    console.error("[ingestion] shared job-board step failed", error);
+  }
+}
+
 export async function runTick({ workspaceId, budgetMs = DEFAULT_BUDGET_MS }: { workspaceId?: string; budgetMs?: number } = {}): Promise<TickResult> {
   const startedAt = Date.now();
   const result: TickResult = { processed: 0, failed: 0, postponed: 0 };
   await queueDailyChecks(workspaceId);
+  // Shared work first (archive reading, board checks), within a slice of the budget.
+  await runSharedStep(startedAt + budgetMs * SHARED_SHARE);
 
   while (Date.now() - startedAt < budgetMs) {
     const job = await claimNext(workspaceId);

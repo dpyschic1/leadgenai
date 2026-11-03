@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, max, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   auditLogs,
@@ -7,6 +7,7 @@ import {
   companyContactPoints,
   companyIdentifiers,
   companyJobBoards,
+  companyLocations,
   ingestionJobs,
   signals,
   sourceRecords,
@@ -20,6 +21,7 @@ import { AppError } from "@/server/http/errors";
 import { enqueue } from "@/server/ingestion/queue";
 import { queueChecksNow, runTick } from "@/server/ingestion/worker";
 import { SOURCE_ADAPTERS } from "@/server/sources";
+import { CQC_ATTRIBUTION } from "@/server/sources/cqc";
 
 /** Settings → Data sources (FR-SIG-005, PRD §8.12), "Run now", and each company's provenance. */
 
@@ -44,7 +46,8 @@ export async function listDataSources(auth: AuthContext): Promise<DataSource[]> 
 
   return SOURCE_SLUGS.flatMap((slug) => {
     const row = rows.find((r) => r.slug === slug);
-    if (!row) return [];
+    // Sources we aren't allowed to use (e.g. FCA, restricted by its terms) aren't shown at all.
+    if (!row || row.authorizationStatus !== "approved") return [];
     const kinds = kindsOf(slug);
     const lastSuccess = successes.filter((s) => kinds.includes(s.kind) && s.at).map((s) => s.at!.getTime());
     const failure = failures.filter((f) => kinds.includes(f.kind) && f.at).sort((a, b) => b.at!.getTime() - a.at!.getTime())[0];
@@ -113,6 +116,12 @@ export async function getCompanySources(auth: AuthContext, companyId: string): P
       ),
   ]);
 
+  const sites = await db
+    .select()
+    .from(companyLocations)
+    .where(and(eq(companyLocations.companyId, companyId), isNotNull(companyLocations.externalId)))
+    .orderBy(companyLocations.name);
+  const usesCqc = records.some((r) => r.sourceSlug === "cqc") || sites.some((s) => s.sourceSlug === "cqc");
   const match = records.find((r) => r.recordType === "website_match");
   return {
     discoveredBy: (company.sourceSlug as SourceSlug | null) ?? null,
@@ -125,6 +134,8 @@ export async function getCompanySources(auth: AuthContext, companyId: string): P
     records: records
       .filter((r) => r.recordType !== "website_match")
       .map((r) => ({ source: r.sourceSlug as SourceSlug, recordType: r.recordType, url: r.url, observedAt: r.observedAt.toISOString() })),
+    sites: sites.map((s) => ({ name: s.name ?? "Location", website: s.website, phone: s.phone, postalCode: s.postalCode, source: (s.sourceSlug as SourceSlug | null) ?? null })),
+    attributions: usesCqc ? [CQC_ATTRIBUTION] : [],
     pendingJobs: pending,
   };
 }

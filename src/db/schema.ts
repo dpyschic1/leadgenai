@@ -38,7 +38,9 @@ import { sql } from "drizzle-orm";
 import { FEEDBACK_VERDICTS } from "@/lib/domain/feedback";
 import { JOB_BOARD_PROVIDERS, JOB_TRIAGE_STATES } from "@/lib/domain/job-boards";
 import {
+  BOARD_VALIDATIONS,
   COMPANY_ID_SCHEMES,
+  COMPANY_IDENTITIES,
   INGESTION_JOB_KINDS,
   INGESTION_JOB_STATUSES,
   SOURCE_AUTHORIZATIONS,
@@ -108,6 +110,12 @@ export const ingestionJobKind = pgEnum("ingestion_job_kind", INGESTION_JOB_KINDS
 export const ingestionJobStatus = pgEnum("ingestion_job_status", INGESTION_JOB_STATUSES);
 
 export const companyIdScheme = pgEnum("company_id_scheme", COMPANY_ID_SCHEMES);
+
+/** How sure we are a company record is the real, identified business (see `COMPANY_IDENTITIES`). */
+export const companyIdentity = pgEnum("company_identity", COMPANY_IDENTITIES);
+
+/** Whether a job board found in the archive was confirmed by the provider's own endpoint. */
+export const boardValidation = pgEnum("board_validation", BOARD_VALIDATIONS);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -290,6 +298,11 @@ export const companies = pgTable(
     /** The source that found this company; null when it was added by hand. */
     sourceSlug: text().references(() => sources.slug),
     discoveredAt: timestamp({ withTimezone: true }),
+    /**
+     * Provisional when known only from one source's own name for it (e.g. a job board), partial
+     * once its official website is confirmed, verified when matched to a register or entered by hand.
+     */
+    identityStatus: companyIdentity().notNull().default("verified"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -314,6 +327,15 @@ export const companyLocations = pgTable(
     region: text(),
     country: countryCode(),
     postalCode: text(),
+    /**
+     * A site with its own identity, e.g. one of a provider's dental practices on the CQC register:
+     * its name, website and phone, and the source's id for it. Null for addresses entered by hand.
+     */
+    name: text(),
+    website: text(),
+    phone: text(),
+    sourceSlug: text().references(() => sources.slug),
+    externalId: text(),
     createdAt: createdAt(),
   },
   (t) => [
@@ -321,6 +343,10 @@ export const companyLocations = pgTable(
     uniqueIndex("company_locations_one_hq_idx")
       .on(t.companyId)
       .where(sql`${t.type} = 'headquarters'`),
+    // One row per source location, so re-reading the register updates it instead of duplicating.
+    uniqueIndex("company_locations_external_idx")
+      .on(t.companyId, t.sourceSlug, t.externalId)
+      .where(sql`${t.externalId} is not null`),
     check("company_locations_country_chk", isCountryCode("country")),
   ],
 );
@@ -593,6 +619,88 @@ export const signalEvidence = pgTable(
 // Job boards (signals fetched from a company's public job board)
 // ---------------------------------------------------------------------------
 
+/**
+ * Every public job board the system knows of, shared by all workspaces (a board's existence is a
+ * public fact; nothing workspace-specific is stored here). Candidates come from the Common Crawl
+ * archive, company websites and boards entered by hand, and are only `valid` once the provider's
+ * own endpoint confirms them. Also the work queue for checking boards (`next_check_at`).
+ */
+export const jobBoardDirectory = pgTable(
+  "job_board_directory",
+  {
+    provider: jobBoardProvider().notNull(),
+    boardToken: text().notNull(),
+    /** The board's own name for the company, as its provider returns it; null until validated. */
+    boardName: text(),
+    /** Where the board was first found, e.g. an archived URL or a company's careers page. */
+    discoveryUrl: text(),
+    discoveredAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    validationStatus: boardValidation().notNull().default("unverified"),
+    lastVerifiedAt: timestamp({ withTimezone: true }),
+    /** When the jobs were last downloaded into `board_jobs`. */
+    lastFetchedAt: timestamp({ withTimezone: true }),
+    nextCheckAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    attempts: integer().notNull().default(0),
+    lastError: text(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.provider, t.boardToken] }),
+    index("job_board_directory_due_idx").on(t.validationStatus, t.nextCheckAt),
+  ],
+);
+
+/**
+ * The open jobs of a validated board, downloaded once for all workspaces and deduplicated by
+ * provider + board + the provider's job id. Only what evaluation and evidence need is kept, and
+ * closed jobs are pruned. Each workspace's verdict on a job lives in its own `job_postings`.
+ */
+export const boardJobs = pgTable(
+  "board_jobs",
+  {
+    id: id(),
+    provider: jobBoardProvider().notNull(),
+    boardToken: text().notNull(),
+    externalId: text().notNull(),
+    title: text().notNull(),
+    department: text(),
+    location: text(),
+    url: text().notNull(),
+    /** Plain text, trimmed to the AI analysis limit. */
+    description: text(),
+    postedAt: timestamp({ withTimezone: true }),
+    /** When the provider says the job last changed, if it does. */
+    updatedAt: timestamp({ withTimezone: true }),
+    firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp({ withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("board_jobs_external_idx").on(t.provider, t.boardToken, t.externalId),
+    index("board_jobs_seen_idx").on(t.firstSeenAt),
+    foreignKey({
+      name: "board_jobs_board_fk",
+      columns: [t.provider, t.boardToken],
+      foreignColumns: [jobBoardDirectory.provider, jobBoardDirectory.boardToken],
+    }).onDelete("cascade"),
+  ],
+);
+
+/** How far the archive has been read per provider and crawl, so slow index queries can resume. */
+export const directoryCrawls = pgTable(
+  "directory_crawls",
+  {
+    provider: jobBoardProvider().notNull(),
+    /** The archive's crawl id, e.g. "CC-MAIN-2026-43". */
+    crawlId: text().notNull(),
+    nextPage: integer().notNull().default(0),
+    totalPages: integer(),
+    finishedAt: timestamp({ withTimezone: true }),
+    lastError: text(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.provider, t.crawlId] })],
+);
+
 /** The job board a company publishes its openings on. One per company. */
 export const companyJobBoards = pgTable(
   "company_job_boards",
@@ -611,6 +719,8 @@ export const companyJobBoards = pgTable(
   },
   (t) => [
     index("company_job_boards_workspace_idx").on(t.workspaceId),
+    // One company per board per workspace, so a board found twice never makes two companies.
+    uniqueIndex("company_job_boards_board_idx").on(t.workspaceId, t.provider, t.boardToken),
     foreignKey({
       name: "company_job_boards_company_fk",
       columns: [t.companyId, t.workspaceId],
@@ -620,8 +730,12 @@ export const companyJobBoards = pgTable(
 );
 
 /**
- * A job seen on a company's board. Kept after it closes, so a role that stays open for months
- * (a staffing signal in itself) can be told apart from a new one, and a job is never analysed twice.
+ * A job seen on a company's board, with this workspace's verdict on it (triage, signal). Kept after
+ * it closes, so a role that stays open for months (a staffing signal in itself) can be told apart
+ * from a new one, and a job is never analysed twice.
+ *
+ * Denormalized: title, location, url and description repeat the shared `board_jobs` row (linked by
+ * `board_job_id`), so the existing job-board code that reads them here keeps working unchanged.
  */
 export const jobPostings = pgTable(
   "job_postings",
@@ -648,6 +762,8 @@ export const jobPostings = pgTable(
     triageReason: text(),
     /** The signal recorded from this job. Composite FK uses ON DELETE SET NULL (signal_id) — hand-written in migration 0013. */
     signalId: uuid(),
+    /** The shared public job this row evaluates; null for jobs fetched before the shared cache. */
+    boardJobId: uuid().references(() => boardJobs.id, { onDelete: "set null" }),
   },
   (t) => [
     uniqueIndex("job_postings_company_external_idx").on(t.companyId, t.provider, t.externalId),

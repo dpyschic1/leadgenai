@@ -80,6 +80,7 @@ export async function getCompany(auth: AuthContext, companyId: string): Promise<
     employeeCount: company.employeeCount,
     description: company.description,
     discoveredBy: (company.sourceSlug as SourceSlug | null) ?? null,
+    identityStatus: company.identityStatus,
     locations: locations.map((l) => ({
       id: l.id,
       type: l.type,

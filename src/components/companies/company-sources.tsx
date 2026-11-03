@@ -5,13 +5,15 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCompanySources, useRefreshCompany } from "@/hooks/use-data-sources";
-import { SOURCE_LABELS, type SourceSlug } from "@/lib/domain/sources";
+import { COMPANY_IDENTITY_LABELS, SOURCE_LABELS, type CompanyIdentity, type SourceSlug } from "@/lib/domain/sources";
 import { cn } from "@/lib/utils";
 
 const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
 
 const RECORD_LABELS: Record<string, string> = {
   company_profile: "Register entry",
+  cqc_provider: "CQC register entry",
+  job_board: "Job board",
   officer_list: "Directors",
   tender: "Public tender",
   "web_page:home": "Website: home page",
@@ -120,6 +122,25 @@ export function CompanySourcesCard({ companyId, canEdit }: { companyId: string; 
             </div>
           )}
 
+          {data.sites.length > 0 && (
+            <div>
+              <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                {data.sites.length === 1 ? "Registered location" : `${data.sites.length} registered locations`}
+              </p>
+              <ul className="mt-2 space-y-2">
+                {data.sites.slice(0, 6).map((site) => (
+                  <li key={`${site.name}:${site.postalCode}`} className="min-w-0">
+                    <p className="truncate font-medium">{site.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {[site.postalCode, site.phone, site.website].filter(Boolean).join(" · ") || "No contact details listed"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              {data.sites.length > 6 && <p className="mt-1 text-xs text-muted-foreground">and {data.sites.length - 6} more</p>}
+            </div>
+          )}
+
           {data.records.length > 0 && (
             <div>
               <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Last checked</p>
@@ -139,13 +160,37 @@ export function CompanySourcesCard({ companyId, canEdit }: { companyId: string; 
               </ul>
             </div>
           )}
+
+          {data.attributions.map((line) => (
+            <p key={line} className="border-t pt-3 text-xs text-muted-foreground">
+              {line}
+            </p>
+          ))}
         </div>
       )}
     </aside>
   );
 }
 
-/** "Found automatically · Companies House": marks a company a recipe found rather than a person added. */
+const IDENTITY_HINTS: Record<Exclude<CompanyIdentity, "verified">, string> = {
+  provisional: "Known only from its own job board so far: not yet matched to a register or a confirmed website.",
+  partial: "Its website is confirmed, but it isn't matched to a register number yet.",
+};
+
+/** Flags a company whose identity isn't fully confirmed; shows nothing for a verified one. */
+export function IdentityStatusBadge({ status }: { status: CompanyIdentity }) {
+  if (status === "verified") return null;
+  return (
+    <span
+      title={IDENTITY_HINTS[status]}
+      className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800"
+    >
+      {COMPANY_IDENTITY_LABELS[status]}
+    </span>
+  );
+}
+
+/** "Found automatically · Companies House": marks a company a source found rather than a person added. */
 export function FoundBadge({ source, compact = false, className }: { source: SourceSlug; compact?: boolean; className?: string }) {
   return (
     <span

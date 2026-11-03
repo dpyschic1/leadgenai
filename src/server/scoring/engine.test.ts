@@ -192,6 +192,14 @@ describe("scoreCompany", () => {
     expect(score({ people, signals: [signal({ personId: "p2" })] }).primaryPersonId).toBe("p2");
   });
 
+  it("prefers someone the team can reach over a more senior name with no contact details", () => {
+    const director = { ...base.people[0], id: "d1", name: "A Director", hasEmail: false, hasPhone: false };
+    const manager = { id: "m1", name: "Practice Manager", seniority: "manager" as const, jobFunction: null, hasEmail: false, hasPhone: true, suggestable: true, verifiedContact: false };
+    expect(score({ people: [director, manager] }).primaryPersonId).toBe("m1");
+    // With no one reachable, the most senior person is still suggested.
+    expect(score({ people: [director, { ...manager, hasPhone: false }] }).primaryPersonId).toBe("d1");
+  });
+
   it("labels RFPs and reports the highest recent urgency", () => {
     const rfp = score({ signals: [signal({ signalType: "rfp_tender", urgency: "high" }), signal({ id: "s2", urgency: "low", intentLevel: "low" })] });
     expect(rfp.type).toBe("rfp");

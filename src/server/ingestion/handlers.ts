@@ -1,10 +1,22 @@
 import "server-only";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
-import { companies, companyIdentifiers, companyJobBoards, companyLocations, sourceRecords } from "@/db/schema";
+import {
+  companies,
+  companyIdentifiers,
+  companyJobBoards,
+  companyLocations,
+  companyPeople,
+  contactPoints,
+  jobPostings,
+  people,
+  sourceRecords,
+} from "@/db/schema";
+import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import type { IngestionJobKind } from "@/lib/domain/sources";
-import { CATEGORY_CPV_CODES, INDUSTRY_SIC_CODES } from "@/lib/domain/uk-codes";
+import { CATEGORY_CPV_CODES, INDUSTRY_CQC_SERVICE_TYPES, INDUSTRY_SIC_CODES } from "@/lib/domain/uk-codes";
+import { TRIAGE_BATCH_SIZE, triageJobs } from "@/server/ai/job-triage";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
 import { extractWebsiteFacts } from "@/server/ai/website-extract";
 import { systemActor, type Actor } from "@/server/auth/actor";
@@ -15,13 +27,16 @@ import { getReferenceData } from "@/server/services/reference-data.service";
 import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal } from "@/server/services/signals.service";
-import { companiesHouse } from "@/server/sources/companies-house";
-import { findWebsite, readWebsite } from "@/server/sources/company-website";
-import { jobFunctionFromTitle, seniorityFromTitle } from "@/server/sources/names";
+import { boardJobsFor, jobInCountries } from "@/server/sources/board-directory";
+import { companiesHouse, findCompanyNumber } from "@/server/sources/companies-house";
+import { findWebsite, readWebsite, websiteFindings } from "@/server/sources/company-website";
+import { fetchLocationDetail, loadDirectory, providersFor, toFoundCompany as toCqcCompany } from "@/server/sources/cqc";
+import { domainReceivesEmail } from "@/server/sources/http";
+import { emailFromPattern, emailPatternOf, inferEmailPattern, jobFunctionFromTitle, seniorityFromTitle, type EmailPattern } from "@/server/sources/names";
 import { searchTenders, tenderSourceText } from "@/server/sources/uk-tenders";
-import { formationSignal, NEW_COMPANY_DAYS, signalFromAnalysis } from "./found-signal";
+import { formationSignal, NEW_COMPANY_DAYS, newLocationSignal, signalFromAnalysis } from "./found-signal";
 import { sourceRunnable, type JobRow } from "./queue";
-import { addCompanyContacts, addFoundPeople, knownIdentifiers, resolveCompany, saveSourceRecord } from "./resolve";
+import { addCompanyContacts, addFoundPeople, knownIdentifiers, resolveCompany, saveSourceLocations, saveSourceRecord } from "./resolve";
 
 /**
  * One handler per kind of background job (Spec §11). Each does a small piece of work, records
@@ -47,7 +62,14 @@ const TENDER_ANALYSES_PER_JOB = 3;
 
 async function loadCompany(actor: Actor, companyId: string) {
   const [row] = await db
-    .select({ id: companies.id, name: companies.canonicalName, domain: companies.domain, industry: companies.industry, city: companyLocations.city })
+    .select({
+      id: companies.id,
+      name: companies.canonicalName,
+      domain: companies.domain,
+      industry: companies.industry,
+      identity: companies.identityStatus,
+      city: companyLocations.city,
+    })
     .from(companies)
     .leftJoin(companyLocations, and(eq(companyLocations.companyId, companies.id), eq(companyLocations.type, "headquarters")))
     .where(and(eq(companies.id, companyId), eq(companies.workspaceId, actor.workspaceId)))
@@ -112,6 +134,199 @@ async function discoverCompanies({ actor }: JobContext): Promise<JobResult> {
   return { followUps };
 }
 
+// --- discover_cqc: providers of the ICP's health and care services, with each practice --------
+
+/** New CQC providers added per run; the API (when configured) is asked about this many locations each. */
+const CQC_PROVIDERS_PER_RUN = 15;
+const CQC_API_LOCATIONS_PER_PROVIDER = 3;
+
+async function discoverCqc({ actor }: JobContext): Promise<JobResult> {
+  const icp = await icpOf(actor);
+  const industries = icp.industries.filter((slug) => INDUSTRY_CQC_SERVICE_TYPES[slug]);
+  if (!icp.targetsUk || industries.length === 0 || !(await sourceRunnable(actor.workspaceId, "cqc"))) {
+    return { followUps: [], skipped: true };
+  }
+
+  const known = await knownIdentifiers(db, actor.workspaceId, "gb_cqc_provider");
+  // Providers that list a website first: they can be read and checked further.
+  const providers = providersFor(await loadDirectory(), industries)
+    .filter((p) => !known.has(p.providerId))
+    .sort((a, b) => Number(b.locations.some((l) => l.website)) - Number(a.locations.some((l) => l.website)))
+    .slice(0, CQC_PROVIDERS_PER_RUN);
+
+  const followUps: FollowUp[] = [];
+  for (const provider of providers) {
+    const postcodes = provider.locations.map((l) => l.postcode).filter((p): p is string => p !== null);
+    const companyNumber = await findCompanyNumber(provider.providerName, postcodes);
+    const details = await Promise.all(provider.locations.slice(0, CQC_API_LOCATIONS_PER_PROVIDER).map(fetchLocationDetail));
+
+    const result = await db.transaction(async (tx) => {
+      const resolved = await resolveCompany(tx, actor, toCqcCompany(provider, industries, companyNumber));
+      await saveSourceLocations(
+        tx,
+        resolved.companyId,
+        "cqc",
+        provider.locations.map((l) => ({
+          externalId: l.locationId,
+          name: l.name,
+          address: l.address,
+          city: l.address?.split(",").at(-1)?.trim() ?? null,
+          region: l.region,
+          postalCode: l.postcode,
+          website: l.website,
+          phone: l.phone,
+        })),
+      );
+      let signalCreated = false;
+      for (const [index, detail] of details.entries()) {
+        if (!detail) continue;
+        await addFoundPeople(tx, actor, resolved.companyId, detail.managers, "cqc");
+        const location = provider.locations[index];
+        const signal = newLocationSignal({ providerName: provider.providerName, name: location.name, registeredOn: detail.registeredOn, url: location.url }, icp.categories);
+        if (signal) signalCreated = (await insertDetectedSignal(tx, actor, resolved.companyId, signal, resolved.recordId)).created || signalCreated;
+      }
+      return { ...resolved, signalCreated };
+    });
+    if (result.signalCreated) await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
+    followUps.push({ kind: "enrich_company", entityId: result.companyId });
+  }
+  return { followUps };
+}
+
+// --- evaluate_boards: shared job boards judged against this workspace's ICP and services --------
+
+/** Boards judged per run; more wait for the next run a few minutes later. */
+const BOARDS_PER_EVALUATION = 10;
+const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com)$/i;
+
+/** The site a board's job links point to when it isn't the board itself (Greenhouse lets companies host jobs on their own careers page). */
+function candidateWebsite(jobs: { url: string }[]): string | null {
+  const counts = new Map<string, number>();
+  for (const job of jobs) {
+    try {
+      const host = new URL(job.url).hostname.toLowerCase().replace(/^www\./, "");
+      if (!ATS_HOSTS.test(host)) counts.set(host, (counts.get(host) ?? 0) + 1);
+    } catch {
+      // Not a URL.
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
+const titleFromToken = (token: string) => token.replace(/[-_.]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+/**
+ * Judges validated public boards for this workspace: only open jobs in its target countries, then a
+ * cheap AI title check against its services. A board with relevant jobs becomes a company (matched
+ * by evidence, or created as provisional under the board's own name) with the board connected and
+ * the verdicts stored; the job-board sync then analyses the relevant jobs into signals. Company
+ * matching is never required: a relevant job always lands on a company. Irrelevant boards create
+ * nothing; each board's outcome is remembered per workspace, so it is judged again only when its
+ * jobs change.
+ */
+async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
+  if (!(await sourceRunnable(actor.workspaceId, "board_directory"))) return { followUps: [], skipped: true };
+  const services = await loadServices(actor.workspaceId);
+  if (services.length === 0) return { followUps: [], skipped: true };
+  const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
+  const ref = await getReferenceData();
+
+  const boards = await db.execute<{ provider: JobBoardProvider; board_token: string; board_name: string | null; last_fetched_at: string }>(sql`
+    select d.provider, d.board_token, d.board_name, d.last_fetched_at
+    from job_board_directory d
+    where d.validation_status = 'valid' and d.last_fetched_at is not null
+      and exists (select 1 from board_jobs j where j.provider = d.provider and j.board_token = d.board_token and j.closed_at is null)
+      and not exists (
+        select 1 from source_records r
+        where r.workspace_id = ${actor.workspaceId} and r.source_slug = 'board_directory'
+          and r.external_id = 'board:' || d.provider || ':' || d.board_token
+          and (r.data->>'evaluatedAt')::timestamptz >= d.last_fetched_at)
+    order by d.last_fetched_at desc
+    limit ${BOARDS_PER_EVALUATION + 1}`);
+
+  const followUps: FollowUp[] = [];
+  for (const board of boards.slice(0, BOARDS_PER_EVALUATION)) {
+    const provider = board.provider;
+    const token = board.board_token;
+    const externalId = `board:${provider}:${token}`;
+    const outcome = (data: Record<string, unknown>) => ({
+      sourceSlug: "board_directory" as const,
+      externalId,
+      url: provider === "greenhouse" ? `https://job-boards.greenhouse.io/${token}` : provider === "lever" ? `https://jobs.lever.co/${token}` : `https://jobs.ashbyhq.com/${token}`,
+      recordType: "job_board",
+      publishedAt: null,
+      data: { provider, boardToken: token, evaluatedAt: board.last_fetched_at, ...data },
+    });
+
+    // A board this workspace already follows is synced by its company's own job.
+    const [connected] = await db
+      .select({ companyId: companyJobBoards.companyId })
+      .from(companyJobBoards)
+      .where(and(eq(companyJobBoards.workspaceId, actor.workspaceId), eq(companyJobBoards.provider, provider), eq(companyJobBoards.boardToken, token)))
+      .limit(1);
+    if (connected) {
+      await db.transaction((tx) => saveSourceRecord(tx, actor.workspaceId, outcome({ relevant: true }), connected.companyId));
+      followUps.push({ kind: "scan_job_board", entityId: connected.companyId });
+      continue;
+    }
+
+    const jobs = (await boardJobsFor(provider, token, Number.MAX_SAFE_INTEGER)).filter((j) => jobInCountries(j.location, countries)).slice(0, TRIAGE_BATCH_SIZE);
+    if (jobs.length === 0) {
+      await db.transaction((tx) => saveSourceRecord(tx, actor.workspaceId, outcome({ relevant: false, reason: "No open jobs in your target countries" }), null));
+      continue;
+    }
+    const verdicts = await ai(() => triageJobs(jobs, services, ref));
+    if (!verdicts.some((v) => v?.relevant)) {
+      await db.transaction((tx) => saveSourceRecord(tx, actor.workspaceId, outcome({ relevant: false, reason: "No job matches your services" }), null));
+      continue;
+    }
+
+    const companyId = await db.transaction(async (tx) => {
+      const resolved = await resolveCompany(tx, actor, {
+        // The board's own name for the company; only the board address when the provider gives none.
+        name: board.board_name ?? titleFromToken(token),
+        domain: null,
+        industry: null,
+        hq: null,
+        identifiers: [],
+        identity: "provisional",
+        foundedOn: null,
+        record: outcome({ relevant: true, nameFrom: board.board_name ? "board" : "board_address", candidateWebsite: candidateWebsite(jobs) }),
+      });
+      await tx
+        .insert(companyJobBoards)
+        .values({ companyId: resolved.companyId, workspaceId: actor.workspaceId, provider, boardToken: token, autoDetected: true })
+        .onConflictDoNothing();
+      // The title check is stored, so the sync analyses the relevant jobs without asking again.
+      await tx
+        .insert(jobPostings)
+        .values(
+          jobs.map((job, index) => ({
+            workspaceId: actor.workspaceId,
+            companyId: resolved.companyId,
+            provider,
+            externalId: job.externalId,
+            title: job.title,
+            department: job.department,
+            location: job.location,
+            url: job.url,
+            description: job.description,
+            postedAt: job.postedAt,
+            boardJobId: job.boardJobId,
+            triage: verdicts[index] ? (verdicts[index]!.relevant ? ("relevant" as const) : ("skipped" as const)) : ("pending" as const),
+            triageReason: verdicts[index]?.reason ?? null,
+          })),
+        )
+        .onConflictDoNothing();
+      return resolved.companyId;
+    });
+    followUps.push({ kind: "scan_job_board", entityId: companyId }, { kind: "enrich_company", entityId: companyId });
+  }
+  // More boards waiting: continue shortly.
+  if (boards.length > BOARDS_PER_EVALUATION) followUps.push({ kind: "evaluate_boards", entityId: actor.workspaceId, runAfter: later(5 * 60_000) });
+  return { followUps };
+}
+
 // --- enrich_company: directors from the register, and the company's website --------------------
 
 async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
@@ -131,34 +346,72 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
 
   let domain = company.domain;
   if (!domain && (await sourceRunnable(actor.workspaceId, "company_website"))) {
-    const site = await findWebsite({ name: company.name, companyNumber: company.companyNumber, city: company.city });
-    if (site) {
-      try {
-        await db.transaction(async (tx) => {
-          await tx.update(companies).set({ domain: site.domain }).where(and(eq(companies.id, company.id), eq(companies.workspaceId, actor.workspaceId)));
-          await saveSourceRecord(
-            tx,
-            actor.workspaceId,
-            {
-              sourceSlug: "company_website",
-              externalId: `website:${site.domain}`,
-              url: `https://${site.domain}/`,
-              recordType: "website_match",
-              publishedAt: null,
-              data: { domain: site.domain, confidence: site.confidence, matchedBy: site.confidence >= 95 ? "company_number" : "name" },
-            },
-            company.id,
-          );
-        });
-        domain = site.domain;
-      } catch (error) {
-        // Another company in the workspace already has this domain: leave this one without.
-        if (!isUniqueViolation(error)) throw error;
-      }
+    // A job board's own candidate site first (only accepted if that site links back to the board),
+    // then the official-name search, which needs the company number or the name plus its town.
+    let site: WebsiteEvidence | null = await candidateFromBoard(actor, company.id);
+    if (!site) {
+      const found = await findWebsite({ name: company.name, companyNumber: company.companyNumber, city: company.city });
+      site = found ? { ...found, matchedBy: found.confidence >= 95 ? "company_number" : "name" } : null;
     }
+    if (site && (await confirmWebsite(actor, company, site))) domain = site.domain;
   }
 
   return { followUps: domain ? [{ kind: "scan_website", entityId: company.id }] : [] };
+}
+
+type WebsiteEvidence = { domain: string; confidence: number; matchedBy: "company_number" | "name" | "job_board_link" };
+
+/**
+ * Sets a company's website from evidence and records why. A provisional company becomes partly
+ * verified: its website is now confirmed, though no registry number is known. Returns false when
+ * another company in the workspace already has that website.
+ */
+async function confirmWebsite(actor: Actor, company: { id: string; identity: string }, site: WebsiteEvidence): Promise<boolean> {
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(companies)
+        .set({ domain: site.domain, ...(company.identity === "provisional" ? { identityStatus: "partial" as const } : {}) })
+        .where(and(eq(companies.id, company.id), eq(companies.workspaceId, actor.workspaceId)));
+      await saveSourceRecord(
+        tx,
+        actor.workspaceId,
+        {
+          sourceSlug: "company_website",
+          externalId: `website:${site.domain}`,
+          url: `https://${site.domain}/`,
+          recordType: "website_match",
+          publishedAt: null,
+          data: { domain: site.domain, confidence: site.confidence, matchedBy: site.matchedBy },
+        },
+        company.id,
+      );
+    });
+    return true;
+  } catch (error) {
+    // Another company in the workspace already has this domain: leave this one without.
+    if (!isUniqueViolation(error)) throw error;
+    return false;
+  }
+}
+
+/**
+ * The website a job board points to (e.g. the careers page its Greenhouse jobs link to), confirmed
+ * only when that site in turn links to the same board. Never taken from the job board's own address.
+ */
+async function candidateFromBoard(actor: Actor, companyId: string): Promise<WebsiteEvidence | null> {
+  const [record] = await db
+    .select({ data: sourceRecords.data })
+    .from(sourceRecords)
+    .where(and(eq(sourceRecords.workspaceId, actor.workspaceId), eq(sourceRecords.companyId, companyId), eq(sourceRecords.sourceSlug, "board_directory")))
+    .limit(1);
+  const data = record?.data as { candidateWebsite?: string; provider?: string; boardToken?: string } | undefined;
+  if (!data?.candidateWebsite || !data.provider || !data.boardToken) return null;
+  const site = await readWebsite(data.candidateWebsite);
+  const links = site?.jobBoard;
+  return site && links && links.provider === data.provider && links.boardToken.toLowerCase() === data.boardToken.toLowerCase()
+    ? { domain: site.domain, confidence: 90, matchedBy: "job_board_link" }
+    : null;
 }
 
 // --- scan_website: facts, people, contacts, job board and signals from the company's site -------
@@ -224,8 +477,76 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     });
   }
 
-  // News and careers pages can carry signals (expansion, launch, hiring, a request for help).
+  // What the site states about itself in structured data: no AI needed.
+  const structured = site.structured;
+  if (structured.people.length > 0 || structured.employees || structured.telephone || structured.email) {
+    peopleAdded += await db.transaction(async (tx) => {
+      if (structured.employees) {
+        await tx
+          .update(companies)
+          .set({ employeeCount: structured.employees })
+          .where(and(eq(companies.id, company.id), sql`${companies.employeeCount} is null`));
+      }
+      await addCompanyContacts(
+        tx,
+        company.id,
+        { emails: structured.email ? [structured.email] : [], phones: structured.telephone ? [structured.telephone.replace(/[^\d+]/g, "")] : [] },
+        { slug: "company_website", url: site.checks.homeUrl },
+      );
+      return addFoundPeople(
+        tx,
+        actor,
+        company.id,
+        structured.people.map((p) => ({
+          name: p.name,
+          title: p.title,
+          seniority: seniorityFromTitle(p.title),
+          jobFunction: jobFunctionFromTitle(p.title),
+          relationship: "employee" as const,
+          // Declared by the company in its own structured data.
+          confidence: 80,
+        })),
+        "company_website",
+      );
+    });
+  }
+
+  await attachEmails(actor, company.id, site.domain, [...site.emails, ...(structured.email ? [structured.email] : [])]);
+
+  // Possible website problems, by fixed rules: recorded only for workspaces selling a fix.
   let signalsCreated = 0;
+  const sold = new Set((await loadServices(actor.workspaceId)).flatMap((s) => s.categories));
+  for (const finding of websiteFindings(company.name, site.checks, company.industry)) {
+    const categories = finding.categories.filter((c) => sold.has(c));
+    if (categories.length === 0) continue;
+    const signal = await db.transaction((tx) =>
+      insertDetectedSignal(
+        tx,
+        actor,
+        company.id,
+        {
+          signalType: finding.signalType,
+          // A possible problem, not a stated wish to buy.
+          intentLevel: "low",
+          urgency: "unknown",
+          serviceCategories: categories,
+          summary: finding.summary,
+          personId: null,
+          occurredOn: new Date().toISOString().slice(0, 10),
+          sourceUrl: finding.url,
+          excerpt: finding.excerpt,
+          evidenceLabel: finding.evidenceLabel,
+          source: "provider",
+          confidence: finding.confidence,
+        },
+        // Linked to the page the finding is about, or the first page read.
+        (saved.find((p) => p.url === finding.url) ?? saved[0])?.id ?? null,
+      ),
+    );
+    if (signal.created) signalsCreated++;
+  }
+
+  // News and careers pages can carry signals (expansion, launch, hiring, a request for help).
   const ref = await getReferenceData();
   const industry = ref.industries.find((i) => i.slug === company.industry)?.name ?? null;
   for (const page of saved.filter((p) => (p.kind === "news" || p.kind === "careers") && p.changed && p.text.length >= 200)) {
@@ -240,6 +561,53 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
 
   if (peopleAdded > 0 || signalsCreated > 0) await rescoreAfterCompanyChange(actor.workspaceId, company.id);
   return { followUps };
+}
+
+/** Contact sources: published on the company's site, or inferred from its address pattern (never verified). */
+export const PUBLISHED_EMAIL = "company_website";
+export const INFERRED_EMAIL = "pattern_inferred";
+
+/**
+ * Gives the company's people their email addresses, keeping how each was obtained separate:
+ * - **published**: an address on the company's own site that is clearly that person's;
+ * - **inferred**: built from the company's address pattern, only when at least two people's
+ *   published addresses agree on it and the domain receives email (MX). An MX record shows the
+ *   domain takes mail, not that the mailbox exists, so inferred addresses stay unverified.
+ * Nobody's existing address is replaced.
+ */
+async function attachEmails(actor: Actor, companyId: string, domain: string, published: string[]): Promise<void> {
+  const team = await db
+    .select({ personId: companyPeople.personId, name: people.name })
+    .from(companyPeople)
+    .innerJoin(people, eq(people.id, companyPeople.personId))
+    .where(and(eq(companyPeople.companyId, companyId), eq(companyPeople.workspaceId, actor.workspaceId)));
+  if (team.length === 0) return;
+  const withEmail = new Set(
+    (await db.select({ personId: contactPoints.personId }).from(contactPoints).where(and(inArray(contactPoints.personId, team.map((t) => t.personId)), eq(contactPoints.type, "email")))).map((r) => r.personId),
+  );
+
+  const own = published.filter((email) => email.endsWith(`@${domain}`));
+  const examples: { pattern: EmailPattern; name: string }[] = [];
+  const rows: (typeof contactPoints.$inferInsert)[] = [];
+  for (const member of team) {
+    const email = own.find((address) => emailPatternOf(address, member.name));
+    if (!email) continue;
+    examples.push({ pattern: emailPatternOf(email, member.name)!, name: member.name });
+    if (!withEmail.has(member.personId)) {
+      rows.push({ personId: member.personId, type: "email", value: email, isPrimary: true, verification: "unknown", source: PUBLISHED_EMAIL });
+      withEmail.add(member.personId);
+    }
+  }
+
+  const pattern = inferEmailPattern(examples);
+  if (pattern && (await domainReceivesEmail(domain))) {
+    for (const member of team) {
+      if (withEmail.has(member.personId)) continue;
+      const email = emailFromPattern(pattern, member.name, domain);
+      if (email) rows.push({ personId: member.personId, type: "email", value: email, isPrimary: true, verification: "unknown", source: INFERRED_EMAIL });
+    }
+  }
+  if (rows.length > 0) await db.insert(contactPoints).values(rows).onConflictDoNothing();
 }
 
 // --- scan_job_board: the existing job-board sync, run on a schedule ---------------------------
@@ -313,6 +681,8 @@ async function scanTenders({ job, actor, ai }: JobContext): Promise<JobResult> {
 
 export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise<JobResult>> = {
   discover_companies: discoverCompanies,
+  discover_cqc: discoverCqc,
+  evaluate_boards: evaluateBoards,
   enrich_company: enrichCompany,
   scan_website: scanWebsite,
   scan_job_board: scanJobBoard,

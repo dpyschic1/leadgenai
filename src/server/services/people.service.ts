@@ -15,6 +15,13 @@ import { AppError } from "@/server/http/errors";
  * `company_people`, and their email/phone on `contact_points`, each with its own freshness.
  */
 
+/** How an address was obtained: entered by a person, published on the company's site, or inferred from its pattern. */
+function contactOrigin(source: string): ContactCheck["origin"] {
+  if (source === "pattern_inferred") return "inferred";
+  if (source === "company_website") return "published";
+  return "entered";
+}
+
 export async function listCompanyPeople(auth: AuthContext, companyId: string): Promise<CompanyPerson[]> {
   return loadCompanyPeople(auth.workspaceId, companyId);
 }
@@ -36,6 +43,7 @@ export async function loadCompanyPeople(workspaceId: string, companyId: string):
       value: contactPoints.value,
       verification: contactPoints.verification,
       verifiedAt: contactPoints.verifiedAt,
+      source: contactPoints.source,
     })
     .from(contactPoints)
     .where(
@@ -50,7 +58,7 @@ export async function loadCompanyPeople(workspaceId: string, companyId: string):
   const primary = (personId: string, type: "email" | "phone") =>
     contacts.find((c) => c.personId === personId && c.type === type);
   const check = (contact: (typeof contacts)[number] | undefined): ContactCheck | null =>
-    contact ? { state: contact.verification, checkedAt: contact.verifiedAt?.toISOString() ?? null } : null;
+    contact ? { state: contact.verification, checkedAt: contact.verifiedAt?.toISOString() ?? null, origin: contactOrigin(contact.source) } : null;
 
   return rows.map(({ person, role }) => {
     const email = primary(person.id, "email");
@@ -182,6 +190,17 @@ async function replaceManualContacts(tx: Tx, personId: string, input: PersonValu
     contact("email", input.email, input.emailVerification),
     contact("phone", input.phone, input.phoneVerification),
   ].filter((value) => value !== null);
+  for (const value of values) {
+    // A person saving an address takes it over from the source that found it (published or
+    // inferred), and their entry becomes the main one; other found addresses are kept as extras.
+    await tx
+      .delete(contactPoints)
+      .where(and(eq(contactPoints.personId, personId), eq(contactPoints.type, value.type), eq(contactPoints.value, value.value)));
+    await tx
+      .update(contactPoints)
+      .set({ isPrimary: false })
+      .where(and(eq(contactPoints.personId, personId), eq(contactPoints.type, value.type), eq(contactPoints.isPrimary, true)));
+  }
   if (values.length > 0) await tx.insert(contactPoints).values(values);
 }
 

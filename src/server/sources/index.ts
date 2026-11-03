@@ -1,8 +1,10 @@
 import "server-only";
-import type { CompanyIdScheme, SourceSlug } from "@/lib/domain/sources";
+import type { CompanyIdentity, CompanyIdScheme, SourceSlug } from "@/lib/domain/sources";
 import type { SeniorityLevel } from "@/lib/domain/people";
+import { boardDirectory } from "./board-directory";
 import { companiesHouse } from "./companies-house";
 import { companyWebsite } from "./company-website";
+import { cqc } from "./cqc";
 import { ukTenders } from "./uk-tenders";
 
 /**
@@ -31,8 +33,10 @@ export type FoundCompany = {
   name: string;
   domain: string | null;
   industry: string | null;
-  hq: { city: string | null; region: string | null; country: string | null } | null;
+  hq: { city: string | null; region: string | null; country: string | null; postalCode?: string | null } | null;
   identifiers: { scheme: CompanyIdScheme; value: string }[];
+  /** How well identified the company is; defaults to verified with a registry number, else provisional. */
+  identity?: CompanyIdentity;
   /** Date the company was formed (YYYY-MM-DD), if the source says. */
   foundedOn: string | null;
   record: SourceRef;
@@ -78,10 +82,25 @@ const jobBoard: SourceAdapter = {
   },
 };
 
+/**
+ * The FCA register stays switched off: its terms need written permission to store or redistribute
+ * register data (seeded as `restricted`). Registered here only so it shows in Settings with why.
+ */
+const fcaRegister: SourceAdapter = {
+  slug: "fca_register",
+  isConfigured: () => false,
+  async healthCheck() {
+    return { ok: false, message: "Not used: needs the FCA's written permission for commercial reuse." };
+  },
+};
+
 /** Every source adapter, by slug. Adding a provider = one adapter here + one `sources` row. */
 export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   companies_house: companiesHouse,
+  cqc,
   company_website: companyWebsite,
   job_board: jobBoard,
+  board_directory: boardDirectory,
   uk_tenders: ukTenders,
+  fca_register: fcaRegister,
 };

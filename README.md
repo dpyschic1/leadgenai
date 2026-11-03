@@ -81,26 +81,74 @@ leaves every other workspace alone.
 
 Nothing to set up: from **Services & ICP** (target industries and countries) the system, every day:
 
-1. **finds UK companies** on Companies House by the industries' SIC codes, newly formed ones first
-   (a new business is itself a "new startup" signal), with their **directors**;
-2. **finds and reads each company's website** (accepted only when it shows the company number, or
-   the name plus the town): description, team, published email/phone, and its job board;
-3. **checks its job board** (a Greenhouse, Lever or Ashby board linked from its website) and **UK
-   public tenders** (Contracts Finder) for its services. New jobs get a cheap AI title check against
-   your services, then relevant roles (the same role in several places counts once) get the full
-   signal analysis, a few per run to stay inside Groq's free limits; a deleted signal stays deleted;
-4. records what it finds as signals with source links, and re-scores the companies.
+1. **finds UK companies**
+   - on **Companies House**, by the industries' SIC codes, newly formed ones first (a new business
+     is itself a "new startup" signal), with their **directors**;
+   - for dental and healthcare ICPs, on the **CQC register** (England only): each provider becomes a
+     company and each of its practices a separate location, with website and phone. A Companies
+     House number is linked only on an exact name **and** postcode match. The weekly directory
+     (zip) needs no key; the optional API adds registration dates (a "new location" signal) and
+     registered managers.
+2. **finds and reads each company's website.** A site is accepted only when it shows the company
+   number, the name plus the town, or links back to the company's own job board. It reads:
+   - structured data (schema.org), team, published contacts and its job board;
+   - **rule-based checks, before any AI:** no HTTPS, an out-of-support CMS (e.g. WordPress < 6),
+     no online booking for dental, health and hospitality. These are recorded as low-intent
+     "possible problems", with evidence, only for workspaces that sell a fix.
+3. **discovers job boards on its own.**
+   - Candidate Greenhouse, Lever and Ashby boards come from the **Common Crawl** archive index
+     (plus boards found on websites). Each is **validated** against the provider's public API, and
+     its jobs are cached once for all workspaces (`job_board_directory`, `board_jobs`).
+   - Each workspace then judges the jobs in its own target countries with a cheap AI title check.
+     A board with relevant jobs becomes a company (matched by evidence, or created **provisional**
+     under the board's own name) with an opportunity, even when no register matches. A board with
+     none creates nothing.
+   - Relevant roles get the full signal analysis (the same role in several places counts once),
+     a few per run within Groq's free limits. A deleted signal stays deleted.
+   - Coverage is broad, not complete: only boards the archive has crawled. The archive index is
+     often slow (504s); progress resumes where it stopped.
+4. checks **UK public tenders** (Contracts Finder) for its services;
+5. records signals with source links and re-scores the companies.
 
 It also runs straight after a service is saved, and on **Run now** in Settings → Data sources,
 where each source can be switched off. Every fact keeps its source (`source_records`); see a
 company's **Sources** card. Adapters live in `src/server/sources/`, the job queue and handlers in
 `src/server/ingestion/`.
 
+**Identity and matching rules**
+- Companies are matched by registry number, then website domain, then the same source's own
+  earlier record. A name counts only together with the same postcode, and never when it fits
+  several companies.
+- People are never merged on name alone.
+- A company is *provisional* (known only by one source's name for it), *partly verified* (website
+  confirmed) or *verified* (register number, or entered by hand).
+
+**Emails**
+- An address on the company's site that is clearly a person's is stored as **published**.
+- A pattern (e.g. `first.last@`) is **inferred** only when at least two people's published
+  addresses agree on it and the domain has mail servers (MX). MX shows the domain takes email,
+  not that the mailbox exists.
+- Inferred addresses are never shown as verified; only a person can verify one.
+
+**Sources not used**
+- **FCA register:** its terms require written permission to store or redistribute register data.
+  It is registered as `restricted`, so it cannot run.
+- **SRA:** its terms forbid unsolicited marketing.
+- **LinkedIn, Google Maps:** their terms forbid scraping.
+
+**Data use**
+- CQC data is used under the Open Government Licence v3.0, shown on the company's Sources card.
+- Job-board APIs are public, and their docs are silent on third-party storage. We keep only what
+  evaluation and evidence need, link to each original posting, honour Ashby's "not listed" flag,
+  and delete closed jobs after 90 days.
+
 Settings (`.env` locally, Vercel Environment Variables in production):
 
 - `COMPANIES_HOUSE_API_KEY`: free key from developer.company-information.service.gov.uk
   (Your applications → Create an application → Create new key → REST). Without it, companies
-  aren't discovered; websites, job boards and tenders still work.
+  aren't discovered on Companies House; the other sources still work.
+- `CQC_API_KEY` (optional): free key from api-portal.service.cqc.org.uk, for registration dates and
+  registered managers. The directory works without it.
 - `CRON_SECRET`: any long random string. A free scheduler (e.g. cron-job.org) calls
   `POST /api/v1/internal/tick` every 5 minutes with `Authorization: Bearer <CRON_SECRET>`.
 
@@ -177,6 +225,7 @@ The schema (`src/db/schema.ts`) is normalized so post-MVP features can be added 
 | Signals | `signals`, `signal_evidence`, `signal_service_categories` |
 | Job boards | `company_job_boards` (one per company), `job_postings` (jobs seen, AI verdict, link to the signal) |
 | Automatic data | `sources` (registry, seeded), `workspace_sources` (on/off), `source_records` (provenance), `company_identifiers`, `company_contact_points`, `ingestion_jobs` (queue) |
+| Job-board discovery (shared) | `job_board_directory` (validated boards), `board_jobs` (cached public jobs), `directory_crawls` (archive progress) |
 | Customer config | `services` + `service_service_categories`, `service_target_industries`, `service_target_job_functions`, `service_target_countries`; `scoring_profiles`, `recipes` |
 | Opportunities | `opportunities`, `opportunity_signals`, `lists`, `saved_opportunities` |
 | Governance | `audit_logs`, `rate_limits` |

@@ -11,12 +11,35 @@ import { FetchBlockedError, hostResolves, politeGet, siteOf } from "./http";
  */
 
 export type SitePage = { url: string; kind: PageKind; text: string; contentHash: string };
+
+/** What a site states about itself in schema.org data (JSON-LD), the most reliable part of a page. */
+export type StructuredFacts = {
+  telephone: string | null;
+  email: string | null;
+  employees: number | null;
+  people: { name: string; title: string | null }[];
+};
+
+/** Raw facts for the deterministic website checks (see `websiteFindings`). */
+export type SiteChecks = {
+  homeUrl: string;
+  /** False when the site only answered over plain HTTP. */
+  secure: boolean;
+  /** The page's own `generator` meta tag, e.g. "WordPress 5.8.3". */
+  generator: string | null;
+  /** The first page showing an online-booking link or widget, with what was found. */
+  booking: { url: string; evidence: string } | null;
+  pagesChecked: string[];
+};
+
 export type SiteRead = {
   domain: string;
   pages: SitePage[];
   emails: string[];
   phones: string[];
   jobBoard: ReturnType<typeof jobBoardFromHtml>;
+  structured: StructuredFacts;
+  checks: SiteChecks;
 };
 
 /** Existing guessed domains fetched per company, and how long each may take. */
@@ -56,12 +79,26 @@ export async function findWebsite(company: { name: string; companyNumber: string
 
 /** Reads the home page and up to five more pages of the site. Null when the site can't be read. */
 export async function readWebsite(domain: string): Promise<SiteRead | null> {
-  const home = await fetchHtml(`https://${domain}/`);
-  if (!home) return null;
+  // HTTPS first; a site that only answers over plain HTTP is itself worth knowing.
+  let home = await fetchHtml(`https://${domain}/`);
+  let secure = true;
+  if (!home) {
+    home = await fetchHtml(`http://${domain}/`);
+    if (!home) return null;
+    secure = home.url.startsWith("https:");
+  }
   const site = siteOf(new URL(home.url).hostname);
 
+  const links = extractLinks(home.html, home.url);
+  let targets = pickPages(links, site);
+  // The menu may not link the team or about page; the sitemap usually lists them.
+  if (targets.length < 3) {
+    const sitemap = await fetchText(`${new URL(home.url).origin}/sitemap.xml`);
+    if (sitemap) targets = pickPages([...links, ...sitemapLinks(sitemap)], site);
+  }
+
   const pages: { url: string; kind: PageKind; html: string }[] = [{ url: home.url, kind: "home", html: home.html }];
-  for (const target of pickPages(extractLinks(home.html, home.url), site)) {
+  for (const target of targets) {
     const page = await fetchHtml(target.url);
     if (page) pages.push({ url: page.url, kind: target.kind, html: page.html });
   }
@@ -77,7 +114,27 @@ export async function readWebsite(domain: string): Promise<SiteRead | null> {
     emails: emailsFrom(allHtml, site),
     phones: phonesFrom(pages.find((p) => p.kind === "contact")?.html ?? allHtml),
     jobBoard: jobBoardFromHtml(allHtml),
+    structured: structuredFacts(pages.flatMap((p) => parseJsonLd(p.html))),
+    checks: {
+      homeUrl: home.url,
+      secure,
+      generator: generatorOf(home.html),
+      booking: pages.flatMap((p) => {
+        const evidence = bookingEvidence(p.html);
+        return evidence ? [{ url: p.url, evidence }] : [];
+      })[0] ?? null,
+      pagesChecked: pages.map((p) => p.url),
+    },
   };
+}
+
+async function fetchText(url: string): Promise<string | null> {
+  try {
+    const page = await politeGet(url);
+    return page.status < 400 ? page.body : null;
+  } catch {
+    return null;
+  }
 }
 
 export const companyWebsite: SourceAdapter = {
@@ -226,4 +283,160 @@ export function phonesFrom(html: string): string[] {
     }
   }
   return [...found].filter((p) => /^(\+44|0)\d{9,10}$/.test(p)).slice(0, 2);
+}
+
+/** Page URLs listed in a sitemap.xml, as links with no text (the path decides the page kind). */
+export function sitemapLinks(xml: string): { url: string; text: string }[] {
+  return [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].slice(0, 500).map((m) => ({ url: decodeEntities(m[1]), text: "" }));
+}
+
+// --- Structured data (schema.org JSON-LD) ---------------------------------------------------------
+
+/** Every JSON-LD object on a page, flattening `@graph` lists. Malformed blocks are skipped. Pure. */
+export function parseJsonLd(html: string): Record<string, unknown>[] {
+  const objects: Record<string, unknown>[] = [];
+  const add = (value: unknown) => {
+    if (Array.isArray(value)) value.forEach(add);
+    else if (value && typeof value === "object") {
+      const object = value as Record<string, unknown>;
+      objects.push(object);
+      if (object["@graph"]) add(object["@graph"]);
+    }
+  };
+  for (const match of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      add(JSON.parse(match[1].trim()));
+    } catch {
+      // Not valid JSON; skip it.
+    }
+  }
+  return objects;
+}
+
+const typesOf = (object: Record<string, unknown>) => [object["@type"]].flat().map(String);
+const ORGANISATION = /Organization|LocalBusiness|Dentist|MedicalBusiness|MedicalClinic|LegalService|Attorney|AccountingService|ProfessionalService|Corporation/;
+
+/** The organisation's phone, email, size and named people from its JSON-LD. Pure. */
+export function structuredFacts(objects: Record<string, unknown>[]): StructuredFacts {
+  const facts: StructuredFacts = { telephone: null, email: null, employees: null, people: [] };
+  const people = new Map<string, { name: string; title: string | null }>();
+  const addPerson = (value: unknown) => {
+    for (const item of [value].flat()) {
+      if (!item || typeof item !== "object") continue;
+      const person = item as Record<string, unknown>;
+      const name = typeof person.name === "string" ? person.name.trim().replace(/\s+/g, " ") : null;
+      if (!name || name.split(" ").length < 2 || name.length > 80) continue;
+      const title = typeof person.jobTitle === "string" ? person.jobTitle.trim().slice(0, 120) || null : null;
+      people.set(name.toLowerCase(), { name, title });
+    }
+  };
+  for (const object of objects) {
+    const types = typesOf(object);
+    if (types.some((t) => ORGANISATION.test(t))) {
+      if (!facts.telephone && typeof object.telephone === "string") facts.telephone = object.telephone.trim();
+      if (!facts.email && typeof object.email === "string") facts.email = object.email.replace(/^mailto:/i, "").trim().toLowerCase();
+      const employees = object.numberOfEmployees as { value?: unknown; maxValue?: unknown } | number | undefined;
+      const count = typeof employees === "number" ? employees : Number(employees?.value ?? employees?.maxValue);
+      if (!facts.employees && Number.isInteger(count) && count > 0 && count < 1_000_000) facts.employees = count;
+      addPerson(object.founder);
+      addPerson(object.employee);
+    }
+    if (types.includes("Person")) addPerson(object);
+  }
+  facts.people = [...people.values()].slice(0, 12);
+  return facts;
+}
+
+// --- Deterministic website checks -----------------------------------------------------------------
+
+/** The page's `<meta name="generator">`, e.g. "WordPress 5.8.3". */
+export function generatorOf(html: string): string | null {
+  const tag = html.match(/<meta[^>]+name\s*=\s*["']generator["'][^>]*>/i)?.[0];
+  const content = tag?.match(/content\s*=\s*["']([^"']+)["']/i)?.[1];
+  return content ? decodeEntities(content).trim().slice(0, 120) : null;
+}
+
+/** Online booking links and widgets: booking systems by name, or plain "book online" links. */
+const BOOKING_PATTERNS: [RegExp, string][] = [
+  [/(dentally\.co|portal\.dentally|pearl-?dental|exact-booking)/i, "dental booking system"],
+  [/(calendly\.com|setmore\.com|simplybook\.(me|it)|acuityscheduling\.com|bookingbug|fresha\.com|cliniko\.com|jane\.app|doctolib|zocdoc|resdiary|opentable|squareup\.com\/appointments|booksy\.com)/i, "booking widget"],
+  [/<a[^>]*>[^<]*\b(book (an? )?(appointment|consultation|online|now)|online booking|make an appointment|request an appointment)\b[^<]*<\/a>/i, "booking link"],
+];
+
+/** What on a page shows it takes bookings online, or null. Pure. */
+export function bookingEvidence(html: string): string | null {
+  for (const [pattern, label] of BOOKING_PATTERNS) {
+    const match = html.match(pattern);
+    if (match) return `${label}: ${decodeEntities(match[0].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim().slice(0, 120)}`;
+  }
+  return null;
+}
+
+/** Industries where customers expect to book online, so its absence is a possible problem. */
+const BOOKING_INDUSTRIES = new Set(["dental", "healthcare", "hospitality"]);
+
+/** Web technology past its supported life: generator pattern, whether that version is old, what to call it. */
+const OUTDATED: [RegExp, (m: RegExpMatchArray) => boolean, string][] = [
+  [/WordPress (\d+)\.(\d+)/i, (m) => Number(m[1]) < 6, "an old WordPress version"],
+  [/Joomla!? ?(\d+)/i, (m) => Number(m[1]) < 4, "an old Joomla version"],
+  [/Drupal (\d+)/i, (m) => Number(m[1]) <= 7, "Drupal 7 or older, which no longer gets security updates"],
+];
+
+export type WebsiteFinding = {
+  signalType: "outdated_website" | "insecure_website" | "no_online_booking";
+  summary: string;
+  /** What was seen, word for word where there is something to quote. */
+  excerpt: string | null;
+  url: string;
+  confidence: number;
+  evidenceLabel: "observed" | "derived";
+  /** The services that could fix it; a finding counts only for workspaces that sell one. */
+  categories: string[];
+};
+
+/**
+ * Possible website problems, found by fixed rules before any AI: no HTTPS, an out-of-support CMS,
+ * no online booking where customers expect it. They suggest a need, not an intent to buy. Pure.
+ */
+export function websiteFindings(company: string, checks: SiteChecks, industry: string | null): WebsiteFinding[] {
+  const findings: WebsiteFinding[] = [];
+  if (!checks.secure) {
+    findings.push({
+      signalType: "insecure_website",
+      summary: `Possible problem: ${company}'s website only loads over plain HTTP, without a secure (HTTPS) connection.`,
+      excerpt: null,
+      url: checks.homeUrl,
+      confidence: 90,
+      evidenceLabel: "observed",
+      categories: ["web_development", "cybersecurity", "it_managed_services"],
+    });
+  }
+  for (const [pattern, isOld, label] of OUTDATED) {
+    const match = checks.generator?.match(pattern);
+    if (match && isOld(match)) {
+      findings.push({
+        signalType: "outdated_website",
+        summary: `Possible problem: ${company}'s website runs on ${label}.`,
+        excerpt: `<meta name="generator" content="${checks.generator}">`,
+        url: checks.homeUrl,
+        confidence: 85,
+        evidenceLabel: "observed",
+        categories: ["web_development", "ui_ux_design"],
+      });
+      break;
+    }
+  }
+  if (industry && BOOKING_INDUSTRIES.has(industry) && !checks.booking) {
+    findings.push({
+      signalType: "no_online_booking",
+      summary: `Possible problem: no online booking found on ${company}'s website (${checks.pagesChecked.length} pages checked).`,
+      excerpt: null,
+      url: checks.homeUrl,
+      // Absence can't be quoted, and a booking page may exist beyond the pages read.
+      confidence: 60,
+      evidenceLabel: "derived",
+      categories: ["web_development", "conversion_optimization", "crm_implementation"],
+    });
+  }
+  return findings;
 }

@@ -75,7 +75,7 @@ export function toFoundCompany(raw: unknown): FoundCompany | null {
     name: titleCaseCompanyName(item.company_name),
     domain: null,
     industry: industryForSicCodes(item.sic_codes ?? []),
-    hq: { city: office?.locality?.trim() || null, region: office?.region?.trim() || null, country: "GB" },
+    hq: { city: office?.locality?.trim() || null, region: office?.region?.trim() || null, country: "GB", postalCode: office?.postal_code?.trim() || null },
     identifiers: [{ scheme: "gb_company_number", value: item.company_number }],
     foundedOn: item.date_of_creation ?? null,
     record: {
@@ -105,6 +105,54 @@ export function toFoundPeople(raw: unknown): FoundPerson[] {
     const person = officerToPerson(parsed.data);
     return person ? [person] : [];
   });
+}
+
+const nameSearchItem = z.object({
+  title: z.string(),
+  company_number: z.string(),
+  company_status: z.string().nullish(),
+  address: z.object({ postal_code: z.string().nullish() }).nullish(),
+  address_snippet: z.string().nullish(),
+});
+
+const comparableName = (name: string) =>
+  name
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/\b(limited|ltd|plc|llp)\b\.?/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+const compactPostcode = (value: string | null | undefined) => value?.replace(/\s+/g, "").toUpperCase() || null;
+
+/**
+ * The single active company whose registered name is exactly `name` and whose registered address
+ * has one of `postcodes`. Anything less certain (no match, several, or the name alone) gives null,
+ * so a record is only linked to a company number on clear evidence. Pure, for tests.
+ */
+export function pickCompanyNumber(items: unknown[], name: string, postcodes: string[]): string | null {
+  const wanted = comparableName(name);
+  const codes = new Set(postcodes.map(compactPostcode).filter(Boolean));
+  const exact = items.flatMap((raw) => {
+    const item = nameSearchItem.safeParse(raw);
+    if (!item.success || item.data.company_status !== "active" || comparableName(item.data.title) !== wanted) return [];
+    return [item.data];
+  });
+  if (exact.length !== 1) return null;
+  const postcode = compactPostcode(exact[0].address?.postal_code) ?? compactPostcode(exact[0].address_snippet?.match(/[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}$/i)?.[0]);
+  return postcode && codes.has(postcode) ? exact[0].company_number : null;
+}
+
+/** Looks up a business's company number by exact name and postcode; null when not clear-cut or unavailable. */
+export async function findCompanyNumber(name: string, postcodes: string[]): Promise<string | null> {
+  if (!companiesHouse.isConfigured() || postcodes.length === 0) return null;
+  try {
+    const body = await getJson(`/search/companies?q=${encodeURIComponent(name)}&items_per_page=20`);
+    const items = z.object({ items: z.array(z.unknown()).nullish() }).safeParse(body).data?.items ?? [];
+    return pickCompanyNumber(items, name, postcodes);
+  } catch (error) {
+    console.warn("[sources] Companies House name lookup failed:", error instanceof Error ? error.message : error);
+    return null;
+  }
 }
 
 export const companiesHouse: SourceAdapter = {

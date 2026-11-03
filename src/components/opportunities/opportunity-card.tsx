@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { BriefcaseBusinessIcon, CalendarIcon, RadioTowerIcon, UserRoundIcon } from "lucide-react";
+import { BriefcaseBusinessIcon, CalendarIcon, MailIcon, PhoneIcon, RadioTowerIcon, UserRoundIcon } from "lucide-react";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import type { OpportunitySummary } from "@/lib/api/types";
@@ -27,6 +27,7 @@ export function OpportunityCard({
 }) {
   const names = useLookupNames();
   const latest = opportunity.latestSignalOn && dateFormat.format(new Date(`${opportunity.latestSignalOn}T12:00:00`));
+  const { phone: companyPhone, email: companyEmail } = opportunity.companyContact;
 
   return (
     <li className="group relative flex gap-4 rounded-xl border bg-card p-4 transition-shadow hover:shadow-[0_8px_24px_-12px_rgba(27,36,51,0.18)] has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 sm:gap-5 sm:p-5">
@@ -68,6 +69,16 @@ export function OpportunityCard({
               {opportunity.contact.name}
               {opportunity.contact.title && `, ${opportunity.contact.title}`}
             </span>
+          )}
+          {/* The company's own line: a way to reach them even before a person is known. Sits above the card's link. */}
+          {(companyPhone || companyEmail) && (
+            <a
+              href={companyPhone ? `tel:${companyPhone.replace(/[^\d+]/g, "")}` : `mailto:${companyEmail}`}
+              className="relative z-10 inline-flex items-center gap-1 hover:text-foreground hover:underline underline-offset-4"
+            >
+              {companyPhone ? <PhoneIcon className="size-3.5" /> : <MailIcon className="size-3.5" />}
+              {companyPhone ?? companyEmail}
+            </a>
           )}
           <span className="inline-flex items-center gap-1">
             <RadioTowerIcon className="size-3.5" />

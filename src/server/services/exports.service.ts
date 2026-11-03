@@ -21,7 +21,7 @@ import type { OpportunityExportQuery } from "@/lib/validation/opportunities";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { refreshStaleScores } from "@/server/scoring/rescore";
-import { feedFilter, priorityOrder } from "./opportunities.service";
+import { companyEmail, companyPhone, feedFilter, priorityOrder } from "./opportunities.service";
 
 /** Columns of the CSV export, in order: the PRD §17 field list, then status and matched service. */
 export const EXPORT_COLUMNS = [
@@ -44,6 +44,9 @@ export const EXPORT_COLUMNS = [
   "source_url",
   "status",
   "matched_service",
+  // The company's own published line, for when no person (or no personal contact) is known.
+  "company_phone",
+  "company_email",
 ] as const;
 
 type ExportRow = Record<(typeof EXPORT_COLUMNS)[number], CsvValue>;
@@ -97,6 +100,8 @@ const exportColumns = {
   )`,
   status: opportunities.status,
   serviceName: services.name,
+  companyPhone,
+  companyEmail,
 };
 
 export type OpportunityExport = { filename: string; csv: string; count: number };
@@ -161,6 +166,8 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
         source_url: row.sourceUrl,
         status: row.status,
         matched_service: row.serviceName,
+        company_phone: row.companyPhone,
+        company_email: row.companyEmail,
       }),
     ),
   );

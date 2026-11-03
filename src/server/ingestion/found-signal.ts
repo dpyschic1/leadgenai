@@ -39,6 +39,38 @@ const DAY_MS = 86_400_000;
 export const NEW_COMPANY_DAYS = 365;
 
 /**
+ * A location newly registered with the CQC (a new practice or clinic opening): stated by the
+ * regulator itself. Low intent on its own; corroborated by website, hiring or tender signals.
+ * Null for registrations older than a year.
+ */
+export function newLocationSignal(
+  location: { providerName: string; name: string; registeredOn: string | null; url: string | null },
+  serviceCategories: string[],
+  now = new Date(),
+): DetectedSignalValues | null {
+  if (!location.registeredOn) return null;
+  const registered = new Date(`${location.registeredOn}T12:00:00Z`);
+  const age = (now.getTime() - registered.getTime()) / DAY_MS;
+  if (Number.isNaN(age) || age < 0 || age > NEW_COMPANY_DAYS) return null;
+  const date = registered.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+  return {
+    signalType: "new_location",
+    intentLevel: "low",
+    urgency: "unknown",
+    serviceCategories,
+    summary: `${location.providerName} registered a new location, ${location.name}, with the CQC on ${date}.`,
+    personId: null,
+    occurredOn: location.registeredOn,
+    sourceUrl: location.url,
+    excerpt: null,
+    evidenceLabel: "observed",
+    source: "provider",
+    // Stated by the regulator.
+    confidence: 95,
+  };
+}
+
+/**
  * A newly formed company (Startup / MVP workflow): stated by the register itself, so it is
  * `provider`-sourced and observed. Low intent on its own; website, hiring or funding signals
  * corroborate it. Null for companies older than a year.

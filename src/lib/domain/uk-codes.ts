@@ -74,3 +74,21 @@ export const CATEGORY_CPV_CODES: Record<string, string[]> = {
   recruitment_rpo: ["79600000"],
   consulting: ["79410000", "72220000"],
 };
+
+/**
+ * CQC "service types" per industry slug: which registered locations count as that industry.
+ * The CQC register covers health and social care in England only.
+ */
+export const INDUSTRY_CQC_SERVICE_TYPES: Record<string, string[]> = {
+  dental: ["Dentist"],
+  healthcare: [
+    "Doctors/GPs",
+    "Clinic",
+    "Diagnosis/screening",
+    "Community services - Healthcare",
+    "Hospital",
+    "Mobile doctors",
+    "Urgent care centres",
+    "Rehabilitation (illness/injury)",
+  ],
+};

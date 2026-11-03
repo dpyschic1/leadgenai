@@ -1,9 +1,10 @@
 import "server-only";
-import { and, asc, desc, eq, gte, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import {
   auditLogs,
   companies,
+  companyContactPoints,
   companyLocations,
   companyPeople,
   opportunities,
@@ -16,8 +17,9 @@ import {
   signalTypes,
   users,
 } from "@/db/schema";
-import type { FeedbackVote, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
+import type { CompanyContact, FeedbackVote, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
 import { STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
+import type { SourceSlug } from "@/lib/domain/sources";
 import type { OpportunityFilters, OpportunityListQuery, UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import type { ScoreFactor } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
@@ -30,6 +32,20 @@ import { listCompanySignals } from "./signals.service";
 /** Upper bound for the feed until it gets pagination. */
 const LIST_LIMIT = 500;
 
+/** The company's own phone: its published switchboard first, else a registered site's phone (CQC practice). */
+export const companyPhone = sql<string | null>`coalesce(
+    (select ${companyContactPoints.value} from ${companyContactPoints}
+      where ${companyContactPoints.companyId} = ${opportunities.companyId} and ${companyContactPoints.type} = 'phone'
+      order by (${companyContactPoints.sourceSlug} = 'company_website') desc, ${companyContactPoints.observedAt} desc limit 1),
+    (select ${companyLocations.phone} from ${companyLocations}
+      where ${companyLocations.companyId} = ${opportunities.companyId} and ${companyLocations.phone} is not null
+      order by ${companyLocations.name} limit 1))`;
+
+/** The company's published email (info@, reception@), the website's own first. */
+export const companyEmail = sql<string | null>`(select ${companyContactPoints.value} from ${companyContactPoints}
+    where ${companyContactPoints.companyId} = ${opportunities.companyId} and ${companyContactPoints.type} = 'email'
+    order by (${companyContactPoints.sourceSlug} = 'company_website') desc, ${companyContactPoints.observedAt} desc limit 1)`;
+
 const summaryColumns = {
   opportunity: opportunities,
   companyName: companies.canonicalName,
@@ -38,6 +54,8 @@ const summaryColumns = {
   contactName: people.name,
   contactTitle: companyPeople.title,
   signalCount: sql<number>`(select count(*)::int from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
+  companyPhone,
+  companyEmail,
   feedbackVotes: sql<FeedbackVote[]>`(
     select coalesce(json_agg(json_build_object('name', coalesce(${users.name}, ${users.email}, 'A former teammate'), 'verdict', ${opportunityFeedback.verdict}) order by ${opportunityFeedback.updatedAt} desc), '[]')
     from ${opportunityFeedback} left join ${users} on ${users.id} = ${opportunityFeedback.userId}
@@ -52,6 +70,8 @@ export type SummaryRow = {
   serviceName: string | null;
   contactName: string | null;
   contactTitle: string | null;
+  companyPhone: string | null;
+  companyEmail: string | null;
   signalCount: number;
   feedbackVotes: FeedbackVote[];
 };
@@ -171,6 +191,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .where(and(eq(savedOpportunities.opportunityId, opportunity.id), eq(savedOpportunities.workspaceId, auth.workspaceId))),
     listFeedback(auth, opportunity.id),
   ]);
+  const companyContacts = await loadCompanyContacts(opportunity.companyId);
   const roleOf = new Map(links.map((l) => [l.signalId, l.role]));
   const roleOrder = { primary: 0, corroborating: 1, negative: 2 } as const;
 
@@ -184,10 +205,48 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .map((s) => ({ ...s, role: roleOf.get(s.id)! }))
       .sort((a, b) => roleOrder[a.role] - roleOrder[b.role] || b.occurredOn.localeCompare(a.occurredOn)),
     contactDetails: companyPeople.find((p) => p.id === opportunity.primaryPersonId) ?? null,
+    companyContacts,
     scoredAt: opportunity.scoredAt.toISOString(),
     listIds: saved.map((s) => s.listId),
     feedback,
   };
+}
+
+/** Sites listed per company on the opportunity page; the Sources card on the company page lists them all. */
+const SITE_PHONES_SHOWN = 5;
+
+/** The company's published phones and emails, then its registered sites' phones (deduplicated). */
+async function loadCompanyContacts(companyId: string): Promise<CompanyContact[]> {
+  const [points, sites] = await Promise.all([
+    db
+      .select()
+      .from(companyContactPoints)
+      .where(eq(companyContactPoints.companyId, companyId))
+      .orderBy(sql`(${companyContactPoints.sourceSlug} = 'company_website') desc`, asc(companyContactPoints.type)),
+    db
+      .select({ name: companyLocations.name, phone: companyLocations.phone, website: companyLocations.website, sourceSlug: companyLocations.sourceSlug })
+      .from(companyLocations)
+      .where(and(eq(companyLocations.companyId, companyId), isNotNull(companyLocations.phone)))
+      .orderBy(asc(companyLocations.name))
+      .limit(SITE_PHONES_SHOWN * 2),
+  ]);
+  const contacts: CompanyContact[] = points.map((p) => ({
+    type: p.type === "email" ? "email" : "phone",
+    value: p.value,
+    label: null,
+    source: (p.sourceSlug as SourceSlug | null) ?? null,
+    url: p.sourceUrl,
+  }));
+  const digits = (value: string) => value.replace(/\D/g, "");
+  const seen = new Set(contacts.filter((c) => c.type === "phone").map((c) => digits(c.value)));
+  let shown = 0;
+  for (const site of sites) {
+    if (shown >= SITE_PHONES_SHOWN || seen.has(digits(site.phone!))) continue;
+    seen.add(digits(site.phone!));
+    shown++;
+    contacts.push({ type: "phone", value: site.phone!, label: site.name, source: (site.sourceSlug as SourceSlug | null) ?? null, url: site.website });
+  }
+  return contacts;
 }
 
 /** Changes status and/or notes. Scores are owned by the scoring engine and can't be edited. */
@@ -258,6 +317,7 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
       opportunity.primaryPersonId && row.contactName
         ? { id: opportunity.primaryPersonId, name: row.contactName, title: row.contactTitle }
         : null,
+    companyContact: { phone: row.companyPhone, email: row.companyEmail },
     feedbackVotes: row.feedbackVotes,
     updatedAt: opportunity.updatedAt.toISOString(),
   };

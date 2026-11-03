@@ -1,14 +1,32 @@
 import { describe, expect, it } from "vitest";
+import { boardFromUrl, boardsFromIndexPage, jobInCountries, nameFromBoardTitle } from "./board-directory";
 import { finalizeFacts } from "@/server/ai/website-extract";
-import { formationSignal, signalFromAnalysis } from "@/server/ingestion/found-signal";
+import { formationSignal, newLocationSignal, signalFromAnalysis } from "@/server/ingestion/found-signal";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { industryForSicCodes } from "@/lib/domain/uk-codes";
-import { toFoundCompany, toFoundPeople } from "./companies-house";
-import { jobFunctionFromTitle, personNameFromRegister, seniorityFromTitle, titleCaseCompanyName } from "./names";
+import { pickCompanyNumber, toFoundCompany, toFoundPeople } from "./companies-house";
+import { deflateRawSync } from "node:zlib";
+import { csvFromZip, parseDirectory, providersFor, toFoundCompany as toCqcCompany, toLocationDetail } from "./cqc";
+import {
+  emailFromPattern,
+  emailPatternOf,
+  inferEmailPattern,
+  jobFunctionFromTitle,
+  personNameFromRegister,
+  seniorityFromTitle,
+  titleCaseCompanyName,
+} from "./names";
 import { isAllowed, parseRobots } from "./http";
 import { tenderSourceText, toTender } from "./uk-tenders";
 import {
+  bookingEvidence,
   candidateDomains,
+  generatorOf,
+  parseJsonLd,
+  sitemapLinks,
+  structuredFacts,
+  websiteFindings,
+  type SiteChecks,
   emailsFrom,
   extractLinks,
   jobBoardFromHtml,
@@ -252,5 +270,249 @@ describe("found signals", () => {
       summary: "Acme Ltd was registered at Companies House on 12 August 2026: a new business that may need help to get started.",
     });
     expect(formationSignal({ name: "Old Ltd", foundedOn: "2019-01-01", registerUrl: null }, [], now)).toBeNull();
+  });
+});
+
+describe("CQC directory", () => {
+  // Real rows from the weekly directory (28 October 2026), trimmed; the file opens with notes.
+  const csv = [
+    "CQC Locations data,,,,,,,,,,,,,,",
+    ",,,,,,,,,,,,,,",
+    "This data was produced on 28 October 2026,,,,,,,,,,,,,,",
+    ",,,,,,,,,,,,,,",
+    "Name,Also known as,Address,Postcode,Phone number,Service's website (if available),Service types,Date of latest check,Specialisms/services,Provider name,Local authority,Region,Location URL,CQC Location ID (for office use only),CQC Provider ID (for office use only)",
+    "JA Medical,,\"Room 28, Orpington Health & Wellbeing Centre,19 Homefield Rise,Orpington\",BR6 0FE,2084681086,https://www.ja-medical.co.uk,Doctors/GPs|Doctors/GPs,28/Mar/2023 - 00:00,Services for everyone,JA Medical Services Southeast Ltd,Bromley,London,https://www.cqc.org.uk/location/1-10564403595,1-10564403595,1-1624297480",
+    "Cosmopolitan Medical Clinic,,\"80 King Street,Maidstone\",ME14 1BH,1622296440,https://www.cosmopolitanmedicalclinic.co.uk,Doctors/GPs|Doctors/GPs,02/May/2018 - 00:00,Services for everyone,JA Medical Services Southeast Ltd,Kent,South East,https://www.cqc.org.uk/location/1-10565266257,1-10565266257,1-1624297480",
+    "Dentalcare Swindon,,\"16 Moredon Road,Swindon\",SN25 3DQ,1793611298,https://www.dentalcareswindon.co.uk,Dentist,12/Nov/2014 - 00:00,Services for everyone,Dentalcare Swindon Ltd,Swindon,South West,https://www.cqc.org.uk/location/1-10570276506,1-10570276506,1-9856009077",
+    "Gateway House,,\"149-151 Laughton Road,Dinnington,Sheffield\",S25 2PP,7423434381,https://cristalcare.co.uk,Residential homes,21/Jun/2022 - 00:00,Learning disabilities,Cristal Care Limited,Rotherham,Yorkshire & Humberside,https://www.cqc.org.uk/location/1-10570704049,1-10570704049,1-101620012",
+    "",
+  ].join("\n");
+
+  it("reads every location, restoring phone numbers' leading zero", () => {
+    const locations = parseDirectory(csv);
+    expect(locations).toHaveLength(4);
+    expect(locations[2]).toMatchObject({
+      name: "Dentalcare Swindon",
+      postcode: "SN25 3DQ",
+      phone: "01793611298",
+      website: "dentalcareswindon.co.uk",
+      serviceTypes: ["Dentist"],
+      providerId: "1-9856009077",
+      locationId: "1-10570276506",
+    });
+  });
+
+  it("reads the directory out of its zip", () => {
+    // A minimal one-file zip, laid out as the CQC download is: local header, data, central directory.
+    const name = Buffer.from("28_October_2026_CQC_directory.csv");
+    const data = deflateRawSync(Buffer.from(csv));
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(0, 42);
+    const centralAt = local.length + name.length + data.length;
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(1, 10);
+    end.writeUInt32LE(centralAt, 16);
+    const zip = Buffer.concat([local, name, data, central, name, end]);
+    expect(parseDirectory(csvFromZip(zip))).toHaveLength(4);
+  });
+
+  it("rejects a file whose columns changed instead of misreading it", () => {
+    expect(() => parseDirectory("Name,Something else\nx,y")).toThrow();
+  });
+
+  it("groups locations by provider, for the ICP's industries only", () => {
+    const locations = parseDirectory(csv);
+    expect(providersFor(locations, ["dental"]).map((p) => p.providerName)).toEqual(["Dentalcare Swindon Ltd"]);
+    const gp = providersFor(locations, ["healthcare"]);
+    expect(gp).toHaveLength(1);
+    expect(gp[0].locations.map((l) => l.name)).toEqual(["JA Medical", "Cosmopolitan Medical Clinic"]);
+  });
+
+  it("gives a provider a website only when all its practices list the same one", () => {
+    const [many] = providersFor(parseDirectory(csv), ["healthcare"]);
+    expect(toCqcCompany(many, ["healthcare"], null)).toMatchObject({
+      name: "JA Medical Services Southeast Ltd",
+      domain: null,
+      industry: "healthcare",
+      identity: "verified",
+      identifiers: [{ scheme: "gb_cqc_provider", value: "1-1624297480" }],
+    });
+    const [single] = providersFor(parseDirectory(csv), ["dental"]);
+    expect(toCqcCompany(single, ["dental"], "09291004")).toMatchObject({
+      domain: "dentalcareswindon.co.uk",
+      identifiers: [
+        { scheme: "gb_cqc_provider", value: "1-9856009077" },
+        { scheme: "gb_company_number", value: "09291004" },
+      ],
+    });
+  });
+
+  it("reads registered managers and the registration date from the API", () => {
+    const detail = toLocationDetail(
+      {
+        registrationDate: "2026-06-01",
+        regulatedActivities: [
+          { contacts: [{ personGivenName: "Asif", personFamilyName: "Ali", personRoles: ["Registered Manager"] }] },
+          { contacts: [{ personGivenName: "Asif", personFamilyName: "Ali", personRoles: ["Registered Manager"] }, { personGivenName: "Nominated", personFamilyName: "Person", personRoles: ["Nominated Individual"] }] },
+        ],
+      },
+      "Dentalcare Swindon",
+    );
+    expect(detail).toEqual({
+      registeredOn: "2026-06-01",
+      managers: [{ name: "Asif Ali", title: "Registered manager, Dentalcare Swindon", seniority: "manager", jobFunction: "operations", relationship: "employee", confidence: 90 }],
+    });
+  });
+
+  it("marks a newly registered location, but not an old one", () => {
+    const now = new Date("2026-11-03T12:00:00Z");
+    const base = { providerName: "Dentalcare Swindon Ltd", name: "Dentalcare Swindon", url: "https://www.cqc.org.uk/location/1" };
+    expect(newLocationSignal({ ...base, registeredOn: "2026-06-01" }, ["web_development"], now)).toMatchObject({
+      signalType: "new_location",
+      source: "provider",
+      confidence: 95,
+      occurredOn: "2026-06-01",
+    });
+    expect(newLocationSignal({ ...base, registeredOn: "2014-11-12" }, [], now)).toBeNull();
+    expect(newLocationSignal({ ...base, registeredOn: null }, [], now)).toBeNull();
+  });
+});
+
+describe("Companies House number lookup", () => {
+  const item = (title: string, number: string, postcode: string, status = "active") => ({
+    title,
+    company_number: number,
+    company_status: status,
+    address: { postal_code: postcode },
+  });
+
+  it("links only a single exact, active name at one of the postcodes", () => {
+    expect(pickCompanyNumber([item("DENTALCARE SWINDON LTD", "1", "SN25 3DQ")], "Dentalcare Swindon Ltd", ["sn253dq"])).toBe("1");
+    // Same name, different postcode: not enough.
+    expect(pickCompanyNumber([item("DENTALCARE SWINDON LTD", "1", "M1 1AA")], "Dentalcare Swindon Ltd", ["SN25 3DQ"])).toBeNull();
+    // Two exact matches: ambiguous.
+    expect(pickCompanyNumber([item("DENTALCARE SWINDON LTD", "1", "SN25 3DQ"), item("Dentalcare Swindon Limited", "2", "SN25 3DQ")], "Dentalcare Swindon Ltd", ["SN25 3DQ"])).toBeNull();
+    // Dissolved companies don't count.
+    expect(pickCompanyNumber([item("DENTALCARE SWINDON LTD", "1", "SN25 3DQ", "dissolved")], "Dentalcare Swindon Ltd", ["SN25 3DQ"])).toBeNull();
+  });
+});
+
+describe("website checks (no AI)", () => {
+  const checks = (overrides: Partial<SiteChecks> = {}): SiteChecks => ({
+    homeUrl: "https://smiles.example/",
+    secure: true,
+    generator: null,
+    booking: null,
+    pagesChecked: ["https://smiles.example/", "https://smiles.example/contact"],
+    ...overrides,
+  });
+
+  it("reads the CMS and booking evidence from the page itself", () => {
+    expect(generatorOf('<meta name="generator" content="WordPress 5.8.3" />')).toBe("WordPress 5.8.3");
+    expect(bookingEvidence('<a href="https://portal.dentally.co/book">Book now</a>')).toMatch(/^dental booking system/);
+    expect(bookingEvidence("<a href='/appointments'>Book an appointment</a>")).toBe("booking link: Book an appointment");
+    expect(bookingEvidence("<p>Call us to book</p>")).toBeNull();
+  });
+
+  it("flags possible problems with their evidence, without calling them buying intent", () => {
+    const found = websiteFindings("Smiles Ltd", checks({ secure: false, generator: "WordPress 5.8.3" }), "dental");
+    expect(found.map((f) => [f.signalType, f.evidenceLabel, f.confidence])).toEqual([
+      ["insecure_website", "observed", 90],
+      ["outdated_website", "observed", 85],
+      ["no_online_booking", "derived", 60],
+    ]);
+    expect(found[1].excerpt).toBe('<meta name="generator" content="WordPress 5.8.3">');
+    expect(found.every((f) => f.summary.startsWith("Possible problem:"))).toBe(true);
+  });
+
+  it("stays quiet about a current site that takes bookings, and about booking outside booking industries", () => {
+    expect(websiteFindings("Smiles Ltd", checks({ generator: "WordPress 6.6.2", booking: { url: "x", evidence: "booking link" } }), "dental")).toEqual([]);
+    expect(websiteFindings("Ledger Ltd", checks(), "accounting")).toEqual([]);
+  });
+
+  it("reads the company's own structured data and sitemap", () => {
+    const html = `<script type="application/ld+json">{"@context":"https://schema.org","@graph":[
+      {"@type":"Dentist","telephone":"0113 496 0000","email":"mailto:Hello@Smiles.example","numberOfEmployees":{"@type":"QuantitativeValue","value":24},
+       "founder":{"@type":"Person","name":"Sophie Clarke","jobTitle":"Principal Dentist"}},
+      {"@type":"Person","name":"Priya Shah","jobTitle":"Practice Manager"},
+      {"@type":"Person","name":"Solo"}]}</script><script type="application/ld+json">{broken</script>`;
+    expect(structuredFacts(parseJsonLd(html))).toEqual({
+      telephone: "0113 496 0000",
+      email: "hello@smiles.example",
+      employees: 24,
+      people: [
+        { name: "Sophie Clarke", title: "Principal Dentist" },
+        { name: "Priya Shah", title: "Practice Manager" },
+      ],
+    });
+    expect(sitemapLinks("<urlset><url><loc> https://smiles.example/meet-the-team </loc></url></urlset>")).toEqual([{ url: "https://smiles.example/meet-the-team", text: "" }]);
+  });
+});
+
+describe("email patterns", () => {
+  it("recognises a person's published address, but not a shared mailbox", () => {
+    expect(emailPatternOf("sarah.jones@acme.example", "Sarah Jones")).toBe("first.last");
+    expect(emailPatternOf("sjones@acme.example", "Dr Sarah Jones")).toBe("flast");
+    expect(emailPatternOf("info@acme.example", "Sarah Jones")).toBeNull();
+  });
+
+  it("infers a pattern only from two or more agreeing published examples", () => {
+    expect(inferEmailPattern([{ pattern: "first.last", name: "Sarah Jones" }])).toBeNull();
+    expect(inferEmailPattern([{ pattern: "first.last", name: "Sarah Jones" }, { pattern: "first.last", name: "sarah jones" }])).toBeNull(); // same person twice
+    expect(inferEmailPattern([{ pattern: "first.last", name: "Sarah Jones" }, { pattern: "flast", name: "Tom Lee" }])).toBeNull(); // they disagree
+    expect(inferEmailPattern([{ pattern: "first.last", name: "Sarah Jones" }, { pattern: "first.last", name: "Tom Lee" }])).toBe("first.last");
+    expect(emailFromPattern("first.last", "Priya Shah", "acme.example")).toBe("priya.shah@acme.example");
+  });
+});
+
+describe("job-board discovery", () => {
+  it("takes the board name from an archived board URL, and rejects provider pages and junk", () => {
+    expect(boardFromUrl("https://job-boards.greenhouse.io/0x/jobs/7302322002")).toEqual({ provider: "greenhouse", boardToken: "0x" });
+    expect(boardFromUrl("https://boards.greenhouse.io/embed/job_board?for=AcmeCo")).toEqual({ provider: "greenhouse", boardToken: "acmeco" });
+    expect(boardFromUrl("https://jobs.lever.co/leverdemo/ad208490")).toEqual({ provider: "lever", boardToken: "leverdemo" });
+    expect(boardFromUrl("https://jobs.ashbyhq.com/ashby")).toEqual({ provider: "ashby", boardToken: "ashby" });
+    // Not company boards.
+    expect(boardFromUrl("https://job-boards.greenhouse.io/")).toBeNull();
+    expect(boardFromUrl("https://boards.greenhouse.io/103644278")).toBeNull();
+    expect(boardFromUrl("https://jobs.lever.co/api/v1")).toBeNull();
+    expect(boardFromUrl("https://boards.greenhouse.io/1pyra)mid_health&care")).toBeNull();
+    expect(boardFromUrl("https://example.com/careers")).toBeNull();
+  });
+
+  it("reads candidate boards from archive index lines, once each", () => {
+    const page = [
+      '{"url": "https://job-boards.greenhouse.io/0x/jobs/1"}',
+      '{"url": "https://job-boards.greenhouse.io/0x/jobs/2"}',
+      '{"url": "https://job-boards.greenhouse.io/"}',
+      '{"url": "https://job-boards.greenhouse.io/acme?error=true"}',
+      '{"url": "https://job-boards.gre', // cut off by a timeout
+    ].join("\n");
+    expect(boardsFromIndexPage(page).map((b) => b.boardToken)).toEqual(["0x", "acme"]);
+  });
+
+  it("names a company from its board page title", () => {
+    expect(nameFromBoardTitle("Jobs at Acme Health")).toBe("Acme Health");
+    expect(nameFromBoardTitle("Acme Health - Careers")).toBe("Acme Health");
+    expect(nameFromBoardTitle("Acme Health | Lever")).toBe("Acme Health");
+    expect(nameFromBoardTitle("Jobs")).toBeNull();
+  });
+
+  it("keeps jobs in the workspace's countries, and remote roles open worldwide", () => {
+    expect(jobInCountries("London, United Kingdom", ["GB"])).toBe(true);
+    expect(jobInCountries("Manchester", ["GB"])).toBe(true);
+    expect(jobInCountries("Remote", ["GB"])).toBe(true);
+    expect(jobInCountries("Remote - US", ["GB"])).toBe(false);
+    expect(jobInCountries("Austin, US", ["GB"])).toBe(false);
+    expect(jobInCountries("Dublin, Ireland", ["GB", "IE"])).toBe(true);
+    expect(jobInCountries("Anywhere", [])).toBe(true);
   });
 });

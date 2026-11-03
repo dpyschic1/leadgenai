@@ -1,7 +1,7 @@
 /** Response DTOs shared by the route handlers and the client. Only these shapes leave the server. */
 import type { memberRole, signalRole } from "@/db/schema";
 import type { FeedbackVerdict } from "@/lib/domain/feedback";
-import type { SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
+import type { CompanyIdentity, SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
 import type { OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
 import type {
   CompanyRelationship,
@@ -155,7 +155,11 @@ export type CompanyPerson = {
 };
 
 /** A contact point's verification state (PRD §22: "contact verification state is displayed"). */
-export type ContactCheck = { state: ContactVerification; checkedAt: string | null };
+/**
+ * An email or phone's state. `origin` is kept apart from `state`: an address published on the
+ * company's site or inferred from its pattern is never shown as verified unless a person verifies it.
+ */
+export type ContactCheck = { state: ContactVerification; checkedAt: string | null; origin: "entered" | "published" | "inferred" };
 
 export type CompanyDetail = {
   id: string;
@@ -166,6 +170,8 @@ export type CompanyDetail = {
   description: string | null;
   /** The source that found the company; null when added by hand. */
   discoveredBy: SourceSlug | null;
+  /** How well the business is identified: provisional (one source's name only), partial (website confirmed), verified. */
+  identityStatus: CompanyIdentity;
   locations: CompanyLocation[];
   people: CompanyPerson[];
   /** This company's opportunity, if its signals have produced one. */
@@ -218,6 +224,10 @@ export type CompanySources = {
   companyNumber: string | null;
   website: { domain: string; confidence: number; matchedBy: string } | null;
   contacts: { type: "email" | "phone"; value: string; source: SourceSlug | null; observedAt: string }[];
+  /** Sites a register lists for the company, e.g. each of a CQC provider's practices. */
+  sites: { name: string; website: string | null; phone: string | null; postalCode: string | null; source: SourceSlug | null }[];
+  /** Attribution a source's licence asks us to show, e.g. for CQC data. */
+  attributions: string[];
   records: { source: SourceSlug; recordType: string; url: string | null; observedAt: string }[];
   /** Background work still queued for this company. */
   pendingJobs: number;
@@ -260,6 +270,8 @@ export type OpportunitySummary = {
   latestSignalOn: string | null;
   signalCount: number;
   contact: { id: string; name: string; title: string | null } | null;
+  /** The company's own published phone and email (switchboard, info@, a practice's phone): a way in even with no named person. */
+  companyContact: { phone: string | null; email: string | null };
   /** Who on the team judged it and how, newest first; the card shows these as "1 good fit" / "2 flagged". */
   feedbackVotes: FeedbackVote[];
   updatedAt: string;
@@ -273,12 +285,17 @@ export type OpportunityList = {
 
 export type OpportunitySignal = Signal & { role: SignalRole };
 
+/** A published company phone or email; `label` names the site it belongs to, if any. */
+export type CompanyContact = { type: "email" | "phone"; value: string; label: string | null; source: SourceSlug | null; url: string | null };
+
 export type OpportunityDetail = OpportunitySummary & {
   suggestedAction: string | null;
   notes: string | null;
   factors: Record<ScoreFactor, OpportunityFactor> | null;
   signals: OpportunitySignal[];
   contactDetails: CompanyPerson | null;
+  /** Every published company phone/email, with where it came from (e.g. "Swindon practice" from CQC). */
+  companyContacts: CompanyContact[];
   scoredAt: string;
   /** Saved lists this opportunity is on. */
   listIds: string[];

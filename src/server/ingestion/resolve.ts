@@ -12,7 +12,7 @@ import {
   sourceRecords,
 } from "@/db/schema";
 import { identityColumns } from "@/lib/domain/people";
-import type { SourceSlug } from "@/lib/domain/sources";
+import type { CompanyIdScheme, SourceSlug } from "@/lib/domain/sources";
 import type { Actor } from "@/server/auth/actor";
 import type { FoundCompany, FoundPerson, SourceRef } from "@/server/sources";
 
@@ -57,14 +57,26 @@ export async function saveSourceRecord(
 }
 
 /** The existing company a found one refers to, if any. */
-async function matchCompany(tx: Tx, workspaceId: string, found: FoundCompany): Promise<string | null> {
+/** "LS1 4AP" and "ls14ap" compare equal. */
+export const normalizePostcode = (postcode: string | null | undefined) => postcode?.replace(/\s+/g, "").toUpperCase() || null;
+
+type Match = { companyId: string | null; ambiguousWith: string[] };
+
+/**
+ * The existing company a found one refers to, in order of strength: a registry number, then the
+ * website domain, then the same source's own earlier record of it (re-reading a source never
+ * duplicates). A name only counts together with the same postcode, and only when exactly one
+ * company fits; several fits are ambiguous and nothing is merged.
+ */
+async function matchCompany(tx: Tx, workspaceId: string, found: FoundCompany): Promise<Match> {
+  const none = { companyId: null, ambiguousWith: [] };
   for (const identifier of found.identifiers) {
     const [hit] = await tx
       .select({ companyId: companyIdentifiers.companyId })
       .from(companyIdentifiers)
       .where(and(eq(companyIdentifiers.workspaceId, workspaceId), eq(companyIdentifiers.scheme, identifier.scheme), eq(companyIdentifiers.value, identifier.value)))
       .limit(1);
-    if (hit) return hit.companyId;
+    if (hit) return { ...none, companyId: hit.companyId };
   }
   if (found.domain) {
     const [hit] = await tx
@@ -72,14 +84,27 @@ async function matchCompany(tx: Tx, workspaceId: string, found: FoundCompany): P
       .from(companies)
       .where(and(eq(companies.workspaceId, workspaceId), eq(companies.domain, found.domain)))
       .limit(1);
-    if (hit) return hit.id;
+    if (hit) return { ...none, companyId: hit.id };
   }
-  const [hit] = await tx
+
+  const sameName = and(eq(companies.workspaceId, workspaceId), sql`lower(${companies.canonicalName}) = lower(${found.name})`);
+  // The same source's own earlier record of this name (e.g. a buyer seen in a previous tender).
+  const [own] = await tx
     .select({ id: companies.id })
     .from(companies)
-    .where(and(eq(companies.workspaceId, workspaceId), sql`lower(${companies.canonicalName}) = lower(${found.name})`))
-    .limit(1);
-  return hit?.id ?? null;
+    .where(and(sameName, eq(companies.sourceSlug, found.record.sourceSlug)))
+    .limit(2);
+  if (own && found.identifiers.length === 0) return { ...none, companyId: own.id };
+
+  const postcode = normalizePostcode(found.hq?.postalCode);
+  if (!postcode) return none;
+  const candidates = await tx
+    .selectDistinct({ id: companies.id })
+    .from(companies)
+    .innerJoin(companyLocations, eq(companyLocations.companyId, companies.id))
+    .where(and(sameName, sql`upper(replace(${companyLocations.postalCode}, ' ', '')) = ${postcode}`));
+  if (candidates.length === 1) return { ...none, companyId: candidates[0].id };
+  return { companyId: null, ambiguousWith: candidates.map((c) => c.id) };
 }
 
 /**
@@ -94,7 +119,8 @@ export async function resolveCompany(
   // Serialise resolution per workspace + name, so two jobs can't create the same company twice.
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`resolve:${actor.workspaceId}:${found.name.toLowerCase()}`}))`);
 
-  let companyId = await matchCompany(tx, actor.workspaceId, found);
+  const match = await matchCompany(tx, actor.workspaceId, found);
+  let companyId = match.companyId;
   const created = companyId === null;
 
   if (companyId === null) {
@@ -107,6 +133,8 @@ export async function resolveCompany(
         industry: found.industry,
         sourceSlug: found.record.sourceSlug,
         discoveredAt: new Date(),
+        // A registry number identifies the business; anything else starts provisional.
+        identityStatus: found.identity ?? (found.identifiers.length > 0 ? "verified" : "provisional"),
       })
       .returning({ id: companies.id });
     companyId = row.id;
@@ -134,11 +162,17 @@ export async function resolveCompany(
       .values({ workspaceId: actor.workspaceId, companyId, ...identifier })
       .onConflictDoNothing();
   }
-  const record = await saveSourceRecord(tx, actor.workspaceId, found.record, companyId);
+  // A name that fit several companies is kept on the record, so a person can merge later.
+  const ref = match.ambiguousWith.length > 0 ? { ...found.record, data: { ...found.record.data, ambiguousWith: match.ambiguousWith } } : found.record;
+  const record = await saveSourceRecord(tx, actor.workspaceId, ref, companyId);
   return { companyId, created, recordId: record.id };
 }
 
-/** Adds the people a source found at the company; existing people (same name) only gain a source. Returns how many were new. */
+/**
+ * Adds the people a source found at the company and returns how many were new. A person the same
+ * source already gave us is not added again (re-reading is idempotent), but people are never merged
+ * across sources on name alone: the same name from another source is kept as its own record.
+ */
 export async function addFoundPeople(
   tx: Tx,
   actor: Actor,
@@ -151,7 +185,7 @@ export async function addFoundPeople(
     .select({ personId: companyPeople.personId, name: people.name })
     .from(companyPeople)
     .innerJoin(people, eq(people.id, companyPeople.personId))
-    .where(and(eq(companyPeople.companyId, companyId), eq(companyPeople.workspaceId, actor.workspaceId)));
+    .where(and(eq(companyPeople.companyId, companyId), eq(companyPeople.workspaceId, actor.workspaceId), eq(companyPeople.sourceSlug, sourceSlug)));
   const known = new Set(existing.map((p) => p.name.toLowerCase()));
 
   let added = 0;
@@ -180,6 +214,29 @@ export async function addFoundPeople(
   return added;
 }
 
+/**
+ * Saves the sites a source lists for a company (e.g. each of a CQC provider's practices) as their
+ * own locations, keyed by the source's id, so re-reading updates them instead of adding copies.
+ */
+export async function saveSourceLocations(
+  tx: Tx,
+  companyId: string,
+  sourceSlug: SourceSlug,
+  sites: { externalId: string; name: string; address: string | null; city: string | null; region: string | null; postalCode: string | null; website: string | null; phone: string | null }[],
+): Promise<void> {
+  for (const site of sites) {
+    const values = { name: site.name, address: site.address, city: site.city, region: site.region, postalCode: site.postalCode, website: site.website, phone: site.phone };
+    await tx
+      .insert(companyLocations)
+      .values({ companyId, type: "branch", country: "GB", sourceSlug, externalId: site.externalId, ...values })
+      .onConflictDoUpdate({
+        target: [companyLocations.companyId, companyLocations.sourceSlug, companyLocations.externalId],
+        targetWhere: sql`${companyLocations.externalId} is not null`,
+        set: values,
+      });
+  }
+}
+
 /** Records the company's published email/phone (switchboard, info@). */
 export async function addCompanyContacts(
   tx: Tx,
@@ -201,11 +258,11 @@ export async function addCompanyContacts(
     });
 }
 
-/** Known registry numbers in the workspace, so discovery only returns new companies. */
-export async function knownIdentifiers(tx: Tx | typeof db, workspaceId: string): Promise<Set<string>> {
+/** Known registry numbers of one scheme in the workspace, so discovery only returns new companies. */
+export async function knownIdentifiers(tx: Tx | typeof db, workspaceId: string, scheme: CompanyIdScheme = "gb_company_number"): Promise<Set<string>> {
   const rows = await tx
     .select({ value: companyIdentifiers.value })
     .from(companyIdentifiers)
-    .where(and(eq(companyIdentifiers.workspaceId, workspaceId), inArray(companyIdentifiers.scheme, ["gb_company_number"])));
+    .where(and(eq(companyIdentifiers.workspaceId, workspaceId), inArray(companyIdentifiers.scheme, [scheme])));
   return new Set(rows.map((r) => r.value));
 }
