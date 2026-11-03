@@ -1,44 +1,47 @@
 import "server-only";
-import { and, asc, eq, ilike, or } from "drizzle-orm";
+import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isForeignKeyViolation, isUniqueViolation } from "@/db/errors";
 import { auditLogs, companies, companyLocations, companyPeople, opportunities } from "@/db/schema";
 import type { CompanyDetail, CompanySummary } from "@/lib/api/types";
 import type { SourceSlug } from "@/lib/domain/sources";
 import type { CompanyValues } from "@/lib/validation/companies";
+import { FIRST_PAGE, offsetOf, type Page, type Pagination } from "@/lib/validation/pagination";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { deleteOrphanedPeople, listCompanyPeople } from "./people.service";
 
-/** Upper bound for the list until it gets pagination. */
-const LIST_LIMIT = 500;
-
 const headquartersOf = (companyId: string | typeof companies.id) =>
   and(eq(companyLocations.companyId, companyId), eq(companyLocations.type, "headquarters"));
 
-export async function listCompanies(auth: AuthContext, search?: string): Promise<CompanySummary[]> {
+/** One page of the workspace's companies, A to Z, optionally narrowed by name or domain. */
+export async function listCompanies(auth: AuthContext, search?: string, page: Pagination = FIRST_PAGE): Promise<Page<CompanySummary>> {
   const pattern = search ? `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : undefined;
+  const matches = and(
+    eq(companies.workspaceId, auth.workspaceId),
+    pattern ? or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern)) : undefined,
+  );
 
-  const rows = await db
-    .select({
-      company: companies,
-      hqCity: companyLocations.city,
-      hqCountry: companyLocations.country,
-      hqId: companyLocations.id,
-      peopleCount: db.$count(companyPeople, eq(companyPeople.companyId, companies.id)),
-    })
-    .from(companies)
-    .leftJoin(companyLocations, headquartersOf(companies.id))
-    .where(
-      and(
-        eq(companies.workspaceId, auth.workspaceId),
-        pattern ? or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern)) : undefined,
-      ),
-    )
-    .orderBy(asc(companies.canonicalName))
-    .limit(LIST_LIMIT);
+  const [rows, [{ total }]] = await Promise.all([
+    db
+      .select({
+        company: companies,
+        hqCity: companyLocations.city,
+        hqCountry: companyLocations.country,
+        hqId: companyLocations.id,
+        peopleCount: db.$count(companyPeople, eq(companyPeople.companyId, companies.id)),
+      })
+      .from(companies)
+      .leftJoin(companyLocations, headquartersOf(companies.id))
+      .where(matches)
+      // The id breaks ties between same-named companies, so pages never repeat or skip a row.
+      .orderBy(asc(companies.canonicalName), asc(companies.id))
+      .limit(page.pageSize)
+      .offset(offsetOf(page)),
+    db.select({ total: sql<number>`count(*)::int` }).from(companies).where(matches),
+  ]);
 
-  return rows.map(({ company, hqCity, hqCountry, hqId, peopleCount }) => ({
+  const items = rows.map(({ company, hqCity, hqCountry, hqId, peopleCount }) => ({
     id: company.id,
     name: company.canonicalName,
     domain: company.domain,
@@ -48,6 +51,7 @@ export async function listCompanies(auth: AuthContext, search?: string): Promise
     peopleCount,
     discoveredBy: (company.sourceSlug as SourceSlug | null) ?? null,
   }));
+  return { items, total, ...page };
 }
 
 export async function getCompany(auth: AuthContext, companyId: string): Promise<CompanyDetail> {

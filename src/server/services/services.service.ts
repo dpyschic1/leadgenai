@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isForeignKeyViolation } from "@/db/errors";
 import {
@@ -11,14 +11,21 @@ import {
   services,
 } from "@/db/schema";
 import type { Service } from "@/lib/api/types";
+import { FIRST_PAGE, offsetOf, type Page, type Pagination } from "@/lib/validation/pagination";
 import type { ServiceValues } from "@/lib/validation/services";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 
 type ServiceRow = typeof services.$inferSelect;
 
-export async function listServices(auth: AuthContext): Promise<Service[]> {
-  return loadServices(auth.workspaceId);
+/** One page of the workspace's services, oldest first (scoring always uses all of them: `loadServices`). */
+export async function listServices(auth: AuthContext, page: Pagination = FIRST_PAGE): Promise<Page<Service>> {
+  const mine = eq(services.workspaceId, auth.workspaceId);
+  const [rows, [{ total }]] = await Promise.all([
+    db.select().from(services).where(mine).orderBy(asc(services.createdAt), asc(services.id)).limit(page.pageSize).offset(offsetOf(page)),
+    db.select({ total: sql<number>`count(*)::int` }).from(services).where(mine),
+  ]);
+  return { items: await withTargeting(db, rows), total, ...page };
 }
 
 /** A workspace's services with targeting; also used by background re-scoring (no request user). */

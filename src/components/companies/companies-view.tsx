@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Building2Icon, PlusIcon, SearchIcon, UsersRoundIcon } from "lucide-react";
 import { EditorSheet } from "@/components/forms/editor-sheet";
 import { PageHeader } from "@/components/layout/page-header";
+import { Pagination, usePage } from "@/components/layout/pagination";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -28,12 +29,15 @@ export function CompaniesView() {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const query = useDebouncedValue(search.trim());
-  const { data: companies, isPending, isFetching } = useCompanies(query);
+  // A new search starts again from page 1.
+  const [page, setPage] = usePage(query);
+  const { data, isPending, isFetching } = useCompanies(query, page);
+  const companies = data?.items;
   const canEdit = usePermission(EDITOR_ROLES);
   const [adding, setAdding] = useState(false);
 
   const isFirstLoad = isPending && !companies;
-  const isEmptyWorkspace = !query && companies?.length === 0;
+  const isEmptyWorkspace = !query && data?.total === 0;
 
   return (
     <div className="space-y-6">
@@ -66,9 +70,9 @@ export function CompaniesView() {
                 className="h-9 pl-9"
               />
             </div>
-            {companies && (
+            {data && (
               <p className="ml-auto text-sm tabular-nums text-muted-foreground" aria-live="polite">
-                {companies.length} {companies.length === 1 ? "company" : "companies"}
+                {data.total.toLocaleString()} {data.total === 1 ? "company" : "companies"}
               </p>
             )}
           </div>
@@ -98,6 +102,16 @@ export function CompaniesView() {
               )}
             </div>
           </div>
+          {data && (
+            <Pagination
+              page={data.page}
+              pageSize={data.pageSize}
+              total={data.total}
+              noun="companies"
+              onChange={setPage}
+              className="border-t px-4 py-3"
+            />
+          )}
         </section>
       )}
 

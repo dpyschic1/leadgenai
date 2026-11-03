@@ -4,6 +4,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClie
 import { companiesApi } from "@/lib/api/companies";
 import type { CompanyDetail } from "@/lib/api/types";
 import type { CompanyValues, PersonValues } from "@/lib/validation/companies";
+import { FIRST_PAGE, type Pagination } from "@/lib/validation/pagination";
 import { queryKeys } from "./query-keys";
 
 /** After any company or people change: cache the fresh detail and refetch lists (counts change). */
@@ -15,10 +16,10 @@ function syncCompany(queryClient: QueryClient, company: CompanyDetail) {
   ]);
 }
 
-export function useCompanies(search = "") {
+export function useCompanies(search = "", page: Pagination = FIRST_PAGE) {
   return useQuery({
-    queryKey: queryKeys.companies(search),
-    queryFn: ({ signal }) => companiesApi.list(search, signal),
+    queryKey: queryKeys.companies(search, page),
+    queryFn: ({ signal }) => companiesApi.list(search, page, signal),
     // Keep the current rows on screen while a new search loads.
     placeholderData: keepPreviousData,
   });

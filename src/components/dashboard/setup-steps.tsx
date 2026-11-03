@@ -45,8 +45,8 @@ export function SetupSteps() {
   const hasOpportunity = Object.values(opportunities.data?.counts ?? {}).some((count) => count > 0);
   // Steps complete in order, so progress is the run of finished steps from the start.
   const finished = [
-    Boolean(services.data?.length),
-    Boolean(companies.data?.length),
+    Boolean(services.data?.total),
+    Boolean(companies.data?.total),
     Boolean(signals.data?.length),
     hasOpportunity,
   ];

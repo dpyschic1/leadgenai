@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { SearchIcon, TargetIcon } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
+import { Pagination, usePage } from "@/components/layout/pagination";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -40,7 +41,9 @@ export function OpportunitiesView() {
   const q = useDebouncedValue(search.trim());
   // The company box types freely; everything else changes in one step.
   const active = useMemo(() => ({ ...filters, q }), [filters, q]);
-  const { data, isPending, isFetching } = useOpportunities(group, active);
+  // Another tab, search or filter starts again from page 1.
+  const [page, setPage] = usePage(JSON.stringify([group, active]));
+  const { data, isPending, isFetching } = useOpportunities(group, active, page);
 
   const filtering = q !== "" || activeFilterCount(filters) > 0;
   const hasAny = data && Object.values(data.counts).some((count) => count > 0);
@@ -119,11 +122,19 @@ export function OpportunitiesView() {
           {isPending && !data ? (
             <FeedSkeleton />
           ) : data && data.items.length > 0 ? (
-            <ul className={cn("space-y-3 transition-opacity", isFetching && "opacity-60")} aria-label="Opportunities">
-              {data.items.map((opportunity, index) => (
-                <OpportunityCard key={opportunity.id} opportunity={opportunity} rank={group === "open" ? index + 1 : null} />
-              ))}
-            </ul>
+            <>
+              <ul className={cn("space-y-3 transition-opacity", isFetching && "opacity-60")} aria-label="Opportunities">
+                {data.items.map((opportunity, index) => (
+                  <OpportunityCard
+                    key={opportunity.id}
+                    opportunity={opportunity}
+                    // Ranks run on across pages: page 2 starts at #26.
+                    rank={group === "open" ? (data.page - 1) * data.pageSize + index + 1 : null}
+                  />
+                ))}
+              </ul>
+              <Pagination page={data.page} pageSize={data.pageSize} total={data.total} noun="opportunities" onChange={setPage} />
+            </>
           ) : (
             <div className="rounded-xl border border-dashed bg-card px-6 py-12 text-center text-sm text-muted-foreground">
               {filtering ? (

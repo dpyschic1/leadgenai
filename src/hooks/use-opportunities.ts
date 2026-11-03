@@ -6,12 +6,13 @@ import type { OpportunityDetail } from "@/lib/api/types";
 import type { StatusGroup } from "@/lib/domain/opportunities";
 import type { FeedbackInput } from "@/lib/validation/feedback";
 import { EMPTY_FILTERS, type OpportunityFilters, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import { FIRST_PAGE, type Pagination } from "@/lib/validation/pagination";
 import { queryKeys } from "./query-keys";
 
-export function useOpportunities(group: StatusGroup, filters: OpportunityFilters = EMPTY_FILTERS) {
+export function useOpportunities(group: StatusGroup, filters: OpportunityFilters = EMPTY_FILTERS, page: Pagination = FIRST_PAGE) {
   return useQuery({
-    queryKey: queryKeys.opportunityList(group, filters),
-    queryFn: ({ signal }) => opportunitiesApi.list(group, filters, signal),
+    queryKey: queryKeys.opportunityList(group, filters, page),
+    queryFn: ({ signal }) => opportunitiesApi.list(group, filters, page, signal),
     placeholderData: keepPreviousData,
   });
 }

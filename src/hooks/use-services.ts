@@ -1,12 +1,21 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { servicesApi } from "@/lib/api/services";
+import { MAX_PAGE_SIZE, type Pagination } from "@/lib/validation/pagination";
 import type { ServiceInput } from "@/lib/validation/services";
 import { queryKeys } from "./query-keys";
 
-export function useServices() {
-  return useQuery({ queryKey: queryKeys.services, queryFn: ({ signal }) => servicesApi.list(signal) });
+/** For pickers and checks that need every service: a workspace has far fewer than one full page. */
+const ALL_SERVICES: Pagination = { page: 1, pageSize: MAX_PAGE_SIZE };
+
+/** One page of services (the Services page), or all of them by default. */
+export function useServices(page: Pagination = ALL_SERVICES) {
+  return useQuery({
+    queryKey: queryKeys.servicePage(page),
+    queryFn: ({ signal }) => servicesApi.list(page, signal),
+    placeholderData: keepPreviousData,
+  });
 }
 
 export function useCreateService() {

@@ -1,4 +1,5 @@
 import type { OpportunityFilters } from "@/lib/validation/opportunities";
+import type { Pagination } from "@/lib/validation/pagination";
 
 /** Central registry of TanStack Query keys, so invalidation never relies on retyped arrays. */
 export const queryKeys = {
@@ -7,11 +8,13 @@ export const queryKeys = {
   team: ["team"] as const,
   invitation: (token: string) => ["invitation", token] as const,
   referenceData: ["reference-data"] as const,
+  /** Prefix of every services query, whatever the page. */
   services: ["services"] as const,
+  servicePage: (page: Pagination) => ["services", page] as const,
   scoringProfile: ["scoring-profile"] as const,
   /** Prefix of every companies-list query, whatever the search. */
   companyLists: ["companies"] as const,
-  companies: (search: string) => ["companies", { search }] as const,
+  companies: (search: string, page: Pagination) => ["companies", { search, ...page }] as const,
   company: (id: string) => ["company", id] as const,
   /** Prefix of every signals query (per company and recent). */
   signals: ["signals"] as const,
@@ -21,7 +24,7 @@ export const queryKeys = {
   companySources: (companyId: string) => ["company-sources", companyId] as const,
   /** Prefix of every opportunity query; invalidate it after anything that changes scores. */
   opportunities: ["opportunities"] as const,
-  opportunityList: (group: string, filters: OpportunityFilters) => ["opportunities", "list", group, filters] as const,
+  opportunityList: (group: string, filters: OpportunityFilters, page: Pagination) => ["opportunities", "list", group, filters, page] as const,
   opportunity: (id: string) => ["opportunities", "detail", id] as const,
   /** The saved lists with their counts. */
   lists: ["lists"] as const,

@@ -26,7 +26,7 @@ export function useFilterOptions(): Record<ListFilterKey, Option[]> {
 
   return {
     types: options(ref?.opportunityTypes),
-    services: services?.map((service) => ({ value: service.id, label: service.name })) ?? [],
+    services: services?.items.map((service) => ({ value: service.id, label: service.name })) ?? [],
     // Negative signals lower a score; nobody searches for them.
     signals: options(ref?.signalCategories.filter((category) => category.slug !== "negative")),
     urgency: URGENCY_OPTIONS,

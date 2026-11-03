@@ -154,8 +154,8 @@ afterAll(async () => {
 
 describe("another workspace's lists show none of A's data", () => {
   it("companies, services, signals, opportunities and lists", async () => {
-    expect((await listCompanies(b)).map((c) => c.id)).toEqual([bCompanyId]);
-    expect(await listServices(b)).toEqual([]);
+    expect((await listCompanies(b)).items.map((c) => c.id)).toEqual([bCompanyId]);
+    expect((await listServices(b)).items).toEqual([]);
     expect(await listRecentSignals(b, 50)).toEqual([]);
     expect((await listOpportunities(b, openFeed)).items).toEqual([]);
     expect((await listLists(b)).map((l) => l.id)).toEqual([bListId]);
@@ -226,7 +226,7 @@ describe("after all of that, A's data", () => {
     expect(detail.name).toBe("Isolated Corp");
     expect(detail.people.map((p) => p.name)).toEqual(["Private Person"]);
     expect((await listCompanySignals(a.auth, a.companyId)).map((s) => s.summary)).toEqual([signal(null).summary]);
-    expect((await listServices(a.auth)).map((s) => s.name)).toEqual(["MVP Development"]);
+    expect((await listServices(a.auth)).items.map((s) => s.name)).toEqual(["MVP Development"]);
     const opportunity = await getOpportunity(a.auth, a.opportunityId);
     expect(opportunity.status).toBe("new");
     expect(opportunity.listIds).toEqual([a.listId]);

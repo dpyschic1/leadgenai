@@ -4,6 +4,7 @@ import { useState } from "react";
 import { BriefcaseBusinessIcon, PlusIcon } from "lucide-react";
 import { EditorSheet } from "@/components/forms/editor-sheet";
 import { PageHeader } from "@/components/layout/page-header";
+import { Pagination, usePage } from "@/components/layout/pagination";
 import { Button } from "@/components/ui/button";
 
 import { usePermission } from "@/hooks/use-permission";
@@ -14,11 +15,16 @@ import { DeleteServiceDialog } from "./delete-service-dialog";
 import { ServiceCard, ServiceCardSkeleton } from "./service-card";
 import { ServiceForm } from "./service-form";
 
+/** Cards sit two to a row, so a page holds an even number. */
+const SERVICES_PER_PAGE = 12;
+
 /** `null` = closed, `"new"` = adding, a service = editing it. */
 type Editing = Service | "new" | null;
 
 export function ServicesView() {
-  const { data: services, isPending } = useServices();
+  const [page, setPage] = usePage("services", SERVICES_PER_PAGE);
+  const { data, isPending } = useServices(page);
+  const services = data?.items;
   const canEdit = usePermission(CONFIG_ROLES);
   const [editing, setEditing] = useState<Editing>(null);
   const [deleting, setDeleting] = useState<Service | null>(null);
@@ -30,7 +36,7 @@ export function ServicesView() {
         title="Services & ICP"
         description="What you sell and who you sell it to. Every opportunity is scored against these."
         action={
-          canEdit && services && services.length > 0 ? (
+          canEdit && data && data.total > 0 ? (
             <Button onClick={() => setEditing("new")}>
               <PlusIcon />
               Add service
@@ -44,18 +50,21 @@ export function ServicesView() {
           <ServiceCardSkeleton />
           <ServiceCardSkeleton />
         </div>
-      ) : services && services.length > 0 ? (
-        <div className="grid gap-5 lg:grid-cols-2">
-          {services.map((service) => (
-            <ServiceCard
-              key={service.id}
-              service={service}
-              canEdit={canEdit}
-              onEdit={() => setEditing(service)}
-              onDelete={() => setDeleting(service)}
-            />
-          ))}
-        </div>
+      ) : services && data && data.total > 0 ? (
+        <>
+          <div className="grid gap-5 lg:grid-cols-2">
+            {services.map((service) => (
+              <ServiceCard
+                key={service.id}
+                service={service}
+                canEdit={canEdit}
+                onEdit={() => setEditing(service)}
+                onDelete={() => setDeleting(service)}
+              />
+            ))}
+          </div>
+          <Pagination page={data.page} pageSize={data.pageSize} total={data.total} noun="services" onChange={setPage} />
+        </>
       ) : (
         <EmptyServices canEdit={canEdit} onAdd={() => setEditing("new")} />
       )}

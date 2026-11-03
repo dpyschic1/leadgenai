@@ -141,7 +141,7 @@ async function drain(auth: AuthContext) {
 }
 
 async function companyNamed(auth: AuthContext, name: string) {
-  const list = await listCompanies(auth, name);
+  const list = (await listCompanies(auth, name)).items;
   return list.find((c) => c.name === name);
 }
 
@@ -252,10 +252,10 @@ describe("automatic ingestion", () => {
   });
 
   it("adds nothing twice when it runs again", async () => {
-    const before = (await listCompanies(owner)).length;
+    const before = (await listCompanies(owner)).total;
     await runNow(owner);
 
-    expect((await listCompanies(owner)).length).toBe(before);
+    expect((await listCompanies(owner)).total).toBe(before);
     expect(analyzeSignal).not.toHaveBeenCalled(); // the tender was analysed last time
     const identifiers = await db.select().from(companyIdentifiers).where(eq(companyIdentifiers.workspaceId, owner.workspaceId));
     expect(identifiers).toHaveLength(2);
@@ -299,7 +299,7 @@ describe("automatic ingestion", () => {
     await expect(getCompanySources(other, council!.id)).rejects.toSatisfy((e) => e instanceof AppError && e.code === "NOT_FOUND");
     // The other workspace has no services, so nothing is searched for it.
     await runNow(other);
-    expect(await listCompanies(other)).toEqual([]);
+    expect((await listCompanies(other)).items).toEqual([]);
     expect(await db.select().from(companies).where(eq(companies.workspaceId, other.workspaceId))).toEqual([]);
   });
 });
@@ -396,7 +396,7 @@ describe("CQC providers and their practices", () => {
     await runNow(owner);
     await runNow(owner); // a second run must not duplicate anything
 
-    const found = (await listCompanies(owner, `Smiles Group ${run}`))[0];
+    const found = (await listCompanies(owner, `Smiles Group ${run}`)).items[0];
     expect(found).toMatchObject({ discoveredBy: "cqc" });
     const detail = await getCompany(owner, found.id);
     // Practices list different websites, so the provider itself gets none.

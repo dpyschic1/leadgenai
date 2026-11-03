@@ -12,6 +12,7 @@ import type {
 } from "@/lib/domain/people";
 import type { EvidenceLabel, IntentLevel, SignalSource, UrgencyLevel } from "@/lib/domain/signals";
 import type { OpportunityFilters } from "@/lib/validation/opportunities";
+import type { Page } from "@/lib/validation/pagination";
 import type { ScoreFactor, ScoreWeights } from "@/lib/validation/scoring";
 
 export type UserRole = (typeof memberRole.enumValues)[number];
@@ -277,11 +278,14 @@ export type OpportunitySummary = {
   updatedAt: string;
 };
 
-export type OpportunityList = {
-  items: OpportunitySummary[];
+/** One page of the feed; `total` is the selected tab's count. */
+export type OpportunityList = Page<OpportunitySummary> & {
   /** Totals per status tab, independent of the selected tab. */
   counts: Record<StatusGroup, number>;
 };
+
+export type CompanyList = Page<CompanySummary>;
+export type ServiceList = Page<Service>;
 
 export type OpportunitySignal = Signal & { role: SignalRole };
 

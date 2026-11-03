@@ -4,8 +4,8 @@ import { authedRoute, parseJsonBody, parseQuery } from "@/server/http/handler";
 import { createCompany, listCompanies } from "@/server/services/companies.service";
 
 export const GET = authedRoute(async ({ request, auth }) => {
-  const { q } = parseQuery(request, companyListQuerySchema);
-  return Response.json(await listCompanies(auth, q));
+  const { q, page, pageSize } = parseQuery(request, companyListQuerySchema);
+  return Response.json(await listCompanies(auth, q, { page, pageSize }));
 });
 
 export const POST = authedRoute(

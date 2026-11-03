@@ -21,6 +21,7 @@ import type { CompanyContact, FeedbackVote, OpportunityDetail, OpportunityFactor
 import { STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
 import type { SourceSlug } from "@/lib/domain/sources";
 import type { OpportunityFilters, OpportunityListQuery, UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import { offsetOf } from "@/lib/validation/pagination";
 import type { ScoreFactor } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
@@ -28,9 +29,6 @@ import { refreshStaleScores } from "@/server/scoring/rescore";
 import { listFeedback } from "./feedback.service";
 import { loadCompanyPeople } from "./people.service";
 import { listCompanySignals } from "./signals.service";
-
-/** Upper bound for the feed until it gets pagination. */
-const LIST_LIMIT = 500;
 
 /** The company's own phone: its published switchboard first, else a registered site's phone (CQC practice). */
 export const companyPhone = sql<string | null>`coalesce(
@@ -90,15 +88,17 @@ export function summaryQuery() {
     );
 }
 
-/** The feed: highest priority first. Aged scores are refreshed before reading. */
+/** One page of the feed: highest priority first. Aged scores are refreshed before reading. */
 export async function listOpportunities(auth: AuthContext, query: OpportunityListQuery): Promise<OpportunityList> {
   await refreshStaleScores(auth.workspaceId);
+  const { page, pageSize } = query;
 
   const [rows, countRows] = await Promise.all([
     summaryQuery()
       .where(feedFilter(auth.workspaceId, query.group, query))
       .orderBy(...priorityOrder())
-      .limit(LIST_LIMIT),
+      .limit(pageSize)
+      .offset(offsetOf({ page, pageSize })),
     // Tab counts follow the same filters, so each tab says how many it would show.
     db
       .select({ status: opportunities.status, count: sql<number>`count(*)::int` })
@@ -115,15 +115,17 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
     ]),
   ) as Record<StatusGroup, number>;
 
-  return { items: rows.map(toSummary), counts };
+  // The tab counts use the same filters, so the selected tab's count is this list's total.
+  return { items: rows.map(toSummary), counts, total: counts[query.group], page, pageSize };
 }
 
-/** Feed order: highest priority first, unscored last, then freshest evidence, then by name. */
+/** Feed order: highest priority first, unscored last, then freshest evidence, then by name (id breaks ties, so pages never overlap). */
 export function priorityOrder() {
   return [
     sql`${opportunities.opportunityScore} desc nulls last`,
     desc(opportunities.latestSignalAt),
     asc(companies.canonicalName),
+    asc(opportunities.id),
   ] as const;
 }
 

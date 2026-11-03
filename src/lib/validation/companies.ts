@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { COUNTRY_CODES } from "@/lib/countries";
 import { COMPANY_RELATIONSHIPS, IDENTITY_LEVELS, MANUAL_VERIFICATIONS, SENIORITY_LEVELS } from "@/lib/domain/people";
+import { paginationFields } from "./pagination";
 
 /**
  * Shared by the company/person forms and the route handlers. Optional fields accept "" (from a
@@ -82,6 +83,7 @@ export const personSchema = z.object({
 
 export const companyListQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
+  ...paginationFields,
 });
 
 export type CompanyInput = z.input<typeof companySchema>;

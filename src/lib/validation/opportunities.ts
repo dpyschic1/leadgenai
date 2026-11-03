@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { COUNTRY_CODES } from "@/lib/countries";
 import { OPPORTUNITY_STATUSES, STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
+import { paginationFields } from "./pagination";
 
 /** Shared by the opportunity pages, the AI search and the route handlers. */
 
@@ -70,12 +71,14 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   withinDays: null,
 };
 
-export const opportunityListQuerySchema = opportunityFiltersSchema.extend({
-  group: z.enum(Object.keys(STATUS_GROUPS) as [StatusGroup, ...StatusGroup[]]).default("open"),
-});
+const groupField = { group: z.enum(Object.keys(STATUS_GROUPS) as [StatusGroup, ...StatusGroup[]]).default("open") };
 
-/** CSV export: one saved list (any status), or the feed as filtered on screen. */
-export const opportunityExportQuerySchema = opportunityListQuerySchema.extend({
+/** One page of the feed. */
+export const opportunityListQuerySchema = opportunityFiltersSchema.extend({ ...groupField, ...paginationFields });
+
+/** CSV export: one saved list (any status), or the whole feed as filtered on screen (every page). */
+export const opportunityExportQuerySchema = opportunityFiltersSchema.extend({
+  ...groupField,
   listId: z.uuid("Unknown list").optional(),
 });
 

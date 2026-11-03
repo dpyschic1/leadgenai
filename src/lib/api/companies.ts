@@ -1,10 +1,13 @@
 import type { CompanyValues, PersonValues } from "@/lib/validation/companies";
+import { setPageParams, type Pagination } from "@/lib/validation/pagination";
 import { apiRequest } from "./client";
-import type { CompanyDetail, CompanySummary } from "./types";
+import type { CompanyDetail, CompanyList } from "./types";
 
 export const companiesApi = {
-  list: (search: string, signal?: AbortSignal) =>
-    apiRequest<CompanySummary[]>(search ? `/companies?q=${encodeURIComponent(search)}` : "/companies", { signal }),
+  list: (search: string, page: Pagination, signal?: AbortSignal) => {
+    const params = setPageParams(new URLSearchParams(search ? { q: search } : {}), page);
+    return apiRequest<CompanyList>(params.size ? `/companies?${params}` : "/companies", { signal });
+  },
   get: (id: string, signal?: AbortSignal) => apiRequest<CompanyDetail>(`/companies/${id}`, { signal }),
   create: (input: CompanyValues) => apiRequest<CompanyDetail>("/companies", { method: "POST", body: input }),
   update: (id: string, input: CompanyValues) =>

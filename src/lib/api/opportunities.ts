@@ -1,6 +1,7 @@
 import type { StatusGroup } from "@/lib/domain/opportunities";
 import type { FeedbackInput } from "@/lib/validation/feedback";
 import type { InterpretSearchInput, OpportunityFilters, UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import { setPageParams, type Pagination } from "@/lib/validation/pagination";
 import { apiRequest } from "./client";
 import type { InterpretedSearch, OpportunityDetail, OpportunityList } from "./types";
 
@@ -15,8 +16,8 @@ export function setFilterParams(params: URLSearchParams, filters: OpportunityFil
 }
 
 export const opportunitiesApi = {
-  list: (group: StatusGroup, filters: OpportunityFilters, signal?: AbortSignal) =>
-    apiRequest<OpportunityList>(`/opportunities?${setFilterParams(new URLSearchParams({ group }), filters)}`, { signal }),
+  list: (group: StatusGroup, filters: OpportunityFilters, page: Pagination, signal?: AbortSignal) =>
+    apiRequest<OpportunityList>(`/opportunities?${setPageParams(setFilterParams(new URLSearchParams({ group }), filters), page)}`, { signal }),
   get: (id: string, signal?: AbortSignal) => apiRequest<OpportunityDetail>(`/opportunities/${id}`, { signal }),
   update: (id: string, input: UpdateOpportunityValues) =>
     apiRequest<OpportunityDetail>(`/opportunities/${id}`, { method: "PATCH", body: input }),

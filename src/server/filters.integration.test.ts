@@ -10,10 +10,10 @@ import { signalSchema } from "@/lib/validation/signals";
 import type { AuthContext } from "@/server/auth/session";
 import { rescoreCompany } from "@/server/scoring/rescore";
 import { registerOwner } from "@/server/services/auth.service";
-import { createCompany } from "@/server/services/companies.service";
+import { createCompany, listCompanies } from "@/server/services/companies.service";
 import { exportOpportunities } from "@/server/services/exports.service";
 import { listOpportunities } from "@/server/services/opportunities.service";
-import { createService } from "@/server/services/services.service";
+import { createService, listServices } from "@/server/services/services.service";
 import { createSignal } from "@/server/services/signals.service";
 
 /**
@@ -162,5 +162,45 @@ describe("feed filters", () => {
     expect(count).toBe(1);
     expect(csv).toContain("Medisync Health");
     expect(csv).not.toContain("Northbridge Legal");
+  });
+});
+
+describe("pagination", () => {
+  const openPage = (page: number, pageSize: number) =>
+    listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", page: String(page), pageSize: String(pageSize) }));
+
+  it("splits the feed into pages that neither overlap nor skip, in priority order", async () => {
+    const all = await openPage(1, 100);
+    expect(all.total).toBeGreaterThan(2);
+    expect(all.total).toBe(all.counts.open);
+    const pages = [];
+    for (let page = 1; page <= Math.ceil(all.total / 2); page++) {
+      const result = await openPage(page, 2);
+      expect(result).toMatchObject({ page, pageSize: 2, total: all.total });
+      pages.push(...result.items.map((i) => i.id));
+    }
+    expect(pages).toEqual(all.items.map((i) => i.id));
+    // Past the end: no rows, but the total still says where the list ends.
+    expect(await openPage(99, 2)).toMatchObject({ items: [], total: all.total });
+  });
+
+  it("still exports every matching opportunity, not one page", async () => {
+    const { count } = await exportOpportunities(auth, opportunityExportQuerySchema.parse({ group: "open" }));
+    expect(count).toBe((await openPage(1, 100)).total);
+  });
+
+  it("pages companies and services the same way", async () => {
+    const all = await listCompanies(auth, undefined, { page: 1, pageSize: 100 });
+    const first = await listCompanies(auth, undefined, { page: 1, pageSize: 2 });
+    const second = await listCompanies(auth, undefined, { page: 2, pageSize: 2 });
+    expect(first.total).toBe(all.total);
+    expect([...first.items, ...second.items].map((c) => c.id)).toEqual(all.items.slice(0, 4).map((c) => c.id));
+    const services = await listServices(auth, { page: 1, pageSize: 1 });
+    expect(services.items).toHaveLength(1);
+    expect(services.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it("rejects a page size over the limit", () => {
+    expect(() => opportunityListQuerySchema.parse({ pageSize: "500" })).toThrow();
   });
 });
