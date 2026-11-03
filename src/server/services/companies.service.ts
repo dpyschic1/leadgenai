@@ -4,6 +4,7 @@ import { db, type Tx } from "@/db";
 import { isForeignKeyViolation, isUniqueViolation } from "@/db/errors";
 import { auditLogs, companies, companyLocations, companyPeople, opportunities } from "@/db/schema";
 import type { CompanyDetail, CompanySummary } from "@/lib/api/types";
+import type { SourceSlug } from "@/lib/domain/sources";
 import type { CompanyValues } from "@/lib/validation/companies";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
@@ -45,6 +46,7 @@ export async function listCompanies(auth: AuthContext, search?: string): Promise
     employeeCount: company.employeeCount,
     headquarters: hqId ? { city: hqCity, country: hqCountry } : null,
     peopleCount,
+    discoveredBy: (company.sourceSlug as SourceSlug | null) ?? null,
   }));
 }
 
@@ -77,6 +79,7 @@ export async function getCompany(auth: AuthContext, companyId: string): Promise<
     industry: company.industry,
     employeeCount: company.employeeCount,
     description: company.description,
+    discoveredBy: (company.sourceSlug as SourceSlug | null) ?? null,
     locations: locations.map((l) => ({
       id: l.id,
       type: l.type,

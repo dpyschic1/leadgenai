@@ -10,8 +10,9 @@ Specs live in `docs/`:
 
 ## MVP scope
 
-- **No automated ingestion.** Companies, people and signals are entered manually.
-  Provider adapters, enrichment and the ingestion pipeline (PRD §14) come later.
+- **Automatic data from free sources, plus manual entry.** Companies, people and signals come from
+  Companies House, company websites, public job boards and UK tenders (see below), or are entered by hand.
+  Licensed providers (Apollo, Crunchbase…) plug in later as more adapters.
 - **No pgvector.** Semantic similarity is only needed for NL search / entity resolution
   over ingested data; it can be added later as a single migration.
 - Single Next.js app: UI + REST API (`/api/v1/*` route handlers).
@@ -76,6 +77,33 @@ It also adds lists, opportunities in progress (contacted, meeting), team feedbac
 different identity and email-verification states. Re-running it replaces the demo workspace and
 leaves every other workspace alone.
 
+### Automatic data (companies, people, signals)
+
+Nothing to set up: from **Services & ICP** (target industries and countries) the system, every day:
+
+1. **finds UK companies** on Companies House by the industries' SIC codes, newly formed ones first
+   (a new business is itself a "new startup" signal), with their **directors**;
+2. **finds and reads each company's website** (accepted only when it shows the company number, or
+   the name plus the town): description, team, published email/phone, and its job board;
+3. **checks its job board** (a Greenhouse, Lever or Ashby board linked from its website) and **UK
+   public tenders** (Contracts Finder) for its services. New jobs get a cheap AI title check against
+   your services, then relevant roles (the same role in several places counts once) get the full
+   signal analysis, a few per run to stay inside Groq's free limits; a deleted signal stays deleted;
+4. records what it finds as signals with source links, and re-scores the companies.
+
+It also runs straight after a service is saved, and on **Run now** in Settings → Data sources,
+where each source can be switched off. Every fact keeps its source (`source_records`); see a
+company's **Sources** card. Adapters live in `src/server/sources/`, the job queue and handlers in
+`src/server/ingestion/`.
+
+Settings (`.env` locally, Vercel Environment Variables in production):
+
+- `COMPANIES_HOUSE_API_KEY`: free key from developer.company-information.service.gov.uk
+  (Your applications → Create an application → Create new key → REST). Without it, companies
+  aren't discovered; websites, job boards and tenders still work.
+- `CRON_SECRET`: any long random string. A free scheduler (e.g. cron-job.org) calls
+  `POST /api/v1/internal/tick` every 5 minutes with `Authorization: Bearer <CRON_SECRET>`.
+
 ### Backup and restore
 
 ```sh
@@ -93,7 +121,7 @@ Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (form
 | `npm run build` | Production build |
 | `npm run lint` / `npm run typecheck` | Static checks |
 | `npm test` / `npm run test:watch` | Unit tests (Vitest) |
-| `npm run test:integration` | Database tests (tenant isolation, team, filters); need the database from `.env`, and clean up after themselves |
+| `npm run test:integration` | Database tests (tenant isolation, team, filters, job boards, automatic data); need the database from `.env`, and clean up after themselves |
 | `npm run db:generate` | Generate a migration from `src/db/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:studio` | Browse the database with Drizzle Studio |
@@ -147,6 +175,8 @@ The schema (`src/db/schema.ts`) is normalized so post-MVP features can be added 
 | Identity & tenancy | `users` (login identity), `workspaces`, `workspace_members` (role per workspace), `workspace_invitations`, `sessions` |
 | Entities | `companies`, `company_locations`, `people`, `contact_points`, `company_people` (title, seniority, job function) |
 | Signals | `signals`, `signal_evidence`, `signal_service_categories` |
+| Job boards | `company_job_boards` (one per company), `job_postings` (jobs seen, AI verdict, link to the signal) |
+| Automatic data | `sources` (registry, seeded), `workspace_sources` (on/off), `source_records` (provenance), `company_identifiers`, `company_contact_points`, `ingestion_jobs` (queue) |
 | Customer config | `services` + `service_service_categories`, `service_target_industries`, `service_target_job_functions`, `service_target_countries`; `scoring_profiles`, `recipes` |
 | Opportunities | `opportunities`, `opportunity_signals`, `lists`, `saved_opportunities` |
 | Governance | `audit_logs`, `rate_limits` |

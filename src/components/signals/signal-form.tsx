@@ -87,7 +87,8 @@ function defaults(signal?: Signal): SignalInput {
     sourceUrl: signal.evidence?.sourceUrl ?? "",
     excerpt: signal.evidence?.excerpt ?? "",
     evidenceLabel: signal.evidenceLabel,
-    source: signal.source,
+    // A signal stated by a data source becomes the person's own once they edit it.
+    source: signal.source === "provider" ? "manual" : signal.source,
     confidence: signal.confidence,
   };
 }

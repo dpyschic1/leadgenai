@@ -35,9 +35,14 @@ export const EVIDENCE_LABEL_NAMES: Record<EvidenceLabel, string> = {
   unknown: "Unknown",
 };
 
-/** Where a signal's classification came from. */
-export const SIGNAL_SOURCES = ["manual", "ai"] as const;
+/**
+ * Where a signal's classification came from: entered by a person, classified by AI, or stated by a
+ * data source itself (e.g. an incorporation date on the company register). Only the first two can
+ * be submitted through the form; `provider` signals are created by background ingestion.
+ */
+export const SIGNAL_SOURCES = ["manual", "ai", "provider"] as const;
 export type SignalSource = (typeof SIGNAL_SOURCES)[number];
+export const USER_SIGNAL_SOURCES = ["manual", "ai"] as const satisfies readonly SignalSource[];
 
 /** Display order of the signal taxonomy groups (PRD §10): strongest buying evidence first. */
 export const SIGNAL_CATEGORY_ORDER = [

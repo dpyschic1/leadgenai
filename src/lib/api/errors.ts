@@ -14,7 +14,11 @@ export const ERROR_STATUS = {
   PAYLOAD_TOO_LARGE: 413,
   UNSUPPORTED_MEDIA_TYPE: 415,
   RATE_LIMITED: 429,
+  /** The AI provider's own per-minute limit (the free plan allows only a few requests a minute). */
+  AI_BUSY: 429,
   AI_FAILED: 502,
+  /** A company's job board (Greenhouse, Lever, Ashby) didn't answer or answered with something unusable. */
+  JOB_BOARD_FAILED: 502,
   AI_UNAVAILABLE: 503,
   INTERNAL_ERROR: 500,
 } as const;

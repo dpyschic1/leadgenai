@@ -6,16 +6,21 @@ import {
   auditLogs,
   companies,
   companyPeople,
+  jobPostings,
   signalEvidence,
+  sourceRecords,
   signalServiceCategories,
   signals,
 } from "@/db/schema";
 import type { Signal, SignalAnalysis } from "@/lib/api/types";
 import { findDuplicateSignal, normalizeSourceUrl } from "@/lib/signals/duplicates";
-import type { AnalyzeSignalValues, SignalValues } from "@/lib/validation/signals";
+import type { SourceSlug } from "@/lib/domain/sources";
+import type { AnalyzeSignalValues, DetectedSignalValues, SignalValues } from "@/lib/validation/signals";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
+import type { Actor } from "@/server/auth/actor";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
+import { SIGNAL_DELETED_REASON } from "@/server/jobs/job-signal";
 import { getReferenceData } from "./reference-data.service";
 
 type SignalRow = typeof signals.$inferSelect;
@@ -67,16 +72,45 @@ export async function createSignal(auth: AuthContext, companyId: string, input: 
   return translateErrors(() =>
     db.transaction(async (tx) => {
       await assertNotDuplicate(tx, auth, companyId, input);
-      const [row] = await tx
-        .insert(signals)
-        .values({ workspaceId: auth.workspaceId, companyId, createdById: auth.userId, ...signalColumns(input) })
-        .returning();
-      await writeDetails(tx, row.id, input);
-      await audit(tx, auth, "signal.created", row.id, companyId);
+      const row = await insertSignal(tx, auth, companyId, input);
       const [signal] = await toDtos(tx, [row]);
       return signal;
     }),
   );
+}
+
+/**
+ * Records a signal found automatically (job board, website, register, tender) inside the caller's
+ * transaction. The company is the caller's to check. When the company already has the same
+ * signal (same type and source) nothing is added and that signal's id is returned instead.
+ */
+export async function insertDetectedSignal(
+  tx: Tx,
+  actor: Actor,
+  companyId: string,
+  input: DetectedSignalValues,
+  sourceRecordId: string | null = null,
+): Promise<{ id: string; created: boolean }> {
+  const duplicate = await findDuplicate(tx, actor, companyId, input);
+  if (duplicate) return { id: duplicate.id, created: false };
+  const row = await insertSignal(tx, actor, companyId, input, sourceRecordId);
+  return { id: row.id, created: true };
+}
+
+async function insertSignal(
+  tx: Tx,
+  auth: Actor,
+  companyId: string,
+  input: DetectedSignalValues,
+  sourceRecordId: string | null = null,
+): Promise<SignalRow> {
+  const [row] = await tx
+    .insert(signals)
+    .values({ workspaceId: auth.workspaceId, companyId, createdById: auth.userId, sourceRecordId, ...signalColumns(input) })
+    .returning();
+  await writeDetails(tx, row.id, input);
+  await audit(tx, auth, "signal.created", row.id, companyId);
+  return row;
 }
 
 export async function updateSignal(auth: AuthContext, signalId: string, input: SignalValues): Promise<Signal> {
@@ -104,6 +138,11 @@ export async function updateSignal(auth: AuthContext, signalId: string, input: S
 /** Deletes the signal; returns its company's id so the caller can re-score that company. */
 export async function deleteSignal(auth: AuthContext, signalId: string): Promise<string> {
   return db.transaction(async (tx) => {
+    // A signal recorded from a job: mark the job skipped, so the next fetch doesn't record it again.
+    await tx
+      .update(jobPostings)
+      .set({ triage: "skipped", triageReason: SIGNAL_DELETED_REASON })
+      .where(and(eq(jobPostings.signalId, signalId), eq(jobPostings.workspaceId, auth.workspaceId)));
     const [row] = await tx
       .delete(signals)
       .where(and(eq(signals.id, signalId), eq(signals.workspaceId, auth.workspaceId)))
@@ -114,7 +153,7 @@ export async function deleteSignal(auth: AuthContext, signalId: string): Promise
   });
 }
 
-function signalColumns(input: SignalValues) {
+function signalColumns(input: DetectedSignalValues) {
   return {
     personId: input.personId,
     signalType: input.signalType,
@@ -129,7 +168,7 @@ function signalColumns(input: SignalValues) {
   };
 }
 
-async function writeDetails(tx: Tx, signalId: string, input: SignalValues): Promise<void> {
+async function writeDetails(tx: Tx, signalId: string, input: DetectedSignalValues): Promise<void> {
   if (input.serviceCategories.length > 0) {
     await tx
       .insert(signalServiceCategories)
@@ -144,10 +183,18 @@ async function writeDetails(tx: Tx, signalId: string, input: SignalValues): Prom
 async function toDtos(conn: Tx | typeof db, rows: SignalRow[]): Promise<Signal[]> {
   if (rows.length === 0) return [];
   const ids = rows.map((row) => row.id);
-  const [categories, evidence] = await Promise.all([
+  const recordIds = rows.flatMap((row) => (row.sourceRecordId ? [row.sourceRecordId] : []));
+  const [categories, evidence, records] = await Promise.all([
     conn.select().from(signalServiceCategories).where(inArray(signalServiceCategories.signalId, ids)),
     conn.select().from(signalEvidence).where(inArray(signalEvidence.signalId, ids)),
+    recordIds.length
+      ? conn
+          .select({ id: sourceRecords.id, sourceSlug: sourceRecords.sourceSlug })
+          .from(sourceRecords)
+          .where(inArray(sourceRecords.id, recordIds))
+      : Promise.resolve([]),
   ]);
+  const originOf = new Map(records.map((r) => [r.id, r.sourceSlug as SourceSlug]));
 
   return rows.map((row) => {
     const proof = evidence.find((e) => e.signalId === row.id);
@@ -165,6 +212,7 @@ async function toDtos(conn: Tx | typeof db, rows: SignalRow[]): Promise<Signal[]
       confidence: row.confidence,
       occurredOn: toOccurredOn(row.occurredAt),
       evidence: proof ? { sourceUrl: proof.sourceUrl, excerpt: proof.excerpt } : null,
+      origin: row.sourceRecordId ? (originOf.get(row.sourceRecordId) ?? null) : null,
       createdAt: row.createdAt.toISOString(),
     };
   });
@@ -182,19 +230,7 @@ async function assertNotDuplicate(
   input: SignalValues,
   excludeId?: string,
 ): Promise<void> {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`signals:${companyId}`}))`);
-
-  const rows = await tx
-    .select()
-    .from(signals)
-    .where(and(eq(signals.companyId, companyId), eq(signals.workspaceId, auth.workspaceId)));
-  const existing = (await toDtos(tx, rows)).map((signal) => ({
-    ...signal,
-    sourceUrl: signal.evidence?.sourceUrl ?? null,
-    excerpt: signal.evidence?.excerpt ?? null,
-  }));
-
-  const duplicate = findDuplicateSignal(existing, input, excludeId);
+  const duplicate = await findDuplicate(tx, auth, companyId, input, excludeId);
   if (!duplicate) return;
 
   const when = new Date(`${duplicate.occurredOn}T12:00:00Z`).toLocaleDateString("en-GB", {
@@ -206,6 +242,22 @@ async function assertNotDuplicate(
   const url = normalizeSourceUrl(input.sourceUrl);
   const field = url !== null && url === normalizeSourceUrl(duplicate.sourceUrl) ? "sourceUrl" : "excerpt";
   throw new AppError("ALREADY_EXISTS", message, { [field]: [message] });
+}
+
+/** The company's signal that `input` would repeat, if any. Takes the company's signal lock first. */
+async function findDuplicate(tx: Tx, auth: Actor, companyId: string, input: DetectedSignalValues, excludeId?: string) {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`signals:${companyId}`}))`);
+
+  const rows = await tx
+    .select()
+    .from(signals)
+    .where(and(eq(signals.companyId, companyId), eq(signals.workspaceId, auth.workspaceId)));
+  const existing = (await toDtos(tx, rows)).map((signal) => ({
+    ...signal,
+    sourceUrl: signal.evidence?.sourceUrl ?? null,
+    excerpt: signal.evidence?.excerpt ?? null,
+  }));
+  return findDuplicateSignal(existing, input, excludeId);
 }
 
 async function findSignal(auth: AuthContext, signalId: string): Promise<SignalRow> {
@@ -248,7 +300,7 @@ async function assertPersonAtCompany(auth: AuthContext, companyId: string, perso
   }
 }
 
-async function audit(tx: Tx, auth: AuthContext, action: string, signalId: string, companyId: string) {
+async function audit(tx: Tx, auth: Actor, action: string, signalId: string, companyId: string) {
   await tx.insert(auditLogs).values({
     workspaceId: auth.workspaceId,
     actorId: auth.userId,

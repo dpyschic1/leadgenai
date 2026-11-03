@@ -6,7 +6,7 @@ import { EVIDENCE_LABELS, INTENT_LEVELS, URGENCY_LEVELS } from "@/lib/domain/sig
 import type { AnalyzeSignalValues } from "@/lib/validation/signals";
 import { AppError } from "@/server/http/errors";
 import { finalizeAnalysis, type RawAnalysis } from "./finalize-analysis";
-import { AI_MODEL_ID, languageModel, structuredOutputOptions } from "./model";
+import { AI_MODEL_ID, languageModel, providerBusyError, structuredOutputOptions } from "./model";
 
 /**
  * Classifies a pasted source (job post, request, news item) into a signal suggestion.
@@ -140,6 +140,8 @@ export async function analyzeSignal(
       if (attempt < MAX_ATTEMPTS && APICallError.isInstance(error) && error.statusCode === 400) {
         continue;
       }
+      const busy = providerBusyError(error);
+      if (busy) throw busy;
       console.error("[ai] signal analysis failed", error);
       throw new AppError("AI_FAILED", "The AI couldn't analyse this text. Try again, or fill in the signal yourself.");
     }

@@ -1,6 +1,7 @@
 /** Response DTOs shared by the route handlers and the client. Only these shapes leave the server. */
 import type { memberRole, signalRole } from "@/db/schema";
 import type { FeedbackVerdict } from "@/lib/domain/feedback";
+import type { SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
 import type { OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
 import type {
   CompanyRelationship,
@@ -117,6 +118,8 @@ export type CompanySummary = {
   employeeCount: number | null;
   headquarters: { city: string | null; country: string | null } | null;
   peopleCount: number;
+  /** The source that found the company; null when added by hand. */
+  discoveredBy: SourceSlug | null;
 };
 
 export type CompanyLocation = {
@@ -133,6 +136,8 @@ export type CompanyLocation = {
 export type CompanyPerson = {
   id: string;
   name: string;
+  /** Where this person was found (register, company website); null when added by hand. */
+  source: SourceSlug | null;
   title: string | null;
   seniority: SeniorityLevel;
   jobFunction: string | null;
@@ -159,6 +164,8 @@ export type CompanyDetail = {
   industry: string | null;
   employeeCount: number | null;
   description: string | null;
+  /** The source that found the company; null when added by hand. */
+  discoveredBy: SourceSlug | null;
   locations: CompanyLocation[];
   people: CompanyPerson[];
   /** This company's opportunity, if its signals have produced one. */
@@ -180,7 +187,40 @@ export type Signal = {
   /** ISO date (YYYY-MM-DD) the underlying event happened or was published. */
   occurredOn: string;
   evidence: { sourceUrl: string | null; excerpt: string | null } | null;
+  /** The data source a found signal came from; null when entered by hand. */
+  origin: SourceSlug | null;
   createdAt: string;
+};
+
+/** A data source as the workspace sees it (Settings → Data sources). */
+export type DataSource = {
+  slug: SourceSlug;
+  name: string;
+  description: string;
+  /** Platform-level permission (only "approved" runs). */
+  authorization: SourceAuthorization;
+  /** The workspace's own switch. */
+  enabled: boolean;
+  /** False when a setting it needs is missing (e.g. an API key). */
+  configured: boolean;
+  termsUrl: string | null;
+  lastSuccessAt: string | null;
+  lastFailure: { at: string; message: string } | null;
+};
+
+/** What "Run now" found: new companies and signals, and whether work is still queued. */
+export type SourcesRunResult = { companiesAdded: number; signalsCreated: number; pendingJobs: number };
+
+/** Where a found company's information came from (company page "Sources" card). */
+export type CompanySources = {
+  discoveredBy: SourceSlug | null;
+  discoveredAt: string | null;
+  companyNumber: string | null;
+  website: { domain: string; confidence: number; matchedBy: string } | null;
+  contacts: { type: "email" | "phone"; value: string; source: SourceSlug | null; observedAt: string }[];
+  records: { source: SourceSlug; recordType: string; url: string | null; observedAt: string }[];
+  /** Background work still queued for this company. */
+  pendingJobs: number;
 };
 
 /** AI suggestion for a pasted source; the user reviews it before saving. */

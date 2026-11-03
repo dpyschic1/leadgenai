@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLinkIcon, MoreHorizontalIcon, PencilIcon, RadioTowerIcon, SparklesIcon, Trash2Icon, UserRoundIcon } from "lucide-react";
+import { ExternalLinkIcon, MoreHorizontalIcon, PencilIcon, RadarIcon, RadioTowerIcon, SparklesIcon, Trash2Icon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/forms/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { useLookupNames } from "@/hooks/use-reference-data";
 import { useDeleteSignal } from "@/hooks/use-signals";
 import type { CompanyPerson, Signal, SignalRole } from "@/lib/api/types";
 import type { IntentLevel } from "@/lib/domain/signals";
+import { SOURCE_LABELS } from "@/lib/domain/sources";
 import { cn } from "@/lib/utils";
 import { EvidenceTag, IntentBadge, UrgencyBadge } from "./signal-badges";
 
@@ -194,8 +195,16 @@ function SignalItem({
               <SparklesIcon className="size-3" />
               AI{signal.confidence !== null && `, ${signal.confidence}% confidence`}
             </span>
+          ) : signal.source === "provider" ? (
+            <span>Stated by the source</span>
           ) : (
             <span>Added manually</span>
+          )}
+          {signal.origin && (
+            <span className="inline-flex items-center gap-1">
+              <RadarIcon className="size-3" />
+              Found on {SOURCE_LABELS[signal.origin]}
+            </span>
           )}
           {personName && (
             <span className="inline-flex items-center gap-1">

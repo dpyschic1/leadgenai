@@ -92,6 +92,20 @@
       "when": 1793627224900,
       "tag": "0012_opportunity_feedback",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793645387792,
+      "tag": "0013_job_boards",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793653471640,
+      "tag": "0014_automatic_sources",
+      "breakpoints": true
     }
   ]
 }

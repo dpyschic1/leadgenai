@@ -12,9 +12,16 @@ import { useLookupNames } from "@/hooks/use-reference-data";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { CompanyPerson, ContactCheck } from "@/lib/api/types";
 import { RELATIONSHIP_LABELS, SENIORITY_LABELS } from "@/lib/domain/people";
+import { SOURCE_LABELS, type SourceSlug } from "@/lib/domain/sources";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { IdentityBadge, verificationText } from "./contact-status";
+
+/** Where a found person came from, in words. */
+const PERSON_SOURCE_LABELS: Partial<Record<SourceSlug, string>> = {
+  companies_house: "Companies House director",
+  company_website: "Named on company website",
+};
 
 function Tag({ children }: { children: React.ReactNode }) {
   return <span className="rounded-md bg-secondary px-2 py-0.5 text-xs text-muted-foreground">{children}</span>;
@@ -93,6 +100,7 @@ export function PersonRow({
             {person.jobFunction && <Tag>{names.jobFunction(person.jobFunction)}</Tag>}
             {person.relationship !== "employee" && <Tag>{RELATIONSHIP_LABELS[person.relationship]}</Tag>}
             {person.location && <Tag>{person.location}</Tag>}
+            {person.source && <Tag>{PERSON_SOURCE_LABELS[person.source] ?? `From ${SOURCE_LABELS[person.source]}`}</Tag>}
           </div>
         </div>
       </div>

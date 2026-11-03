@@ -38,6 +38,7 @@ import { formatEmployees, formatPlace } from "@/lib/format";
 import { EDITOR_ROLES } from "@/lib/permissions";
 import { CompanyAvatar } from "./company-avatar";
 import { CompanyForm } from "./company-form";
+import { CompanySourcesCard, FoundBadge } from "./company-sources";
 import { PersonForm } from "./person-form";
 import { PersonRow } from "./person-row";
 
@@ -101,6 +102,7 @@ function CompanyDetailContent({ company }: { company: CompanyDetail }) {
               </span>
             )}
             {hqText && <span>{hqText}</span>}
+            {company.discoveredBy && <FoundBadge source={company.discoveredBy} />}
           </div>
         </div>
         {canEdit && (
@@ -219,6 +221,8 @@ function CompanyDetailContent({ company }: { company: CompanyDetail }) {
               <p className="mt-5 border-t pt-4 text-sm leading-relaxed text-muted-foreground">{company.description}</p>
             )}
           </aside>
+
+          <CompanySourcesCard companyId={company.id} canEdit={canEdit} />
         </div>
       </div>
 

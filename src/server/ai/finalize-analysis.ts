@@ -30,7 +30,7 @@ function comparable(text: string): string {
  * True when the quote appears in the source. An elided quote ("first part ... second part") is
  * accepted only if every part appears in the source, in that order.
  */
-function isFaithfulQuote(quote: string, sourceText: string): boolean {
+export function isFaithfulQuote(quote: string, sourceText: string): boolean {
   const source = comparable(sourceText);
   const parts = comparable(quote)
     .split("...")

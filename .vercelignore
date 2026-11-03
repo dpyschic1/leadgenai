@@ -1,0 +1,26 @@
+# Files `vercel` (CLI) never uploads. Vercel installs dependencies and builds on its own servers,
+# and reads secrets from the project's Environment Variables, never from local files.
+
+# Secrets: local env files (DATABASE_URL, GROQ_API_KEY, backups of them)
+.env*
+
+# Dependencies and build output: rebuilt on Vercel
+/node_modules
+/.next
+/out
+/build
+/coverage
+*.tsbuildinfo
+
+# Database backups and dumps
+*.dump
+*.sql.gz
+*.backup
+
+# Client documents and generated PDFs: not part of the app
+/docs
+
+# Editor, OS and local tooling
+.DS_Store
+*.log
+.claude

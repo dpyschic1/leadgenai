@@ -1,9 +1,10 @@
 /**
  * Core data model for the LeadGenAI MVP (PRD §13).
  *
- * MVP scope: no automated ingestion. Companies, people and signals are entered
- * manually, so the ingestion-only entities from the PRD (sources, source_records,
- * enrichment_jobs, provider_accounts) are intentionally omitted.
+ * MVP scope: companies and people are entered manually; signals are entered manually or fetched
+ * from a company's public job board (`company_job_boards`, `job_postings`). The other
+ * ingestion-only entities from the PRD (sources, source_records, enrichment_jobs,
+ * provider_accounts) are intentionally omitted.
  * Funding and job signals are stored as `signals` with structured `metadata`.
  *
  * Normalization rules:
@@ -35,6 +36,13 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { FEEDBACK_VERDICTS } from "@/lib/domain/feedback";
+import { JOB_BOARD_PROVIDERS, JOB_TRIAGE_STATES } from "@/lib/domain/job-boards";
+import {
+  COMPANY_ID_SCHEMES,
+  INGESTION_JOB_KINDS,
+  INGESTION_JOB_STATUSES,
+  SOURCE_AUTHORIZATIONS,
+} from "@/lib/domain/sources";
 import { MEMBER_ROLES } from "@/lib/domain/members";
 import { OPPORTUNITY_STATUSES } from "@/lib/domain/opportunities";
 import {
@@ -87,6 +95,20 @@ export const opportunityStatus = pgEnum("opportunity_status", OPPORTUNITY_STATUS
 /** A teammate's quality verdict on an opportunity. */
 export const feedbackVerdict = pgEnum("feedback_verdict", FEEDBACK_VERDICTS);
 
+export const jobBoardProvider = pgEnum("job_board_provider", JOB_BOARD_PROVIDERS);
+
+/** What the AI made of a fetched job (see `JOB_TRIAGE_STATES`). */
+export const jobTriage = pgEnum("job_triage", JOB_TRIAGE_STATES);
+
+/** Platform-level permission to run a source (SRS §11.3). */
+export const sourceAuthorization = pgEnum("source_authorization", SOURCE_AUTHORIZATIONS);
+
+export const ingestionJobKind = pgEnum("ingestion_job_kind", INGESTION_JOB_KINDS);
+
+export const ingestionJobStatus = pgEnum("ingestion_job_status", INGESTION_JOB_STATUSES);
+
+export const companyIdScheme = pgEnum("company_id_scheme", COMPANY_ID_SCHEMES);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -124,6 +146,22 @@ export const jobFunctions = lookupTable("job_functions");
 export const opportunityTypes = lookupTable("opportunity_types");
 /** Top-level groups from the signal taxonomy (PRD §10), plus negative signals (PRD §12). */
 export const signalCategories = lookupTable("signal_categories");
+
+/**
+ * Registry of data sources (PRD §14, SRS §11.3), one row per adapter in `src/server/sources`.
+ * Seeded by migration. Changing `authorizationStatus` stops or resumes a source for every workspace
+ * without a deploy; only `approved` sources run.
+ */
+export const sources = pgTable("sources", {
+  slug: text().primaryKey(),
+  name: text().notNull(),
+  /** e.g. company_registry, company_website, job_api, procurement. */
+  type: text().notNull(),
+  authorizationStatus: sourceAuthorization().notNull().default("pending_review"),
+  termsUrl: text(),
+  /** Compliance notes: what the terms allow, rate limits, retention. */
+  notes: text(),
+});
 
 export const signalTypes = pgTable("signal_types", {
   slug: text().primaryKey(),
@@ -249,6 +287,9 @@ export const companies = pgTable(
     revenueRange: text(),
     description: text(),
     metadata: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    /** The source that found this company; null when it was added by hand. */
+    sourceSlug: text().references(() => sources.slug),
+    discoveredAt: timestamp({ withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -345,6 +386,9 @@ export const companyPeople = pgTable(
     startedAt: timestamp({ withTimezone: true }),
     endedAt: timestamp({ withTimezone: true }),
     confidence: score(),
+    /** Where this person-company link was found; null when it was added by hand. */
+    sourceSlug: text().references(() => sources.slug),
+    observedAt: timestamp({ withTimezone: true }),
   },
   (t) => [
     primaryKey({ columns: [t.companyId, t.personId] }),
@@ -360,6 +404,97 @@ export const companyPeople = pgTable(
       foreignColumns: [people.id, people.workspaceId],
     }).onDelete("cascade"),
   ],
+);
+
+// ---------------------------------------------------------------------------
+// Automatically gathered data: provenance and identity
+// ---------------------------------------------------------------------------
+
+/**
+ * One item fetched from a source (PRD §13: source_records): a company profile, web page, tender…
+ * The unique key makes ingestion idempotent (FR-SIG-004); `contentHash` tells a changed page from
+ * an unchanged one. Only the minimum needed is kept in `data` (PRD §19: minimise raw content).
+ */
+export const sourceRecords = pgTable(
+  "source_records",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    sourceSlug: text()
+      .notNull()
+      .references(() => sources.slug),
+    externalId: text().notNull(),
+    url: text(),
+    /** e.g. company_profile, officer_list, web_page, tender. */
+    recordType: text().notNull(),
+    publishedAt: timestamp({ withTimezone: true }),
+    observedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    contentHash: text(),
+    /** Composite FK uses ON DELETE SET NULL (company_id) — hand-written in migration 0014. */
+    companyId: uuid(),
+    data: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [
+    uniqueIndex("source_records_external_idx").on(t.workspaceId, t.sourceSlug, t.externalId),
+    index("source_records_company_idx").on(t.companyId),
+    unique("source_records_id_workspace_uq").on(t.id, t.workspaceId),
+    foreignKey({
+      name: "source_records_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("set null"),
+  ],
+);
+
+/** Registry identifiers (e.g. the UK company number), used to recognise a company again. */
+export const companyIdentifiers = pgTable(
+  "company_identifiers",
+  {
+    workspaceId: uuid().notNull(),
+    companyId: uuid().notNull(),
+    scheme: companyIdScheme().notNull(),
+    value: text().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.companyId, t.scheme] }),
+    uniqueIndex("company_identifiers_value_idx").on(t.workspaceId, t.scheme, t.value),
+    foreignKey({
+      name: "company_identifiers_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("cascade"),
+  ],
+);
+
+/** A company's own published business contacts (switchboard, info@), as opposed to a person's. */
+export const companyContactPoints = pgTable(
+  "company_contact_points",
+  {
+    id: id(),
+    companyId: uuid()
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    type: contactPointType().notNull(),
+    value: text().notNull(),
+    sourceSlug: text().references(() => sources.slug),
+    sourceUrl: text(),
+    observedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("company_contact_points_value_idx").on(t.companyId, t.type, t.value)],
+);
+
+/** A workspace switching a source off for itself (on unless a row says otherwise). */
+export const workspaceSources = pgTable(
+  "workspace_sources",
+  {
+    workspaceId: workspaceRef(),
+    sourceSlug: text()
+      .notNull()
+      .references(() => sources.slug),
+    enabled: boolean().notNull(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.sourceSlug] })],
 );
 
 // ---------------------------------------------------------------------------
@@ -388,6 +523,11 @@ export const signals = pgTable(
     metadata: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     /** When the underlying event happened / was published. Drives recency. */
     occurredAt: timestamp({ withTimezone: true }).notNull(),
+    /**
+     * The source record a found signal came from (FR-SIG-003); null when entered by hand.
+     * Composite FK uses ON DELETE SET NULL (source_record_id) — hand-written in migration 0014.
+     */
+    sourceRecordId: uuid(),
     createdById: uuid().references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -405,6 +545,11 @@ export const signals = pgTable(
       name: "signals_person_fk",
       columns: [t.personId, t.workspaceId],
       foreignColumns: [people.id, people.workspaceId],
+    }).onDelete("set null"),
+    foreignKey({
+      name: "signals_source_record_fk",
+      columns: [t.sourceRecordId, t.workspaceId],
+      foreignColumns: [sourceRecords.id, sourceRecords.workspaceId],
     }).onDelete("set null"),
   ],
 );
@@ -442,6 +587,83 @@ export const signalEvidence = pgTable(
     capturedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("signal_evidence_signal_idx").on(t.signalId)],
+);
+
+// ---------------------------------------------------------------------------
+// Job boards (signals fetched from a company's public job board)
+// ---------------------------------------------------------------------------
+
+/** The job board a company publishes its openings on. One per company. */
+export const companyJobBoards = pgTable(
+  "company_job_boards",
+  {
+    companyId: uuid().primaryKey(),
+    workspaceId: workspaceRef(),
+    provider: jobBoardProvider().notNull(),
+    /** The board's name in the provider's URL, e.g. "stripe" in boards.greenhouse.io/stripe. */
+    boardToken: text().notNull(),
+    lastFetchedAt: timestamp({ withTimezone: true }),
+    /** Why the last fetch failed; cleared by the next successful one. */
+    lastError: text(),
+    /** Found by the system (careers-page link or name match) rather than entered by a person. */
+    autoDetected: boolean().notNull().default(false),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("company_job_boards_workspace_idx").on(t.workspaceId),
+    foreignKey({
+      name: "company_job_boards_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("cascade"),
+  ],
+);
+
+/**
+ * A job seen on a company's board. Kept after it closes, so a role that stays open for months
+ * (a staffing signal in itself) can be told apart from a new one, and a job is never analysed twice.
+ */
+export const jobPostings = pgTable(
+  "job_postings",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    companyId: uuid().notNull(),
+    provider: jobBoardProvider().notNull(),
+    /** The provider's own id for the job. */
+    externalId: text().notNull(),
+    title: text().notNull(),
+    department: text(),
+    location: text(),
+    url: text().notNull(),
+    /** Plain text, trimmed to the AI analysis limit. */
+    description: text(),
+    /** When the company published it, if the provider says. */
+    postedAt: timestamp({ withTimezone: true }),
+    firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /** Set when the job is no longer listed; cleared if it comes back. */
+    closedAt: timestamp({ withTimezone: true }),
+    triage: jobTriage().notNull().default("pending"),
+    triageReason: text(),
+    /** The signal recorded from this job. Composite FK uses ON DELETE SET NULL (signal_id) — hand-written in migration 0013. */
+    signalId: uuid(),
+  },
+  (t) => [
+    uniqueIndex("job_postings_company_external_idx").on(t.companyId, t.provider, t.externalId),
+    index("job_postings_company_closed_idx").on(t.companyId, t.closedAt),
+    index("job_postings_signal_idx").on(t.signalId),
+    foreignKey({
+      name: "job_postings_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "job_postings_signal_fk",
+      columns: [t.signalId, t.workspaceId],
+      foreignColumns: [signals.id, signals.workspaceId],
+    }).onDelete("set null"),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -583,6 +805,38 @@ export const recipes = pgTable(
       columns: [t.serviceId, t.workspaceId],
       foreignColumns: [services.id, services.workspaceId],
     }).onDelete("set null"),
+  ],
+);
+
+/**
+ * Background work (Spec §11; PRD's enrichment_jobs, generalised): find companies for the
+ * workspace's ICP, enrich one, read its website, check its job board, look for tenders. Claimed
+ * with SKIP LOCKED by the worker, retried with backoff, never queued twice while open.
+ */
+export const ingestionJobs = pgTable(
+  "ingestion_jobs",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    kind: ingestionJobKind().notNull(),
+    /** The workspace (discover_companies, scan_tenders) or company (the others) the job is about. */
+    entityId: uuid().notNull(),
+    status: ingestionJobStatus().notNull().default("queued"),
+    attempts: integer().notNull().default(0),
+    runAfter: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp({ withTimezone: true }),
+    finishedAt: timestamp({ withTimezone: true }),
+    lastError: text(),
+    /** AI calls the job used (cost metering, PRD §20). */
+    aiCalls: integer().notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("ingestion_jobs_due_idx").on(t.status, t.runAfter),
+    // At most one open job per thing to do.
+    uniqueIndex("ingestion_jobs_open_idx")
+      .on(t.workspaceId, t.kind, t.entityId)
+      .where(sql`${t.status} in ('queued', 'running')`),
   ],
 );
 

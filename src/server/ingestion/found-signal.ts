@@ -1,0 +1,70 @@
+import type { SignalAnalysis } from "@/lib/api/types";
+import { signalSchema, type DetectedSignalValues } from "@/lib/validation/signals";
+import { isFaithfulQuote } from "@/server/ai/finalize-analysis";
+
+/** Turning what a source found into a signal to record. Pure, so it is unit-tested. */
+
+/** Analyses below this confidence aren't recorded automatically. */
+export const MIN_FOUND_CONFIDENCE = 50;
+
+/**
+ * The signal an AI analysis supports, or null (no signal, too unsure, invalid). The quote must
+ * appear in `evidenceText`, the source's own words; otherwise the signal counts as inferred.
+ */
+export function signalFromAnalysis(
+  analysis: SignalAnalysis,
+  { url, occurredOn, evidenceText }: { url: string | null; occurredOn: string; evidenceText: string },
+): DetectedSignalValues | null {
+  if (!analysis.isSignal || !analysis.signalType || analysis.confidence < MIN_FOUND_CONFIDENCE) return null;
+  const excerpt = analysis.excerpt && isFaithfulQuote(analysis.excerpt, evidenceText) ? analysis.excerpt : null;
+  const result = signalSchema.safeParse({
+    signalType: analysis.signalType,
+    intentLevel: analysis.intentLevel,
+    urgency: analysis.urgency,
+    serviceCategories: analysis.serviceCategories,
+    summary: analysis.summary,
+    personId: null,
+    occurredOn,
+    sourceUrl: url,
+    excerpt,
+    evidenceLabel: analysis.evidenceLabel === "observed" && !excerpt ? "inferred" : analysis.evidenceLabel,
+    source: "ai",
+    confidence: analysis.confidence,
+  });
+  return result.success ? result.data : null;
+}
+
+const DAY_MS = 86_400_000;
+/** A company formed within this many days counts as a new startup. */
+export const NEW_COMPANY_DAYS = 365;
+
+/**
+ * A newly formed company (Startup / MVP workflow): stated by the register itself, so it is
+ * `provider`-sourced and observed. Low intent on its own; website, hiring or funding signals
+ * corroborate it. Null for companies older than a year.
+ */
+export function formationSignal(
+  company: { name: string; foundedOn: string | null; registerUrl: string | null },
+  serviceCategories: string[],
+  now = new Date(),
+): DetectedSignalValues | null {
+  if (!company.foundedOn) return null;
+  const formed = new Date(`${company.foundedOn}T12:00:00Z`);
+  const age = (now.getTime() - formed.getTime()) / DAY_MS;
+  if (Number.isNaN(age) || age < 0 || age > NEW_COMPANY_DAYS) return null;
+  const date = formed.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+  return {
+    signalType: "new_startup",
+    intentLevel: "low",
+    urgency: "unknown",
+    serviceCategories,
+    summary: `${company.name} was registered at Companies House on ${date}: a new business that may need help to get started.`,
+    personId: null,
+    occurredOn: company.foundedOn,
+    sourceUrl: company.registerUrl,
+    excerpt: null,
+    evidenceLabel: "observed",
+    source: "provider",
+    confidence: null,
+  };
+}

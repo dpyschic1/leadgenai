@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EVIDENCE_LABELS, INTENT_LEVELS, SIGNAL_SOURCES, URGENCY_LEVELS } from "@/lib/domain/signals";
+import { EVIDENCE_LABELS, INTENT_LEVELS, URGENCY_LEVELS, USER_SIGNAL_SOURCES, type SignalSource } from "@/lib/domain/signals";
 
 /** Shared by the record-signal form and the route handlers. */
 
@@ -47,7 +47,7 @@ export const signalSchema = z.object({
   sourceUrl: nullableUrl,
   excerpt: nullableExcerpt,
   evidenceLabel: z.enum(EVIDENCE_LABELS),
-  source: z.enum(SIGNAL_SOURCES),
+  source: z.enum(USER_SIGNAL_SOURCES),
   confidence: z.number().int().min(0).max(100).nullable(),
 });
 
@@ -63,5 +63,7 @@ export const analyzeSignalSchema = z.object({
 
 export type SignalInput = z.input<typeof signalSchema>;
 export type SignalValues = z.output<typeof signalSchema>;
+/** A signal found by background ingestion: may also come straight from a data source. */
+export type DetectedSignalValues = Omit<SignalValues, "source"> & { source: SignalSource };
 export type AnalyzeSignalInput = z.input<typeof analyzeSignalSchema>;
 export type AnalyzeSignalValues = z.output<typeof analyzeSignalSchema>;

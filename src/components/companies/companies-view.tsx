@@ -19,6 +19,7 @@ import { formatPlace } from "@/lib/format";
 import { EDITOR_ROLES } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { CompanyAvatar } from "./company-avatar";
+import { FoundBadge } from "./company-sources";
 import { CompanyForm } from "./company-form";
 
 const COLUMNS = "grid-cols-[minmax(0,2.2fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.3fr)_5rem]";
@@ -132,7 +133,10 @@ function CompanyRow({ company }: { company: CompanySummary }) {
         <span className="flex min-w-0 items-center gap-3">
           <CompanyAvatar name={company.name} />
           <span className="min-w-0">
-            <span className="block truncate font-medium">{company.name}</span>
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="truncate font-medium">{company.name}</span>
+              {company.discoveredBy && <FoundBadge source={company.discoveredBy} compact className="shrink-0" />}
+            </span>
             <span className="block truncate text-xs text-muted-foreground">{company.domain ?? "No website"}</span>
           </span>
         </span>

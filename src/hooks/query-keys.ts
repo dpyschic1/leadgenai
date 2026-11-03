@@ -17,6 +17,8 @@ export const queryKeys = {
   signals: ["signals"] as const,
   companySignals: (companyId: string) => ["signals", "company", companyId] as const,
   recentSignals: (limit: number) => ["signals", "recent", limit] as const,
+  dataSources: ["data-sources"] as const,
+  companySources: (companyId: string) => ["company-sources", companyId] as const,
   /** Prefix of every opportunity query; invalidate it after anything that changes scores. */
   opportunities: ["opportunities"] as const,
   opportunityList: (group: string, filters: OpportunityFilters) => ["opportunities", "list", group, filters] as const,

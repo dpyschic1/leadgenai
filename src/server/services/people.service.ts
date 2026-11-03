@@ -5,6 +5,7 @@ import { isForeignKeyViolation } from "@/db/errors";
 import { auditLogs, companies, companyPeople, contactPoints, people } from "@/db/schema";
 import type { CompanyPerson, ContactCheck } from "@/lib/api/types";
 import { identityColumns, identityLevel, type ManualVerification } from "@/lib/domain/people";
+import type { SourceSlug } from "@/lib/domain/sources";
 import type { PersonValues } from "@/lib/validation/companies";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
@@ -57,6 +58,7 @@ export async function loadCompanyPeople(workspaceId: string, companyId: string):
     return {
       id: person.id,
       name: person.name,
+      source: (role.sourceSlug as SourceSlug | null) ?? null,
       title: role.title,
       seniority: role.seniority,
       jobFunction: role.jobFunction,

@@ -27,6 +27,10 @@ export const RATE_LIMITS = {
   aiWorkspace: { limit: 300, windowSeconds: 24 * 60 * 60 },
   /** Per user. */
   export: { limit: 30, windowSeconds: 60 * 60 },
+  /** Per user: "Run now" on the data sources (finds companies and runs ~30 s of background work). */
+  sourcesRun: { limit: 30, windowSeconds: 60 * 60 },
+  /** Per user: "Refresh from sources" on a company. */
+  companyRefresh: { limit: 30, windowSeconds: 60 * 60 },
 } as const satisfies Record<string, { limit: number; windowSeconds: number }>;
 
 export type RateLimitRule = keyof typeof RATE_LIMITS;
