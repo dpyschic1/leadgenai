@@ -46,6 +46,7 @@ const greenhouse: JobBoardAdapter = {
   provider: "greenhouse",
   endpoint: (token) => `https://boards-api.greenhouse.io/v1/boards/${token}/jobs?content=true`,
   probeEndpoint: (token) => `https://boards-api.greenhouse.io/v1/boards/${token}`,
+  boardUrl: (token) => `https://job-boards.greenhouse.io/${token}`,
   parse: (body) =>
     parseEach(z.object({ jobs: z.array(z.unknown()) }).parse(body).jobs, greenhouseJob, (job) => ({
       externalId: String(job.id),
@@ -76,6 +77,7 @@ const lever: JobBoardAdapter = {
   provider: "lever",
   endpoint: (token) => `https://api.lever.co/v0/postings/${token}?mode=json`,
   probeEndpoint: (token) => `https://api.lever.co/v0/postings/${token}?mode=json&limit=1`,
+  boardUrl: (token) => `https://jobs.lever.co/${token}`,
   parse: (body) =>
     parseEach(z.array(z.unknown()).parse(body), leverJob, (job) => {
       const sections = (job.lists ?? []).map((list) =>
@@ -115,6 +117,7 @@ const ashby: JobBoardAdapter = {
   provider: "ashby",
   endpoint: (token) => `https://api.ashbyhq.com/posting-api/job-board/${token}`,
   probeEndpoint: (token) => `https://api.ashbyhq.com/posting-api/job-board/${token}`,
+  boardUrl: (token) => `https://jobs.ashbyhq.com/${token}`,
   parse: (body) =>
     parseEach(z.object({ jobs: z.array(z.unknown()) }).parse(body).jobs, ashbyJob, (job) =>
       job.isListed === false
@@ -131,4 +134,69 @@ const ashby: JobBoardAdapter = {
     ),
 };
 
-export const JOB_BOARD_ADAPTERS: Record<JobBoardProvider, JobBoardAdapter> = { greenhouse, lever, ashby };
+// --- Workable: GET apply.workable.com/api/v1/widget/accounts/{slug}?details=true --------------
+// The public feed behind Workable's own careers-page embed: the whole board in one reply, with
+// descriptions. Account names are lowercase (the API treats them case-sensitively). A job open in
+// several places appears once per place, so rows are merged by shortcode.
+
+const workableLocation = z.object({ city: text, region: text, country: text, hidden: z.boolean().nullish() });
+const workableJob = z.object({
+  shortcode: z.string(),
+  title: z.string(),
+  url: z.string(),
+  department: text,
+  telecommuting: z.boolean().nullish(),
+  description: text,
+  published_on: text,
+  created_at: text,
+  city: text,
+  state: text,
+  country: text,
+  locations: z.array(workableLocation).nullish(),
+});
+type WorkableJob = z.infer<typeof workableJob>;
+
+const placeOf = (p: { city?: string | null; region?: string | null; state?: string | null; country?: string | null }) =>
+  [p.city, p.region ?? p.state, p.country].map(clean).filter(Boolean).join(", ");
+
+/** "Athens, Attica, Greece; London, United Kingdom; Remote": every listed place, once. */
+function workableLocations(rows: WorkableJob[]): string | null {
+  const places = rows.flatMap((row) => {
+    const listed = (row.locations ?? []).filter((l) => !l.hidden).map(placeOf);
+    return listed.length > 0 ? listed : [placeOf(row)];
+  });
+  if (rows.some((row) => row.telecommuting)) places.push("Remote");
+  return clean([...new Set(places.filter(Boolean))].join("; "));
+}
+
+const workableSlug = (token: string) => token.toLowerCase();
+
+const workable: JobBoardAdapter = {
+  provider: "workable",
+  endpoint: (token) => `https://apply.workable.com/api/v1/widget/accounts/${workableSlug(token)}?details=true`,
+  // The account record: 404 for a board that doesn't exist, small for one that does.
+  probeEndpoint: (token) => `https://apply.workable.com/api/v1/accounts/${workableSlug(token)}`,
+  boardUrl: (token) => `https://apply.workable.com/${workableSlug(token)}/`,
+  parse: (body) => {
+    const rows = z.object({ jobs: z.array(z.unknown()) }).parse(body).jobs.flatMap((item) => {
+      const parsed = workableJob.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    });
+    const byShortcode = new Map<string, WorkableJob[]>();
+    for (const row of rows) byShortcode.set(row.shortcode, [...(byShortcode.get(row.shortcode) ?? []), row]);
+    return parseEach([...byShortcode.values()], z.array(workableJob).min(1), (same) => {
+      const job = same[0];
+      return {
+        externalId: job.shortcode,
+        title: job.title.trim(),
+        department: clean(job.department),
+        location: workableLocations(same),
+        url: job.url,
+        description: job.description ? htmlToText(job.description) : null,
+        postedAt: toDate(job.published_on ?? job.created_at),
+      };
+    });
+  },
+};
+
+export const JOB_BOARD_ADAPTERS: Record<JobBoardProvider, JobBoardAdapter> = { greenhouse, lever, ashby, workable };

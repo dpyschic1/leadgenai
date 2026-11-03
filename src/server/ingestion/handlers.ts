@@ -22,6 +22,7 @@ import { extractWebsiteFacts } from "@/server/ai/website-extract";
 import { systemActor, type Actor } from "@/server/auth/actor";
 import { rateLimit } from "@/server/http/rate-limit";
 import { detectBoard } from "@/server/jobs/detect";
+import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
 import { getReferenceData } from "@/server/services/reference-data.service";
 import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
@@ -33,6 +34,7 @@ import { findWebsite, readWebsite, usableEmails, websiteFindings } from "@/serve
 import { fetchLocationDetail, loadDirectory, providersFor, providerWebsite, toFoundCompany as toCqcCompany, type CqcLocation } from "@/server/sources/cqc";
 import { domainReceivesEmail } from "@/server/sources/http";
 import { emailFromPattern, emailPatternOf, inferEmailPattern, jobFunctionFromTitle, seniorityFromTitle, type EmailPattern } from "@/server/sources/names";
+import { matchWorkspace, osmImported } from "@/server/sources/osm";
 import { searchTenders, tenderSourceText } from "@/server/sources/uk-tenders";
 import { formationSignal, NEW_COMPANY_DAYS, newLocationSignal, signalFromAnalysis } from "./found-signal";
 import { sourceRunnable, type JobRow } from "./queue";
@@ -265,7 +267,7 @@ function toSavedLocation(l: CqcLocation) {
 
 /** Boards judged per run; more wait for the next run a few minutes later. */
 const BOARDS_PER_EVALUATION = 10;
-const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com)$/i;
+const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com)$/i;
 
 /** The site a board's job links point to when it isn't the board itself (Greenhouse lets companies host jobs on their own careers page). */
 function candidateWebsite(jobs: { url: string }[]): string | null {
@@ -299,8 +301,8 @@ async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
   const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
   const ref = await getReferenceData();
 
-  const boards = await db.execute<{ provider: JobBoardProvider; board_token: string; board_name: string | null; last_fetched_at: string }>(sql`
-    select d.provider, d.board_token, d.board_name, d.last_fetched_at
+  const boards = await db.execute<{ provider: JobBoardProvider; board_token: string; board_name: string | null; stated_website: string | null; last_fetched_at: string }>(sql`
+    select d.provider, d.board_token, d.board_name, d.stated_website, d.last_fetched_at
     from job_board_directory d
     where d.validation_status = 'valid' and d.last_fetched_at is not null
       and exists (select 1 from board_jobs j where j.provider = d.provider and j.board_token = d.board_token and j.closed_at is null)
@@ -320,7 +322,7 @@ async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
     const outcome = (data: Record<string, unknown>) => ({
       sourceSlug: "board_directory" as const,
       externalId,
-      url: provider === "greenhouse" ? `https://job-boards.greenhouse.io/${token}` : provider === "lever" ? `https://jobs.lever.co/${token}` : `https://jobs.ashbyhq.com/${token}`,
+      url: JOB_BOARD_ADAPTERS[provider].boardUrl(token),
       recordType: "job_board",
       publishedAt: null,
       data: { provider, boardToken: token, evaluatedAt: board.last_fetched_at, ...data },
@@ -361,7 +363,7 @@ async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
         identifiers: [],
         identity: "provisional",
         foundedOn: null,
-        record: outcome({ relevant: true, nameFrom: boardName ? "board" : "board_address", candidateWebsite: candidateWebsite(jobs) }),
+        record: outcome({ relevant: true, nameFrom: boardName ? "board" : "board_address", candidateWebsite: board.stated_website ?? candidateWebsite(jobs) }),
       });
       await tx
         .insert(companyJobBoards)
@@ -760,6 +762,15 @@ async function scanTenders({ job, actor, ai }: JobContext): Promise<JobResult> {
   return { followUps: waiting.length > TENDER_ANALYSES_PER_JOB ? [{ kind: "scan_tenders", entityId: actor.workspaceId, runAfter: later(3 * 60_000) }] : [] };
 }
 
+// --- match_osm: link companies and practices to the business they are on OpenStreetMap ---------
+
+async function matchOsm({ actor }: JobContext): Promise<JobResult> {
+  // Nothing to match against until the weekly import has run (`npm run osm:import`).
+  if (!(await sourceRunnable(actor.workspaceId, "openstreetmap")) || !(await osmImported())) return { followUps: [], skipped: true };
+  await matchWorkspace(actor.workspaceId);
+  return { followUps: [] };
+}
+
 export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise<JobResult>> = {
   discover_companies: discoverCompanies,
   discover_cqc: discoverCqc,
@@ -768,6 +779,7 @@ export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise
   scan_website: scanWebsite,
   scan_job_board: scanJobBoard,
   scan_tenders: scanTenders,
+  match_osm: matchOsm,
 };
 
 /** The AI wrapper for a job: counts calls and draws from the workspace's daily AI budget. */

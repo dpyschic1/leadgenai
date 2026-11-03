@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, like } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { companies, companyIdentifiers, companyJobBoards, companyLocations, contactPoints, ingestionJobs, jobBoardDirectory, signals, users, workspaces } from "@/db/schema";
+import { companies, companyIdentifiers, companyJobBoards, companyLocations, contactPoints, ingestionJobs, jobBoardDirectory, osmMatches, osmPlaces, signals, users, workspaces } from "@/db/schema";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { personSchema } from "@/lib/validation/companies";
 import { opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
@@ -448,7 +448,7 @@ describe("CQC providers and their practices", () => {
     );
     await rescoreCompany(owner.workspaceId, found.id);
     const listed = (await listOpportunities(owner, opportunityListQuerySchema.parse({ group: "open", q: `Smiles Group ${run}` }))).items[0];
-    expect(listed.companyContact).toEqual({ phone: "01134960000", email: null });
+    expect(listed.companyContact).toEqual({ phone: "01134960000", email: null, fromOpenStreetMap: false });
     const opportunity = await getOpportunity(owner, listed.id);
     // Both practices share one number: listed once, named after its practice, credited to CQC.
     expect(opportunity.companyContacts).toEqual([
@@ -485,6 +485,100 @@ describe("CQC providers and their practices", () => {
     expect(opened[0].summary).toContain("Brightway Ilkley");
     const sites = await db.select({ name: companyLocations.name }).from(companyLocations).where(eq(companyLocations.companyId, found.id));
     expect(sites.map((s) => s.name).sort()).toEqual(["Brightway Ilkley", "Brightway Leeds", "Brightway Otley", "Otley Smiles"]);
+    vi.mocked(loadDirectory).mockResolvedValue([]);
+  });
+});
+
+describe("OpenStreetMap contacts", () => {
+  const ids = [1, 2, 3].map((n) => 9_000_000_000 + Number.parseInt(run.slice(0, 6), 16) * 10 + n);
+  const practice = (id: string, name: string, postcode: string, phone: string | null): CqcLocation => ({
+    locationId: `${id}-${run}`,
+    providerId: `3-prov-${run}`,
+    name,
+    address: `2 Market Place,${name.split(" ")[1]}`,
+    postcode,
+    phone,
+    website: null,
+    serviceTypes: ["Dentist"],
+    providerName: `Osmwell Dental ${run} Ltd`,
+    localAuthority: null,
+    region: "Yorkshire & Humberside",
+    url: null,
+  });
+  const place = (osmId: number, values: Partial<typeof osmPlaces.$inferInsert>) => ({ osmType: "node", osmId, name: "x", category: "amenity=dentist", ...values });
+
+  afterAll(async () => {
+    await db.delete(osmPlaces).where(inArray(osmPlaces.osmId, ids));
+  });
+
+  it("adds what OpenStreetMap publishes for each practice, after the company's own contacts, credited and never merged", async () => {
+    vi.mocked(loadDirectory).mockResolvedValue([
+      practice("3-a", "Osmwell Harrogate", "HG1 1AA", "01423111111"),
+      practice("3-b", "Osmwell Ripon", "HG4 1AB", null),
+    ]);
+    await db.insert(osmPlaces).values([
+      // Carries the Harrogate practice's CQC id: an exact link, whatever its name.
+      place(ids[0], { name: "Harrogate Smile Studio", cqcLocationRef: `3-a-${run}`, phone: "01423999999", email: `info@osmwell-${run}.example` }),
+      // Same postcode and name as the Ripon practice, which has no phone of its own.
+      place(ids[1], { name: `Osmwell Dental Ripon`, postcode: "HG41AB", phone: "01765222222" }),
+      // Same postcode, another business: not linked.
+      place(ids[2], { name: "Ripon Family Dentists", postcode: "HG41AB", phone: "01765333333" }),
+    ]);
+    await runNow(owner); // discovers the provider, then the daily OSM match runs
+
+    const found = (await listCompanies(owner, `Osmwell Dental ${run}`)).items[0];
+    const links = await db.select().from(osmMatches).where(eq(osmMatches.companyId, found.id));
+    expect(links.map((l) => [l.osmId, l.method, l.verification]).sort()).toEqual([
+      [ids[0], "cqc_ref", "unknown"],
+      [ids[1], "postcode_name", "unknown"],
+    ]);
+    // Two practices, two links: each keeps its own place.
+    expect(new Set(links.map((l) => l.companyLocationId)).size).toBe(2);
+    // Nothing from OSM is written into our own records.
+    const sites = await db.select({ phone: companyLocations.phone }).from(companyLocations).where(eq(companyLocations.companyId, found.id));
+    expect(sites.map((s) => s.phone).sort()).toEqual(["01423111111", null]);
+    const sources = await getCompanySources(owner, found.id);
+    expect(sources.contacts).toEqual([]);
+    expect(sources.openStreetMap.map((p) => p.url).sort()).toEqual(ids.slice(0, 2).map((id) => `https://www.openstreetmap.org/node/${id}`).sort());
+
+    // On the opportunity: the CQC phone first; the email exists only on OSM, so it is shown and credited.
+    await createSignal(
+      owner,
+      found.id,
+      signalSchema.parse({
+        signalType: "service_request",
+        intentLevel: "explicit",
+        urgency: "high",
+        serviceCategories: ["staff_augmentation"],
+        summary: "Wants a new website.",
+        personId: null,
+        occurredOn: todayIso(),
+        sourceUrl: null,
+        excerpt: null,
+        evidenceLabel: "observed",
+        source: "manual",
+        confidence: null,
+      }),
+    );
+    await rescoreCompany(owner.workspaceId, found.id);
+    const query = { group: "open" as const, q: `Osmwell Dental ${run}` };
+    const listed = (await listOpportunities(owner, opportunityListQuerySchema.parse(query))).items[0];
+    expect(listed.companyContact).toEqual({ phone: "01423111111", email: `info@osmwell-${run}.example`, fromOpenStreetMap: true });
+    const detail = await getOpportunity(owner, listed.id);
+    expect(detail.companyContacts.filter((c) => c.source === "openstreetmap").map((c) => [c.type, c.value]).sort()).toEqual([
+      ["email", `info@osmwell-${run}.example`],
+      ["phone", "01423999999"],
+      ["phone", "01765222222"],
+    ]);
+    const { csv } = await exportOpportunities(owner, opportunityExportQuerySchema.parse(query));
+    expect(csv).toContain("© OpenStreetMap contributors");
+
+    // A place gone from the latest extract stops matching.
+    await db.update(osmPlaces).set({ removedAt: new Date() }).where(eq(osmPlaces.osmId, ids[1]));
+    await runNow(owner);
+    expect((await db.select().from(osmMatches).where(eq(osmMatches.companyId, found.id))).map((l) => l.osmId)).toEqual([ids[0]]);
+    // Another workspace has no links of its own.
+    expect(await db.select().from(osmMatches).where(eq(osmMatches.workspaceId, other.workspaceId))).toEqual([]);
     vi.mocked(loadDirectory).mockResolvedValue([]);
   });
 });

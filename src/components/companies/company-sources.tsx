@@ -4,6 +4,7 @@ import { ExternalLinkIcon, Loader2Icon, MailIcon, PhoneIcon, RadarIcon, RefreshC
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { OsmCredit } from "./contact-status";
 import { useCompanySources, useRefreshCompany } from "@/hooks/use-data-sources";
 import { COMPANY_IDENTITY_LABELS, SOURCE_LABELS, type CompanyIdentity, type SourceSlug } from "@/lib/domain/sources";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,13 @@ const WEBSITE_MATCH: Record<string, string> = {
   name: "Shows the company name",
   job_board_link: "Links to the company's job board",
   regulator_listing: "Listed for its practices on the CQC register",
+};
+
+/** How an OpenStreetMap place was tied to the company. */
+const OSM_MATCH: Record<string, string> = {
+  cqc_ref: "Carries the practice's CQC location id",
+  website: "Same postcode, name and website",
+  postcode_name: "Same postcode and name",
 };
 
 /** Where the company's information came from, when it was last checked, and its published contacts. */
@@ -128,6 +136,28 @@ export function CompanySourcesCard({ companyId, canEdit }: { companyId: string; 
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {data.openStreetMap.length > 0 && (
+            <div>
+              <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">On OpenStreetMap</p>
+              <ul className="mt-2 space-y-2">
+                {data.openStreetMap.map((place) => (
+                  <li key={place.url} className="min-w-0">
+                    <a href={place.url} target="_blank" rel="noopener noreferrer" className="block truncate font-medium hover:text-primary">
+                      {place.name}
+                    </a>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {[place.phone, place.email, place.website?.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")].filter(Boolean).join(" · ")}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {OSM_MATCH[place.matchedBy] ?? "Matched by name and postcode"} · checked {day.format(new Date(place.checkedAt))}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              <OsmCredit className="mt-2" />
             </div>
           )}
 

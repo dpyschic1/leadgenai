@@ -6,6 +6,7 @@ import { BOARD_TOKEN_PATTERN, JOB_BOARD_PROVIDERS, type JobBoardProvider } from 
 import { MAX_SOURCE_TEXT } from "@/lib/validation/signals";
 import { AppError } from "@/server/http/errors";
 import { fetchBoardJobs } from "@/server/jobs/fetch-jobs";
+import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { decodeEntities } from "@/server/jobs/html-to-text";
 import type { NormalizedJob } from "@/server/jobs/types";
 import { politeGet } from "./http";
@@ -48,10 +49,14 @@ const BOARD_HOSTS: Record<JobBoardProvider, string[]> = {
   greenhouse: ["boards.greenhouse.io", "job-boards.greenhouse.io"],
   lever: ["jobs.lever.co"],
   ashby: ["jobs.ashbyhq.com"],
+  // Older boards live on {slug}.workable.com, which redirects here.
+  workable: ["apply.workable.com"],
 };
 
 /** Path segments that are pages of the provider, not company boards. */
-const NOT_A_BOARD = /^(embed|api|v\d+|jobs|job|careers|search|static|assets|favicon\.ico|robots\.txt|sitemap.*|login|apply|_next|images?)$/i;
+const NOT_A_BOARD = /^(embed|api|v\d+|jobs|job|careers|search|static|assets|favicon\.ico|robots\.txt|sitemap.*|login|apply|_next|images?|j|oops)$/i;
+/** Workable's own subdomains, as opposed to a company's legacy {slug}.workable.com board. */
+const WORKABLE_OWN_HOSTS = /^(www|apply|jobs|help|resources|developers|api|blog|careers|status)\.workable\.com$/;
 
 /**
  * The provider and board name in an archived job-board URL, or null when the URL isn't a company
@@ -64,7 +69,11 @@ export function boardFromUrl(url: string): { provider: JobBoardProvider; boardTo
   } catch {
     return null;
   }
-  const provider = JOB_BOARD_PROVIDERS.find((p) => BOARD_HOSTS[p].includes(parsed.hostname.toLowerCase()));
+  const host = parsed.hostname.toLowerCase();
+  // A legacy Workable board: the account is the subdomain.
+  const legacyWorkable = host.endsWith(".workable.com") && !WORKABLE_OWN_HOSTS.test(host) ? host.slice(0, -".workable.com".length) : null;
+  if (legacyWorkable) return !legacyWorkable.includes(".") && BOARD_TOKEN_PATTERN.test(legacyWorkable) ? { provider: "workable", boardToken: legacyWorkable } : null;
+  const provider = JOB_BOARD_PROVIDERS.find((p) => BOARD_HOSTS[p].includes(host));
   if (!provider) return null;
   // Greenhouse also embeds boards as /embed/job_board?for=<token>.
   const token = (parsed.pathname === "/embed/job_board" ? parsed.searchParams.get("for") : decodeURIComponent(parsed.pathname.split("/")[1] ?? ""))?.trim();
@@ -84,7 +93,7 @@ export function nameFromBoardTitle(title: string | null | undefined): string | n
     .replace(/^(jobs|careers|open roles|open positions)\s+(at|with)\s+/i, "")
     .split(/\s+[|–—-]\s+/)
     .map((part) => part.trim())
-    .filter((part) => part && !GENERIC_TITLE.test(part) && !/^(lever|ashby|greenhouse|powered by .*)$/i.test(part))[0];
+    .filter((part) => part && !GENERIC_TITLE.test(part) && !/^(lever|ashby|greenhouse|workable|powered by .*)$/i.test(part))[0];
   return cleanBoardName(cleaned);
 }
 
@@ -100,18 +109,43 @@ export function cleanBoardName(name: string | null | undefined): string | null {
   return cleaned.length >= 2 && cleaned.length <= 120 && !GENERIC_TITLE.test(cleaned) ? cleaned : null;
 }
 
-/** The board's own name for the company: Greenhouse's API gives it; Lever and Ashby put it in the page title. */
-async function boardName(provider: JobBoardProvider, token: string): Promise<string | null> {
+/**
+ * The board's own name for the company, and the company website the provider states, if any.
+ * Greenhouse's API gives the name; Workable's account record gives the name and website; Lever
+ * and Ashby put the name in the page title.
+ */
+async function boardProfile(provider: JobBoardProvider, token: string): Promise<{ name: string | null; website: string | null }> {
+  const none = { name: null, website: null };
   try {
     if (provider === "greenhouse") {
       const page = await politeGet(`https://boards-api.greenhouse.io/v1/boards/${token}`, { sameSite: false, timeoutMs: 10_000 });
-      return page.status === 200 ? cleanBoardName((JSON.parse(page.body) as { name?: string }).name) : null;
+      return page.status === 200 ? { name: cleanBoardName((JSON.parse(page.body) as { name?: string }).name), website: null } : none;
     }
-    const page = await politeGet(provider === "lever" ? `https://jobs.lever.co/${token}` : `https://jobs.ashbyhq.com/${token}`, { timeoutMs: 10_000 });
-    return page.status === 200 ? nameFromBoardTitle(page.body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]) : null;
+    if (provider === "workable") {
+      const page = await politeGet(JOB_BOARD_ADAPTERS.workable.probeEndpoint(token), { sameSite: false, timeoutMs: 10_000 });
+      return page.status === 200 ? workableProfile(JSON.parse(page.body)) : none;
+    }
+    const page = await politeGet(JOB_BOARD_ADAPTERS[provider].boardUrl(token), { timeoutMs: 10_000 });
+    return page.status === 200 ? { name: nameFromBoardTitle(page.body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]), website: null } : none;
   } catch {
-    return null;
+    return none;
   }
+}
+
+/** Name and website from a Workable account record (`/api/v1/accounts/{slug}`). Pure. */
+export function workableProfile(body: unknown): { name: string | null; website: string | null } {
+  const account = (body ?? {}) as { name?: unknown; url?: unknown };
+  let website: string | null = null;
+  if (typeof account.url === "string") {
+    try {
+      const host = new URL(/^https?:\/\//i.test(account.url) ? account.url : `https://${account.url}`).hostname.toLowerCase().replace(/^www\./, "");
+      // Its own site, not Workable's or a social profile.
+      if (/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host) && !/(^|\.)(workable\.com|linkedin\.com|facebook\.com|instagram\.com|twitter\.com|x\.com)$/.test(host)) website = host;
+    } catch {
+      // Not a URL.
+    }
+  }
+  return { name: cleanBoardName(typeof account.name === "string" ? account.name : null), website };
 }
 
 // --- Directory ------------------------------------------------------------------------------------
@@ -160,7 +194,7 @@ export async function refreshBoard(provider: JobBoardProvider, token: string): P
     return invalid ? "invalid" : "error";
   }
 
-  const name = await boardName(provider, token);
+  const profile = await boardProfile(provider, token);
   await db.transaction(async (tx) => {
     for (let start = 0; start < jobs.length; start += 100) {
       const rows = jobs.slice(start, start + 100).map((job) => ({
@@ -203,7 +237,8 @@ export async function refreshBoard(provider: JobBoardProvider, token: string): P
       .update(jobBoardDirectory)
       .set({
         validationStatus: "valid",
-        boardName: name,
+        boardName: profile.name,
+        statedWebsite: profile.website,
         lastVerifiedAt: sql`now()`,
         lastFetchedAt: sql`now()`,
         lastError: null,

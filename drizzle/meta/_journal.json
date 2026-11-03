@@ -113,6 +113,20 @@
       "when": 1793715321670,
       "tag": "0015_sources_registers_boards",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793738523675,
+      "tag": "0016_workable_boards",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793739170635,
+      "tag": "0017_openstreetmap",
+      "breakpoints": true
     }
   ]
 }

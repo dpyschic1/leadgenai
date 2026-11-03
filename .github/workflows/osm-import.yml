@@ -1,0 +1,34 @@
+# Weekly OpenStreetMap import: Great Britain extract → businesses with contacts → osm_places.
+# Runs off the app's servers (the extract is ~2 GB; Vercel functions can't process it) and never
+# queries public OSM servers. Needs the DATABASE_URL secret (the production database).
+# Data © OpenStreetMap contributors, ODbL 1.0: see README → "OpenStreetMap".
+name: OpenStreetMap import
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC (Geofabrik rebuilds extracts nightly)
+  workflow_dispatch:
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install osmium
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - name: Download the Great Britain extract (Geofabrik)
+        run: curl -fsSL --retry 3 -o gb.osm.pbf https://download.geofabrik.de/europe/great-britain-latest.osm.pbf
+      - name: Keep only the business categories we match
+        run: |
+          osmium tags-filter gb.osm.pbf $(npm run -s osm:import -- --print-filters) -o pois.osm.pbf --overwrite
+          osmium export pois.osm.pbf -f geojsonseq -a type,id,version -o pois.geojsonseq --overwrite
+      - name: Load into osm_places
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run osm:import -- pois.geojsonseq

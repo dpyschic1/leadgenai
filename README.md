@@ -96,7 +96,7 @@ Nothing to set up: from **Services & ICP** (target industries and countries) the
      no online booking for dental, health and hospitality. These are recorded as low-intent
      "possible problems", with evidence, only for workspaces that sell a fix.
 3. **discovers job boards on its own.**
-   - Candidate Greenhouse, Lever and Ashby boards come from the **Common Crawl** archive index
+   - Candidate Greenhouse, Lever, Ashby and Workable boards come from the **Common Crawl** archive index
      (plus boards found on websites). Each is **validated** against the provider's public API, and
      its jobs are cached once for all workspaces (`job_board_directory`, `board_jobs`).
    - Each workspace then judges the jobs in its own target countries with a cheap AI title check.
@@ -108,7 +108,8 @@ Nothing to set up: from **Services & ICP** (target industries and countries) the
    - Coverage is broad, not complete: only boards the archive has crawled. The archive index is
      often slow (504s); progress resumes where it stopped.
 4. checks **UK public tenders** (Contracts Finder) for its services;
-5. records signals with source links and re-scores the companies.
+5. adds **OpenStreetMap** contacts for companies and practices it already has (see below);
+6. records signals with source links and re-scores the companies.
 
 It also runs straight after a service is saved, and on **Run now** in Settings → Data sources,
 where each source can be switched off. Every fact keeps its source (`source_records`); see a
@@ -129,6 +130,30 @@ company's **Sources** card. Adapters live in `src/server/sources/`, the job queu
   addresses agree on it and the domain has mail servers (MX). MX shows the domain takes email,
   not that the mailbox exists.
 - Inferred addresses are never shown as verified; only a person can verify one.
+
+**OpenStreetMap** (contacts only: it never creates, merges or renames a company)
+- *Import, weekly and offline:* `.github/workflows/osm-import.yml` downloads Geofabrik's Great
+  Britain extract and keeps only the business categories in `OSM_CATEGORY_INDUSTRY`
+  (`src/server/sources/osm.ts`) using `osmium tags-filter` and `osmium export`. Then
+  `npm run osm:import -- pois.geojsonseq` loads the named places that have a phone, website or
+  email into `osm_places`. Places missing from a later extract are marked removed. Public Overpass
+  and Nominatim servers are not used: their policies rule out a SaaS backend and bulk lookups.
+  To try it locally, use a small extract (e.g. `europe/united-kingdom/england/west-yorkshire`) with
+  `osmium` installed.
+- *Matching, daily per workspace (`match_osm`):* each practice or company site links to at most
+  one place, in this order:
+  1. the CQC location id the place carries (`ref:GB:cqc_location`);
+  2. otherwise the same postcode, a category that fits the company's industry, and clearly
+     agreeing names (identifying words, not "Dental" or "Ltd"), with exactly one candidate.
+  A place two companies could claim links to neither. Links are rechecked on every run.
+- *Shown after the company's own contacts,* as "Published on OpenStreetMap, not verified by us"
+  with "© OpenStreetMap contributors" linked to openstreetmap.org/copyright: on the card, the
+  opportunity page, the Sources card, and a `company_contact_source` column in CSV exports.
+- *Licence (ODbL 1.0):* OSM data stays in `osm_places` and `osm_matches` and is never copied into
+  our company rows, so the OSM-derived database stays separate from ours. This section and
+  `osm.ts` are the method of making it, which ODbL 4.6 asks us to offer. Have the design reviewed
+  before relying on it commercially. A sole trader's number or email is personal data (UK GDPR,
+  PECR): email them only with consent.
 
 **Sources not used**
 - **FCA register:** its terms require written permission to store or redistribute register data.
@@ -174,6 +199,7 @@ Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (form
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:studio` | Browse the database with Drizzle Studio |
 | `npm run db:seed:demo` | Create (or reset) the demo workspace |
+| `npm run osm:import -- <file.geojsonseq>` | Load OpenStreetMap businesses from an `osmium export` file (see OpenStreetMap above) |
 
 ## Architecture
 

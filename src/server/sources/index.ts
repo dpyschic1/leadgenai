@@ -5,6 +5,7 @@ import { boardDirectory } from "./board-directory";
 import { companiesHouse } from "./companies-house";
 import { companyWebsite } from "./company-website";
 import { cqc } from "./cqc";
+import { openStreetMap } from "./osm";
 import { ukTenders } from "./uk-tenders";
 
 /**
@@ -102,5 +103,6 @@ export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   job_board: jobBoard,
   board_directory: boardDirectory,
   uk_tenders: ukTenders,
+  openstreetmap: openStreetMap,
   fca_register: fcaRegister,
 };

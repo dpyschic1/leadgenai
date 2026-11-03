@@ -10,6 +10,7 @@ export const SOURCE_SLUGS = [
   "job_board",
   "board_directory",
   "uk_tenders",
+  "openstreetmap",
   "fca_register",
 ] as const;
 export type SourceSlug = (typeof SOURCE_SLUGS)[number];
@@ -21,6 +22,7 @@ export const SOURCE_LABELS: Record<SourceSlug, string> = {
   job_board: "Job boards",
   board_directory: "Job-board discovery",
   uk_tenders: "UK public tenders",
+  openstreetmap: "OpenStreetMap",
   fca_register: "FCA register",
 };
 
@@ -28,10 +30,12 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
   companies_house: "Official UK company register: finds companies by industry and area, with their directors.",
   cqc: "Every dental practice, clinic and care service registered in England, with each location's website and phone. Contains CQC information, used under the Open Government Licence v3.0.",
   company_website: "Reads a company's own public pages (about, team, contact, careers, news), politely and within robots.txt.",
-  job_board: "Open jobs from the company's Greenhouse, Lever or Ashby board, through their public APIs.",
+  job_board: "Open jobs from the company's Greenhouse, Lever, Ashby or Workable board, through their public APIs.",
   board_directory:
-    "Finds Greenhouse, Lever and Ashby boards in the Common Crawl web archive, checks each one, and keeps the jobs that match your services. Coverage is broad but not complete.",
+    "Finds Greenhouse, Lever, Ashby and Workable boards in the Common Crawl web archive, checks each one, and keeps the jobs that match your services. Coverage is broad but not complete.",
   uk_tenders: "Public-sector contracts on Contracts Finder that match your services.",
+  openstreetmap:
+    "Phone, website and email that businesses have on OpenStreetMap, matched carefully to your companies and their practices. Shown as published there, not verified. © OpenStreetMap contributors, ODbL.",
   fca_register: "Financial firms and approved people. Not used: the FCA's terms need written permission to store or redistribute register data.",
 };
 
@@ -48,6 +52,7 @@ export const INGESTION_JOB_KINDS = [
   "scan_website",
   "scan_job_board",
   "scan_tenders",
+  "match_osm",
 ] as const;
 export type IngestionJobKind = (typeof INGESTION_JOB_KINDS)[number];
 
@@ -60,7 +65,12 @@ export const JOB_KIND_SOURCE: Record<IngestionJobKind, SourceSlug> = {
   scan_website: "company_website",
   scan_job_board: "job_board",
   scan_tenders: "uk_tenders",
+  match_osm: "openstreetmap",
 };
+
+/** The credit ODbL requires wherever OpenStreetMap data is shown or exported. */
+export const OSM_ATTRIBUTION = "© OpenStreetMap contributors, available under the Open Database License (ODbL)";
+export const OSM_COPYRIGHT_URL = "https://www.openstreetmap.org/copyright";
 
 export const INGESTION_JOB_STATUSES = ["queued", "running", "done", "failed", "skipped"] as const;
 export type IngestionJobStatus = (typeof INGESTION_JOB_STATUSES)[number];

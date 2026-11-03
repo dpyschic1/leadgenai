@@ -10,6 +10,8 @@ import {
   opportunities,
   opportunityFeedback,
   opportunitySignals,
+  osmMatches,
+  osmPlaces,
   people,
   savedOpportunities,
   services,
@@ -29,15 +31,25 @@ import { refreshStaleScores } from "@/server/scoring/rescore";
 import { listFeedback } from "./feedback.service";
 import { loadCompanyPeople } from "./people.service";
 import { listCompanySignals } from "./signals.service";
+import { osmContactsFor } from "@/server/sources/osm";
 
 /** The company's own phone: its published switchboard first, else a registered site's phone (CQC practice). */
-export const companyPhone = sql<string | null>`coalesce(
+const ownPhone = sql`coalesce(
     (select ${companyContactPoints.value} from ${companyContactPoints}
       where ${companyContactPoints.companyId} = ${opportunities.companyId} and ${companyContactPoints.type} = 'phone'
       order by (${companyContactPoints.sourceSlug} = 'company_website') desc, ${companyContactPoints.observedAt} desc limit 1),
     (select ${companyLocations.phone} from ${companyLocations}
       where ${companyLocations.companyId} = ${opportunities.companyId} and ${companyLocations.phone} is not null
       order by ${companyLocations.name} limit 1))`;
+
+/** A phone or email the company's matched OpenStreetMap place publishes (its strongest match first). */
+const osmContact = (field: "phone" | "email") => sql`(select p.${sql.raw(field)} from ${osmMatches} m
+    join ${osmPlaces} p on p.osm_type = m.osm_type and p.osm_id = m.osm_id and p.removed_at is null
+    where m.company_id = ${opportunities.companyId} and p.${sql.raw(field)} is not null
+    order by m.confidence desc, p.osm_id limit 1)`;
+
+/** The company's phone: its own first; OpenStreetMap's only when it has none (`companyContactFromOsm` says so). */
+export const companyPhone = sql<string | null>`coalesce(${ownPhone}, ${osmContact("phone")})`;
 
 /**
  * Best company contact first: the website's own, then a shared inbox (info@, reception@) over a
@@ -47,10 +59,16 @@ const contactPriority = sql`(${companyContactPoints.sourceSlug} = 'company_websi
     (split_part(${companyContactPoints.value}, '@', 1) ~ '^(info|enquir|inquir|hello|contact|reception|office|admin|team|bookings?|appointments?|general|mail|sales|support|practice|surgery|clinic)') desc,
     ${companyContactPoints.observedAt} desc`;
 
-/** The company's published email (info@, reception@). */
-export const companyEmail = sql<string | null>`(select ${companyContactPoints.value} from ${companyContactPoints}
+const ownEmail = sql`(select ${companyContactPoints.value} from ${companyContactPoints}
     where ${companyContactPoints.companyId} = ${opportunities.companyId} and ${companyContactPoints.type} = 'email'
     order by ${contactPriority} limit 1)`;
+
+/** The company's published email (info@, reception@): its own first, OpenStreetMap's only when it has none. */
+export const companyEmail = sql<string | null>`coalesce(${ownEmail}, ${osmContact("email")})`;
+
+/** True when the phone or email shown comes from OpenStreetMap, which must then be credited (ODbL). */
+export const companyContactFromOsm = sql<boolean>`((${ownPhone}) is null and ${osmContact("phone")} is not null)
+    or ((${ownEmail}) is null and ${osmContact("email")} is not null)`;
 
 const summaryColumns = {
   opportunity: opportunities,
@@ -62,6 +80,7 @@ const summaryColumns = {
   signalCount: sql<number>`(select count(*)::int from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
   companyPhone,
   companyEmail,
+  companyContactFromOsm,
   feedbackVotes: sql<FeedbackVote[]>`(
     select coalesce(json_agg(json_build_object('name', coalesce(${users.name}, ${users.email}, 'A former teammate'), 'verdict', ${opportunityFeedback.verdict}) order by ${opportunityFeedback.updatedAt} desc), '[]')
     from ${opportunityFeedback} left join ${users} on ${users.id} = ${opportunityFeedback.userId}
@@ -78,6 +97,7 @@ export type SummaryRow = {
   contactTitle: string | null;
   companyPhone: string | null;
   companyEmail: string | null;
+  companyContactFromOsm: boolean;
   signalCount: number;
   feedbackVotes: FeedbackVote[];
 };
@@ -256,6 +276,14 @@ async function loadCompanyContacts(companyId: string): Promise<CompanyContact[]>
     shown++;
     contacts.push({ type: "phone", value: site.phone!, label: site.name, source: (site.sourceSlug as SourceSlug | null) ?? null, url: site.website });
   }
+  // Last, and only what the company's own sources don't already give: what OpenStreetMap publishes.
+  const known = new Set(contacts.map((c) => (c.type === "phone" ? digits(c.value) : c.value.toLowerCase())));
+  for (const osm of await osmContactsFor(companyId)) {
+    const key = osm.type === "phone" ? digits(osm.value) : osm.value.toLowerCase();
+    if (known.has(key)) continue;
+    known.add(key);
+    contacts.push({ type: osm.type, value: osm.value, label: osm.label, source: "openstreetmap", url: osm.url });
+  }
   return contacts;
 }
 
@@ -327,7 +355,7 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
       opportunity.primaryPersonId && row.contactName
         ? { id: opportunity.primaryPersonId, name: row.contactName, title: row.contactTitle }
         : null,
-    companyContact: { phone: row.companyPhone, email: row.companyEmail },
+    companyContact: { phone: row.companyPhone, email: row.companyEmail, fromOpenStreetMap: Boolean(row.companyContactFromOsm) },
     feedbackVotes: row.feedbackVotes,
     updatedAt: opportunity.updatedAt.toISOString(),
   };

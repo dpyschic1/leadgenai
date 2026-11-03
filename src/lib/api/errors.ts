@@ -17,7 +17,7 @@ export const ERROR_STATUS = {
   /** The AI provider's own per-minute limit (the free plan allows only a few requests a minute). */
   AI_BUSY: 429,
   AI_FAILED: 502,
-  /** A company's job board (Greenhouse, Lever, Ashby) didn't answer or answered with something unusable. */
+  /** A company's job board (Greenhouse, Lever, Ashby, Workable) didn't answer or answered with something unusable. */
   JOB_BOARD_FAILED: 502,
   AI_UNAVAILABLE: 503,
   INTERNAL_ERROR: 500,

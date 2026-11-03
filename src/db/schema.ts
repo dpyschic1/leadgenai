@@ -19,8 +19,10 @@
  * Column names are camelCase here and snake_case in Postgres (casing: "snake_case").
  */
 import {
+  bigint,
   boolean,
   check,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -632,6 +634,11 @@ export const jobBoardDirectory = pgTable(
     boardToken: text().notNull(),
     /** The board's own name for the company, as its provider returns it; null until validated. */
     boardName: text(),
+    /**
+     * The company website the board's provider states (Workable's account record). Only a
+     * candidate: it is set on a company once that site is read and links back to this board.
+     */
+    statedWebsite: text(),
     /** Where the board was first found, e.g. an archived URL or a company's careers page. */
     discoveryUrl: text(),
     discoveredAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -1163,4 +1170,90 @@ export const rateLimits = pgTable(
     windowStart: timestamp({ withTimezone: true }).notNull(),
   },
   (t) => [index("rate_limits_window_start_idx").on(t.windowStart)],
+);
+
+// ---------------------------------------------------------------------------
+// OpenStreetMap (ODbL): kept in its own tables, never copied into company rows
+// ---------------------------------------------------------------------------
+
+/**
+ * Businesses on OpenStreetMap that carry a phone, website or email, imported weekly from a UK
+ * extract (`scripts/import-osm.ts`), shared by every workspace. Open Database License: this
+ * table is the OSM-derived database. Contacts are shown from here with the OSM credit, never
+ * written into `companies` or `company_contact_points`, so our own data stays separate from it.
+ * An element gone from the latest extract is marked `removed_at` and stops matching.
+ */
+export const osmPlaces = pgTable(
+  "osm_places",
+  {
+    /** node, way or relation. Ids can change when an element is redrawn, so matches are redone on every import. */
+    osmType: text().notNull(),
+    osmId: bigint({ mode: "number" }).notNull(),
+    version: integer(),
+    name: text().notNull(),
+    brand: text(),
+    operator: text(),
+    /** The tag that makes it a business we use, e.g. "amenity=dentist". */
+    category: text().notNull(),
+    /** Normalised: upper case, no spaces ("LS14AP"). */
+    postcode: text(),
+    street: text(),
+    housenumber: text(),
+    city: text(),
+    lat: doublePrecision(),
+    lon: doublePrecision(),
+    phone: text(),
+    website: text(),
+    email: text(),
+    /** `ref:GB:cqc_location`: the CQC location id, an exact link to a CQC practice. */
+    cqcLocationRef: text(),
+    /** The mapper's own "last checked" date, when tagged. */
+    checkDate: text(),
+    importedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    removedAt: timestamp({ withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.osmType, t.osmId] }),
+    index("osm_places_postcode_idx").on(t.postcode),
+    index("osm_places_cqc_idx").on(t.cqcLocationRef),
+  ],
+);
+
+/**
+ * A workspace's link from one of its companies (and, for a chain, one of its practices) to the
+ * OpenStreetMap place it is, made only when the match is unambiguous. The contacts themselves stay
+ * in `osm_places`; `verification` stays "unknown": published on OpenStreetMap, not verified by us.
+ */
+export const osmMatches = pgTable(
+  "osm_matches",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    companyId: uuid().notNull(),
+    /** The practice or site matched; null when the company itself (one site) was matched. */
+    companyLocationId: uuid().references(() => companyLocations.id, { onDelete: "cascade" }),
+    osmType: text().notNull(),
+    osmId: bigint({ mode: "number" }).notNull(),
+    /** cqc_ref (exact register link), postcode_name, or website (same domain). */
+    method: text().notNull(),
+    confidence: integer().notNull(),
+    verification: contactVerification().notNull().default("unknown"),
+    lastCheckedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("osm_matches_place_idx").on(t.companyId, t.osmType, t.osmId),
+    uniqueIndex("osm_matches_location_idx").on(t.companyLocationId).where(sql`${t.companyLocationId} is not null`),
+    index("osm_matches_workspace_idx").on(t.workspaceId),
+    foreignKey({
+      name: "osm_matches_company_fk",
+      columns: [t.companyId, t.workspaceId],
+      foreignColumns: [companies.id, companies.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "osm_matches_place_fk",
+      columns: [t.osmType, t.osmId],
+      foreignColumns: [osmPlaces.osmType, osmPlaces.osmId],
+    }).onDelete("cascade"),
+  ],
 );

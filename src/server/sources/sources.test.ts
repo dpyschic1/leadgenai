@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardFromUrl, boardsFromIndexPage, cleanBoardName, jobInCountries, nameFromBoardTitle } from "./board-directory";
+import { boardFromUrl, boardsFromIndexPage, cleanBoardName, jobInCountries, nameFromBoardTitle, workableProfile } from "./board-directory";
 import { finalizeFacts } from "@/server/ai/website-extract";
 import { formationSignal, newLocationSignal, signalFromAnalysis } from "@/server/ingestion/found-signal";
 import type { SignalAnalysis } from "@/lib/api/types";
@@ -17,6 +17,7 @@ import {
   titleCaseCompanyName,
 } from "./names";
 import { isAllowed, parseRobots } from "./http";
+import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender } from "./uk-tenders";
 import {
   bookingEvidence,
@@ -172,6 +173,13 @@ describe("company websites", () => {
       boardToken: "acmeco",
     });
     expect(jobBoardFromHtml("<p>No jobs here</p>")).toBeNull();
+  });
+
+  it("finds a linked Workable board, but not a bare job link or Workable's own pages", () => {
+    expect(jobBoardFromHtml(`<a href="https://apply.workable.com/Brightway-Dental/">Careers</a>`)).toEqual({ provider: "workable", boardToken: "brightway-dental" });
+    expect(jobBoardFromHtml(`<a href="https://brightway.workable.com/">Careers</a>`)).toEqual({ provider: "workable", boardToken: "brightway" });
+    expect(jobBoardFromHtml(`<a href="https://apply.workable.com/j/BA193E747D">Apply</a>`)).toBeNull();
+    expect(jobBoardFromHtml(`<a href="https://www.workable.com/">Powered by Workable</a>`)).toBeNull();
   });
 
   it("reads the company's own email and UK phone", () => {
@@ -526,6 +534,26 @@ describe("job-board discovery", () => {
     expect(boardFromUrl("https://example.com/careers")).toBeNull();
   });
 
+  it("finds Workable boards, including legacy subdomains, but not Workable's own pages", () => {
+    expect(boardFromUrl("https://apply.workable.com/Blueground/")).toEqual({ provider: "workable", boardToken: "blueground" });
+    expect(boardFromUrl("https://apply.workable.com/kaizen-gaming/j/BA193E747D/")).toEqual({ provider: "workable", boardToken: "kaizen-gaming" });
+    expect(boardFromUrl("https://skroutz.workable.com/jobs/123")).toEqual({ provider: "workable", boardToken: "skroutz" });
+    // A job link with no account, Workable's own sites and pages.
+    expect(boardFromUrl("https://apply.workable.com/j/BA193E747D")).toBeNull();
+    expect(boardFromUrl("https://apply.workable.com/oops")).toBeNull();
+    expect(boardFromUrl("https://www.workable.com/pricing")).toBeNull();
+    expect(boardFromUrl("https://help.workable.com/hc/en-us")).toBeNull();
+  });
+
+  it("reads a Workable account's name and own website", () => {
+    expect(workableProfile({ name: "Blueground Careers", url: "https://www.theblueground.com/" })).toEqual({ name: "Blueground", website: "theblueground.com" });
+    expect(workableProfile({ name: "HelloFresh", url: "http://www.hellofresh.com" })).toEqual({ name: "HelloFresh", website: "hellofresh.com" });
+    // Not the company's own site.
+    expect(workableProfile({ name: "Acme", url: "https://www.linkedin.com/company/acme" }).website).toBeNull();
+    expect(workableProfile({ name: "Acme", url: "https://acme.workable.com" }).website).toBeNull();
+    expect(workableProfile({})).toEqual({ name: null, website: null });
+  });
+
   it("reads candidate boards from archive index lines, once each", () => {
     const page = [
       '{"url": "https://job-boards.greenhouse.io/0x/jobs/1"}',
@@ -563,5 +591,132 @@ describe("job-board discovery", () => {
     expect(jobInCountries("Austin, US", ["GB"])).toBe(false);
     expect(jobInCountries("Dublin, Ireland", ["GB", "IE"])).toBe(true);
     expect(jobInCountries("Anywhere", [])).toBe(true);
+  });
+});
+
+describe("OpenStreetMap", () => {
+  const feature = (tags: Record<string, unknown>, geometry: { type: string; coordinates: unknown } = { type: "Point", coordinates: [-1.55, 53.8] }) => ({
+    type: "Feature",
+    properties: { "@type": "node", "@id": 42, "@version": 3, ...tags },
+    geometry,
+  });
+
+  it("keeps a named business in our categories with a usable contact", () => {
+    expect(
+      placeFromFeature(
+        feature({
+          name: "Smiles Dental Leeds",
+          amenity: "dentist",
+          "contact:phone": "+44 113 496 0000;0113 496 0001",
+          website: "smilesleeds.example",
+          email: "info@smilesleeds.example",
+          "addr:postcode": "ls1 4ap",
+          "ref:GB:cqc_location": "1-123456789",
+        }),
+      ),
+    ).toMatchObject({
+      osmType: "node",
+      osmId: 42,
+      version: 3,
+      name: "Smiles Dental Leeds",
+      category: "amenity=dentist",
+      postcode: "LS14AP",
+      phone: "+441134960000",
+      website: "https://smilesleeds.example/",
+      email: "info@smilesleeds.example",
+      cqcLocationRef: "1-123456789",
+      lat: 53.8,
+      lon: -1.55,
+    });
+  });
+
+  it("places a mapped building at the centre of its outline", () => {
+    const outline = { type: "Polygon", coordinates: [[[-1, 53], [-1, 54], [-2, 54], [-2, 53], [-1, 53]]] };
+    const way = feature({ "@type": "way", "@id": 7, name: "Acme Accountants", office: "accountant", phone: "0113 496 0000" }, outline);
+    expect(placeFromFeature(way)).toMatchObject({ osmType: "way", osmId: 7, lat: 53.5, lon: -1.5 });
+  });
+
+  it("skips what we can't use: no name, another kind of place, no contact, or only a placeholder email", () => {
+    expect(placeFromFeature(feature({ amenity: "dentist", phone: "0113 496 0000" }))).toBeNull();
+    expect(placeFromFeature(feature({ name: "The Crown", amenity: "pub", phone: "0113 496 0000" }))).toBeNull();
+    expect(placeFromFeature(feature({ name: "Smiles", amenity: "dentist" }))).toBeNull();
+    expect(placeFromFeature(feature({ name: "Smiles", amenity: "dentist", email: "changeme@client-domain.co.uk", phone: "12" }))).toBeNull();
+    expect(placeFromFeature({ properties: { name: "No id", amenity: "dentist", phone: "0113 496 0000" } })).toBeNull();
+  });
+
+  it("filters the extract to exactly the categories it matches", () => {
+    const filters = osmiumFilters();
+    expect(filters).toContain("nwr/office=accountant,tax_advisor,lawyer,notary,estate_agent,financial_advisor,financial,insurance,it,employment_agency,consulting,architect,advertising_agency");
+    expect(filters.find((f) => f.startsWith("nwr/amenity="))).toContain("dentist");
+  });
+
+  it("compares names on the words that identify a business", () => {
+    expect(distinctiveWords("Smiles Dental Leeds Ltd")).toEqual(["smiles", "leeds"]);
+    expect(nameAgreement("Smiles Leeds", "Smiles Dental Leeds")).toBe(1);
+    expect(nameAgreement("The Dental Practice", "The Dental Practice")).toBe(0); // only common words
+    expect(nameAgreement("Smiles Leeds", "Leeds Dental Spa")).toBeLessThan(MIN_NAME_AGREEMENT);
+  });
+
+  describe("matching", () => {
+    const site = (over: Partial<MatchSite> = {}): MatchSite => ({
+      companyId: "c1",
+      locationId: "l1",
+      name: "Smiles Leeds",
+      companyName: "Smiles Group Ltd",
+      industry: "dental",
+      postcode: "LS14AP",
+      domain: null,
+      cqcLocationId: null,
+      ...over,
+    });
+    const place = (over: Partial<MatchPlace> = {}): MatchPlace => ({
+      osmType: "node",
+      osmId: 1,
+      name: "Smiles Dental Leeds",
+      brand: null,
+      operator: null,
+      category: "amenity=dentist",
+      postcode: "LS14AP",
+      website: null,
+      cqcLocationRef: null,
+      ...over,
+    });
+
+    it("links a practice by the CQC location id the place carries, whatever its name", () => {
+      expect(proposeMatches([site({ cqcLocationId: "1-1", postcode: null })], [place({ cqcLocationRef: "1-1", name: "Something else", postcode: null })])).toEqual([
+        { companyId: "c1", locationId: "l1", osmType: "node", osmId: 1, method: "cqc_ref", confidence: 95 },
+      ]);
+    });
+
+    it("links by postcode and name only when exactly one place fits, more surely when the website agrees", () => {
+      expect(proposeMatches([site()], [place()])).toMatchObject([{ method: "postcode_name", confidence: 75 }]);
+      expect(proposeMatches([site({ domain: "smilesleeds.example" })], [place({ website: "https://www.smilesleeds.example/" })])).toMatchObject([{ method: "website", confidence: 90 }]);
+      // Two practices that could both be it: no link.
+      expect(proposeMatches([site()], [place(), place({ osmId: 2, name: "Smiles Leeds Centre" })])).toEqual([]);
+    });
+
+    it("links nothing on a weak or doubtful match", () => {
+      expect(proposeMatches([site()], [place({ category: "office=accountant" })])).toEqual([]); // not a dentist
+      expect(proposeMatches([site({ industry: null })], [place()])).toEqual([]); // industry unknown
+      expect(proposeMatches([site()], [place({ postcode: "LS27EE" })])).toEqual([]); // elsewhere
+      expect(proposeMatches([site({ name: "The Dental Practice", companyName: "The Dental Practice Ltd" })], [place({ name: "The Dental Practice" })])).toEqual([]);
+      // Two places carrying the same CQC id: ambiguous, and no fallback to the name.
+      expect(proposeMatches([site({ cqcLocationId: "1-1" })], [place({ cqcLocationRef: "1-1" }), place({ osmId: 2, cqcLocationRef: "1-1" })])).toEqual([]);
+    });
+
+    it("gives a place to neither company when two could claim it", () => {
+      expect(proposeMatches([site(), site({ companyId: "c2", locationId: "l2" })], [place()])).toEqual([]);
+    });
+
+    it("keeps a chain's practices apart, each with its own place", () => {
+      const matches = proposeMatches(
+        [site({ cqcLocationId: "1-a" }), site({ locationId: "l2", name: "Smiles York", postcode: "YO17HH" })],
+        [place({ cqcLocationRef: "1-a" }), place({ osmId: 2, name: "Smiles York", postcode: "YO17HH" })],
+      );
+      expect(matches.map((m) => [m.locationId, m.osmId, m.method])).toEqual([
+        ["l1", 1, "cqc_ref"],
+        ["l2", 2, "postcode_name"],
+      ]);
+    });
   });
 });

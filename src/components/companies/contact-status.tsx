@@ -12,6 +12,7 @@ import {
   type ContactVerification,
   type IdentityLevel,
 } from "@/lib/domain/people";
+import { OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 import { cn } from "@/lib/utils";
 
 /**
@@ -104,5 +105,20 @@ function Explained({ label, explanation, children }: { label: string; explanatio
         {explanation}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * The credit OpenStreetMap's licence (ODbL) requires next to any contact taken from it, linked to
+ * its copyright page. Shown wherever an OSM phone, email or website appears.
+ */
+export function OsmCredit({ className }: { className?: string }) {
+  return (
+    <p className={cn("text-xs text-muted-foreground", className)}>
+      Published on OpenStreetMap, not verified by us ·{" "}
+      <a href={OSM_COPYRIGHT_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">
+        © OpenStreetMap contributors
+      </a>
+    </p>
   );
 }

@@ -17,6 +17,7 @@ import { fetchBoardJobs } from "@/server/jobs/fetch-jobs";
 import { getCompany } from "@/server/services/companies.service";
 import { refreshBoard } from "@/server/sources/board-directory";
 import { readWebsite } from "@/server/sources/company-website";
+import { politeGet } from "@/server/sources/http";
 import type { NormalizedJob } from "@/server/jobs/types";
 import { registerOwner } from "@/server/services/auth.service";
 import { createCompany } from "@/server/services/companies.service";
@@ -305,7 +306,7 @@ describe("discovering companies from public boards", () => {
       await db.delete(workspaces).where(eq(workspaces.id, uk.workspaceId));
       await db.delete(users).where(eq(users.id, uk.userId));
     }
-    await db.delete(jobBoardDirectory).where(inArray(jobBoardDirectory.boardToken, [token("relevant"), token("irrelevant"), token("missing")]));
+    await db.delete(jobBoardDirectory).where(inArray(jobBoardDirectory.boardToken, [token("relevant"), token("irrelevant"), token("missing"), token("workable")]));
   });
 
   it("rejects a board its provider doesn't know", async () => {
@@ -388,5 +389,35 @@ describe("discovering companies from public boards", () => {
     await evaluate(uk);
     expect(await count()).toEqual(before);
     expect(triage).not.toHaveBeenCalled(); // those jobs were judged before
+  });
+
+  it("treats a Workable board like any other: provisional company, opportunity, and its stated website once confirmed", async () => {
+    const slug = token("workable");
+    const site = `brightway-${run}.example`;
+    const usual = vi.mocked(politeGet).getMockImplementation()!;
+    // Workable's account record names the company and its own website.
+    vi.mocked(politeGet).mockImplementation(async (url: string) =>
+      url === `https://apply.workable.com/api/v1/accounts/${slug}`
+        ? { url, status: 200, contentType: "application/json", body: JSON.stringify({ name: "Brightway Careers", url: `https://www.${site}/` }), bytes: Buffer.alloc(0) }
+        : usual(url),
+    );
+    board.mockResolvedValueOnce([{ ...ukJob("w1", "React Engineer"), url: `https://apply.workable.com/j/W1${run}` }]);
+    expect(await refreshBoard("workable", slug)).toBe("valid");
+    vi.mocked(politeGet).mockImplementation(usual);
+    const [listed] = await db.select().from(jobBoardDirectory).where(and(eq(jobBoardDirectory.provider, "workable"), eq(jobBoardDirectory.boardToken, slug)));
+    expect(listed).toMatchObject({ validationStatus: "valid", boardName: "Brightway", statedWebsite: site });
+
+    await evaluate(uk);
+    const company = (await companiesOf(uk)).find((c) => c.canonicalName === "Brightway")!;
+    expect(company).toMatchObject({ identityStatus: "provisional", domain: null });
+    expect(await listCompanySignals(uk, company.id)).toEqual([expect.objectContaining({ signalType: "engineering_hiring" })]);
+    expect((await getCompany(uk, company.id)).opportunity).not.toBeNull();
+
+    // The stated site becomes the company's only once it links back to the same board.
+    vi.mocked(readWebsite).mockReset().mockResolvedValue(null);
+    vi.mocked(readWebsite).mockImplementationOnce(async (domain) => ({ domain, jobBoard: { provider: "workable", boardToken: slug } }) as Awaited<ReturnType<typeof readWebsite>>);
+    await HANDLERS.enrich_company(context(uk, "enrich_company", company.id));
+    const [after] = await db.select().from(companies).where(eq(companies.id, company.id));
+    expect(after).toMatchObject({ domain: site, identityStatus: "partial" });
   });
 });

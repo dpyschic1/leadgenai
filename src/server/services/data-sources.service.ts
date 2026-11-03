@@ -22,6 +22,7 @@ import { enqueue } from "@/server/ingestion/queue";
 import { queueChecksNow, runTick } from "@/server/ingestion/worker";
 import { SOURCE_ADAPTERS } from "@/server/sources";
 import { CQC_ATTRIBUTION } from "@/server/sources/cqc";
+import { osmPlacesFor } from "@/server/sources/osm";
 
 /** Settings → Data sources (FR-SIG-005, PRD §8.12), "Run now", and each company's provenance. */
 
@@ -121,6 +122,7 @@ export async function getCompanySources(auth: AuthContext, companyId: string): P
     .from(companyLocations)
     .where(and(eq(companyLocations.companyId, companyId), isNotNull(companyLocations.externalId)))
     .orderBy(companyLocations.name);
+  const openStreetMap = await osmPlacesFor(companyId);
   const usesCqc = records.some((r) => r.sourceSlug === "cqc") || sites.some((s) => s.sourceSlug === "cqc");
   const match = records.find((r) => r.recordType === "website_match");
   return {
@@ -135,6 +137,8 @@ export async function getCompanySources(auth: AuthContext, companyId: string): P
       .filter((r) => r.recordType !== "website_match")
       .map((r) => ({ source: r.sourceSlug as SourceSlug, recordType: r.recordType, url: r.url, observedAt: r.observedAt.toISOString() })),
     sites: sites.map((s) => ({ name: s.name ?? "Location", website: s.website, phone: s.phone, postalCode: s.postalCode, source: (s.sourceSlug as SourceSlug | null) ?? null })),
+    openStreetMap,
+    // The OpenStreetMap credit is shown with its own section (`openStreetMap`), linked.
     attributions: usesCqc ? [CQC_ATTRIBUTION] : [],
     pendingJobs: pending,
   };

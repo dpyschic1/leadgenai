@@ -250,13 +250,19 @@ const BOARD_LINKS: [JobBoardProvider, RegExp][] = [
   ["greenhouse", /(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io\/(?:embed\/job_board\?for=)?([A-Za-z0-9_.-]+)/i],
   ["lever", /jobs\.(?:eu\.)?lever\.co\/([A-Za-z0-9_.-]+)/i],
   ["ashby", /jobs\.ashbyhq\.com\/([A-Za-z0-9_.-]+)/i],
+  // apply.workable.com/{account}/ (not /j/{job}, which names no account), or a legacy {account}.workable.com.
+  ["workable", /apply\.workable\.com\/(?!j\/|api\/)([a-z0-9][a-z0-9-]*)/i],
+  ["workable", /\/\/(?!(?:www|apply|jobs|help|resources|developers|blog|careers)\.)([a-z0-9][a-z0-9-]*)\.workable\.com/i],
 ];
 
-/** A Greenhouse, Lever or Ashby board the site links to or embeds. */
+/** A Greenhouse, Lever, Ashby or Workable board the site links to or embeds. */
 export function jobBoardFromHtml(html: string): { provider: JobBoardProvider; boardToken: string } | null {
   for (const [provider, pattern] of BOARD_LINKS) {
     const token = pattern.exec(html)?.[1];
-    if (token && BOARD_TOKEN_PATTERN.test(token) && !/^(embed|api|v\d)$/i.test(token)) return { provider, boardToken: token };
+    if (token && BOARD_TOKEN_PATTERN.test(token) && !/^(embed|api|v\d)$/i.test(token)) {
+      // Workable account names are lowercase; the others keep the case the site used.
+      return { provider, boardToken: provider === "workable" ? token.toLowerCase() : token };
+    }
   }
   return null;
 }
@@ -269,7 +275,7 @@ export function emailsFrom(html: string, site: string): string[] {
 }
 
 /** Template and tooling addresses that sites carry by mistake (changeme@client-domain.co.uk, sentry, image names). */
-const PLACEHOLDER_EMAIL =
+export const PLACEHOLDER_EMAIL =
   /\.(png|jpe?g|gif|svg|webp)$|@2x|example\.|sentry|wixpress|changeme|client-?domain|your-?(domain|company|email|name)|^(name|email|user|test|someone|username|noreply|no-reply|donotreply)@|@(domain|email|company)\.(com|co\.uk)$/;
 /** Shared inboxes: the right way into a company, and what the company itself publishes for contact. */
 const ROLE_INBOX = /^(info|enquir|inquir|hello|contact|reception|office|admin|team|bookings?|appointments?|general|mail|sales|support|practice|surgery|clinic)/;

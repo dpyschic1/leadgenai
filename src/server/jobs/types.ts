@@ -18,6 +18,8 @@ export type JobBoardAdapter = {
   endpoint: (token: string) => string;
   /** A cheaper URL that only answers "does this board exist?" (used by board detection). */
   probeEndpoint: (token: string) => string;
+  /** The board's public page, linked as the source of what was found on it. */
+  boardUrl: (token: string) => string;
   /** Parses the provider's response into jobs; throws when the shape is not what we expect. */
   parse: (body: unknown) => NormalizedJob[];
 };

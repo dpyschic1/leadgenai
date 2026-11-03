@@ -6,6 +6,7 @@ import { BriefcaseBusinessIcon, CalendarIcon, MailIcon, PhoneIcon, RadioTowerIco
 import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import type { OpportunitySummary } from "@/lib/api/types";
+import { OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 import { FeedbackVotes } from "./feedback-votes";
 import { ScoreRing } from "./score-ring";
 import { StatusBadge } from "./status-badge";
@@ -78,6 +79,18 @@ export function OpportunityCard({
             >
               {companyPhone ? <PhoneIcon className="size-3.5" /> : <MailIcon className="size-3.5" />}
               {companyPhone ?? companyEmail}
+            </a>
+          )}
+          {/* ODbL: a contact from OpenStreetMap carries its credit wherever it is shown. */}
+          {(companyPhone || companyEmail) && opportunity.companyContact.fromOpenStreetMap && (
+            <a
+              href={OSM_COPYRIGHT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Published on OpenStreetMap, not verified by us"
+              className="relative z-10 -ml-2.5 hover:text-foreground hover:underline underline-offset-4"
+            >
+              © OpenStreetMap
             </a>
           )}
           <span className="inline-flex items-center gap-1">

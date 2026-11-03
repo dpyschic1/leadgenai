@@ -21,7 +21,8 @@ import type { OpportunityExportQuery } from "@/lib/validation/opportunities";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { refreshStaleScores } from "@/server/scoring/rescore";
-import { companyEmail, companyPhone, feedFilter, priorityOrder } from "./opportunities.service";
+import { companyContactFromOsm, companyEmail, companyPhone, feedFilter, priorityOrder } from "./opportunities.service";
+import { OSM_ATTRIBUTION, OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 
 /** Columns of the CSV export, in order: the PRD §17 field list, then status and matched service. */
 export const EXPORT_COLUMNS = [
@@ -47,6 +48,8 @@ export const EXPORT_COLUMNS = [
   // The company's own published line, for when no person (or no personal contact) is known.
   "company_phone",
   "company_email",
+  // ODbL: a company phone/email taken from OpenStreetMap is credited on its own row.
+  "company_contact_source",
 ] as const;
 
 type ExportRow = Record<(typeof EXPORT_COLUMNS)[number], CsvValue>;
@@ -102,6 +105,7 @@ const exportColumns = {
   serviceName: services.name,
   companyPhone,
   companyEmail,
+  companyContactFromOsm,
 };
 
 export type OpportunityExport = { filename: string; csv: string; count: number };
@@ -168,6 +172,7 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
         matched_service: row.serviceName,
         company_phone: row.companyPhone,
         company_email: row.companyEmail,
+        company_contact_source: row.companyContactFromOsm ? `OpenStreetMap (${OSM_ATTRIBUTION}, ${OSM_COPYRIGHT_URL}); not verified` : null,
       }),
     ),
   );

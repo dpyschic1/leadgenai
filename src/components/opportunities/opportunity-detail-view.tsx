@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeftIcon, Building2Icon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
-import { IdentityBadge, VerificationMark } from "@/components/companies/contact-status";
+import { IdentityBadge, OsmCredit, VerificationMark } from "@/components/companies/contact-status";
 import { SaveToListMenu } from "@/components/lists/save-to-list-menu";
 import { SignalTimeline } from "@/components/signals/signal-timeline";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
@@ -231,17 +231,26 @@ function CompanyContacts({ contacts }: { contacts: CompanyContact[] }) {
     <div className="mt-4 border-t pt-4">
       <h3 className="text-sm font-medium">Company contact</h3>
       <ul className="mt-2 space-y-0.5">
-        {contacts.map((contact) => (
-          <li key={`${contact.type}:${contact.value}`}>
-            <ContactLink
-              href={contact.type === "email" ? `mailto:${contact.value}` : `tel:${contact.value.replace(/[^\d+]/g, "")}`}
-              label={contact.label ? `${contact.value} · ${contact.label}` : contact.value}
-              icon={contact.type === "email" ? MailIcon : PhoneIcon}
-            />
-            {contact.source && <p className="pl-8 text-xs text-muted-foreground">Published, from {SOURCE_LABELS[contact.source]}</p>}
-          </li>
-        ))}
+        {contacts.map((contact) => {
+          const shown = contact.type === "website" ? contact.value.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "") : contact.value;
+          return (
+            <li key={`${contact.type}:${contact.value}`}>
+              <ContactLink
+                href={contact.type === "email" ? `mailto:${contact.value}` : contact.type === "website" ? contact.value : `tel:${contact.value.replace(/[^\d+]/g, "")}`}
+                label={contact.label ? `${shown} · ${contact.label}` : shown}
+                icon={contact.type === "email" ? MailIcon : contact.type === "website" ? LinkIcon : PhoneIcon}
+                external={contact.type === "website"}
+              />
+              {contact.source === "openstreetmap" ? (
+                <p className="pl-8 text-xs text-muted-foreground">Published on OpenStreetMap, not verified by us</p>
+              ) : (
+                contact.source && <p className="pl-8 text-xs text-muted-foreground">Published, from {SOURCE_LABELS[contact.source]}</p>
+              )}
+            </li>
+          );
+        })}
       </ul>
+      {contacts.some((c) => c.source === "openstreetmap") && <OsmCredit className="mt-2 pl-2" />}
     </div>
   );
 }

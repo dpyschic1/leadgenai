@@ -85,6 +85,63 @@ describe("ashby adapter", () => {
   });
 });
 
+describe("workable adapter", () => {
+  // Shape from apply.workable.com/api/v1/widget/accounts/{slug}?details=true (checked live, Nov 2026).
+  const row = (city: string, country: string) => ({
+    title: " Client Experience Coordinator ",
+    shortcode: "186545F8C1",
+    code: null,
+    employment_type: "Full-time",
+    telecommuting: false,
+    department: "Shared Services",
+    url: "https://apply.workable.com/j/186545F8C1",
+    published_on: "2026-02-12",
+    created_at: "2025-09-30",
+    country,
+    city,
+    state: null,
+    locations: [{ country, countryCode: "XX", city, region: null, hidden: false }],
+    description: "<h3>Redefining how people live.</h3><p>Join our <strong>team</strong>.</p>",
+  });
+  const body = {
+    name: "Blueground",
+    description: null,
+    jobs: [
+      row("Athens", "Greece"),
+      // The same job open in a second place: listed again, once per place.
+      row("London", "United Kingdom"),
+      { title: "Remote engineer", shortcode: "AB12CD34EF", url: "https://apply.workable.com/j/AB12CD34EF", telecommuting: true, locations: [], country: null, city: null, published_on: null, created_at: "2026-10-01" },
+      { title: "Bad link", shortcode: "X", url: "javascript:alert(1)" },
+      { title: "No shortcode", url: "https://apply.workable.com/j/1" },
+    ],
+  };
+
+  it("merges a job listed once per place, keeping every place", () => {
+    const jobs = JOB_BOARD_ADAPTERS.workable.parse(body);
+    expect(jobs.map((j) => j.externalId)).toEqual(["186545F8C1", "AB12CD34EF"]);
+    expect(jobs[0]).toEqual({
+      externalId: "186545F8C1",
+      title: "Client Experience Coordinator",
+      department: "Shared Services",
+      location: "Athens, Greece; London, United Kingdom",
+      url: "https://apply.workable.com/j/186545F8C1",
+      description: "Redefining how people live.\nJoin our team.",
+      postedAt: new Date("2026-02-12"),
+    });
+    expect(jobs[1]).toMatchObject({ location: "Remote", postedAt: new Date("2026-10-01"), description: null });
+  });
+
+  it("calls Workable with the lowercase account name, on its own host", () => {
+    expect(JOB_BOARD_ADAPTERS.workable.endpoint("Blueground")).toBe("https://apply.workable.com/api/v1/widget/accounts/blueground?details=true");
+    expect(JOB_BOARD_ADAPTERS.workable.probeEndpoint("blueground")).toBe("https://apply.workable.com/api/v1/accounts/blueground");
+    expect(JOB_BOARD_ADAPTERS.workable.boardUrl("blueground")).toBe("https://apply.workable.com/blueground/");
+  });
+
+  it("reads an account with no published jobs as an empty board", () => {
+    expect(JOB_BOARD_ADAPTERS.workable.parse({ name: "HelloFresh", jobs: [] })).toEqual([]);
+  });
+});
+
 describe("htmlToText", () => {
   it("keeps paragraphs and bullets, drops tags, scripts and extra space", () => {
     expect(htmlToText("<p>Hello&nbsp; <b>world</b></p><script>x()</script><ul><li>One</li><li>Two &amp; three</li></ul>")).toBe(

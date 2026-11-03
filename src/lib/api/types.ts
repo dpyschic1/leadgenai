@@ -225,6 +225,11 @@ export type CompanySources = {
   companyNumber: string | null;
   website: { domain: string; confidence: number; matchedBy: string } | null;
   contacts: { type: "email" | "phone"; value: string; source: SourceSlug | null; observedAt: string }[];
+  /**
+   * The OpenStreetMap places this company (or one of its practices) was matched to, with what they
+   * publish. Kept apart from our own contacts: published on OSM, not verified, credited (ODbL).
+   */
+  openStreetMap: { name: string; url: string; phone: string | null; email: string | null; website: string | null; matchedBy: string; checkedAt: string }[];
   /** Sites a register lists for the company, e.g. each of a CQC provider's practices. */
   sites: { name: string; website: string | null; phone: string | null; postalCode: string | null; source: SourceSlug | null }[];
   /** Attribution a source's licence asks us to show, e.g. for CQC data. */
@@ -272,7 +277,12 @@ export type OpportunitySummary = {
   signalCount: number;
   contact: { id: string; name: string; title: string | null } | null;
   /** The company's own published phone and email (switchboard, info@, a practice's phone): a way in even with no named person. */
-  companyContact: { phone: string | null; email: string | null };
+  companyContact: {
+    phone: string | null;
+    email: string | null;
+    /** The phone or email shown is from OpenStreetMap (the company has none of its own): credit it (ODbL). */
+    fromOpenStreetMap: boolean;
+  };
   /** Who on the team judged it and how, newest first; the card shows these as "1 good fit" / "2 flagged". */
   feedbackVotes: FeedbackVote[];
   updatedAt: string;
@@ -289,8 +299,8 @@ export type ServiceList = Page<Service>;
 
 export type OpportunitySignal = Signal & { role: SignalRole };
 
-/** A published company phone or email; `label` names the site it belongs to, if any. */
-export type CompanyContact = { type: "email" | "phone"; value: string; label: string | null; source: SourceSlug | null; url: string | null };
+/** A published company phone, email or website; `label` names the site it belongs to, if any. */
+export type CompanyContact = { type: "email" | "phone" | "website"; value: string; label: string | null; source: SourceSlug | null; url: string | null };
 
 export type OpportunityDetail = OpportunitySummary & {
   suggestedAction: string | null;
