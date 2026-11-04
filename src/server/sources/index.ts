@@ -5,6 +5,7 @@ import { boardDirectory } from "./board-directory";
 import { companiesHouse } from "./companies-house";
 import { companyWebsite } from "./company-website";
 import { cqc } from "./cqc";
+import { nppes } from "./nppes";
 import { openStreetMap } from "./osm";
 import { ukTenders } from "./uk-tenders";
 
@@ -51,6 +52,8 @@ export type FoundPerson = {
   relationship: "employee" | "founder" | "board_member" | "advisor";
   /** How sure the source is that this person is at this company (0-100). */
   confidence: number;
+  /** A direct phone the register publishes for them (e.g. an NPI authorized official). */
+  phone?: string | null;
 };
 
 export type DiscoveryCriteria = {
@@ -104,5 +107,6 @@ export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   board_directory: boardDirectory,
   uk_tenders: ukTenders,
   openstreetmap: openStreetMap,
+  us_npi: nppes,
   fca_register: fcaRegister,
 };

@@ -34,6 +34,18 @@ import { findWebsite, readWebsite, usableEmails, websiteFindings } from "@/serve
 import { fetchLocationDetail, loadDirectory, providersFor, providerWebsite, toFoundCompany as toCqcCompany, type CqcLocation } from "@/server/sources/cqc";
 import { domainReceivesEmail } from "@/server/sources/http";
 import { emailFromPattern, emailPatternOf, inferEmailPattern, jobFunctionFromTitle, seniorityFromTitle, type EmailPattern } from "@/server/sources/names";
+import {
+  fitsIndustry,
+  INDUSTRY_NPI_TAXONOMIES,
+  MAX_SKIP,
+  NPI_PAGE_SIZE,
+  searchOrganizations,
+  toFoundCompany as toNpiCompany,
+  toLocation as toNpiLocation,
+  toPeople as toNpiPeople,
+  US_STATES,
+  type NpiOrganization,
+} from "@/server/sources/nppes";
 import { matchWorkspace, osmImported } from "@/server/sources/osm";
 import { searchTenders, tenderSourceText } from "@/server/sources/uk-tenders";
 import { formationSignal, NEW_COMPANY_DAYS, newLocationSignal, signalFromAnalysis } from "./found-signal";
@@ -101,6 +113,15 @@ async function icpOf(actor: Actor) {
     industries: [...new Set(ukServices.flatMap((s) => s.targetIndustries))].filter((slug) => INDUSTRY_SIC_CODES[slug]),
     targetsUk: ukServices.length > 0,
     categories: [...new Set(ukServices.flatMap((s) => s.categories))],
+  };
+}
+
+/** The same for the US sources: services aimed at the US (or at any country). */
+async function usIcpOf(actor: Actor) {
+  const usServices = (await loadServices(actor.workspaceId)).filter((s) => s.targetCountries.length === 0 || s.targetCountries.includes("US"));
+  return {
+    industries: [...new Set(usServices.flatMap((s) => s.targetIndustries))],
+    categories: [...new Set(usServices.flatMap((s) => s.categories))],
   };
 }
 
@@ -262,6 +283,76 @@ function toSavedLocation(l: CqcLocation) {
     website: l.website,
     phone: l.phone,
   };
+}
+
+// --- discover_npi: US healthcare organizations from the NPI Registry ----------------------------
+
+/** Registry pages read per run (the registry limits queries per hour). */
+const NPI_PAGES_PER_RUN = 3;
+
+/**
+ * Every (search, state, page) the ICP's industries call for, in the order runs read them: page 1
+ * of every state first, then page 2, so each run brings variety. Pure.
+ */
+export function npiSteps(industries: string[]): { industry: string; taxonomy: string; state: string; skip: number }[] {
+  const searches = industries.flatMap((industry) => (INDUSTRY_NPI_TAXONOMIES[industry]?.searches ?? []).map((taxonomy) => ({ industry, taxonomy })));
+  const steps = [];
+  for (let skip = 0; skip <= MAX_SKIP; skip += NPI_PAGE_SIZE) {
+    for (const state of US_STATES) for (const search of searches) steps.push({ ...search, state, skip });
+  }
+  return steps;
+}
+
+async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
+  const icp = await usIcpOf(actor);
+  const steps = npiSteps(icp.industries);
+  if (steps.length === 0 || !(await sourceRunnable(actor.workspaceId, "us_npi"))) return { followUps: [], skipped: true };
+
+  // Where the last run stopped, per workspace.
+  const cursorId = "cursor:npi";
+  const [cursor] = await db
+    .select({ data: sourceRecords.data })
+    .from(sourceRecords)
+    .where(and(eq(sourceRecords.workspaceId, actor.workspaceId), eq(sourceRecords.sourceSlug, "us_npi"), eq(sourceRecords.externalId, cursorId)))
+    .limit(1);
+  let step = Number((cursor?.data as { step?: number } | undefined)?.step ?? 0) % steps.length;
+
+  const known = await knownIdentifiers(db, actor.workspaceId, "us_npi");
+  const picked: { org: NpiOrganization; industry: string }[] = [];
+  for (let page = 0; page < NPI_PAGES_PER_RUN && picked.length < COMPANIES_PER_RUN; page++) {
+    const { industry, taxonomy, state, skip } = steps[step];
+    step = (step + 1) % steps.length;
+    const orgs = await searchOrganizations({ taxonomy, state, skip });
+    // Newest practices first: being new is itself a signal.
+    const fresh = orgs
+      .filter((org) => !known.has(org.number) && fitsIndustry(org, industry))
+      .sort((a, b) => (b.basic.enumeration_date ?? "").localeCompare(a.basic.enumeration_date ?? ""));
+    for (const org of fresh.slice(0, COMPANIES_PER_RUN - picked.length)) {
+      known.add(org.number);
+      picked.push({ org, industry });
+    }
+  }
+
+  const followUps: FollowUp[] = [];
+  for (const { org, industry } of picked) {
+    const found = toNpiCompany(org, industry);
+    const result = await db.transaction(async (tx) => {
+      const resolved = await resolveCompany(tx, actor, found);
+      const location = toNpiLocation(org);
+      if (location) await saveSourceLocations(tx, resolved.companyId, "us_npi", [location], "US");
+      await addFoundPeople(tx, actor, resolved.companyId, toNpiPeople(org), "us_npi");
+      const formation = formationSignal({ name: found.name, foundedOn: found.foundedOn, registerUrl: found.record.url, register: "with the US NPI Registry" }, icp.categories);
+      const signal = formation ? await insertDetectedSignal(tx, actor, resolved.companyId, formation, resolved.recordId) : null;
+      return { ...resolved, signalCreated: signal?.created ?? false };
+    });
+    if (result.signalCreated) await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
+    followUps.push({ kind: "enrich_company", entityId: result.companyId });
+  }
+
+  await db.transaction((tx) =>
+    saveSourceRecord(tx, actor.workspaceId, { sourceSlug: "us_npi", externalId: cursorId, url: null, recordType: "discovery_cursor", publishedAt: null, data: { step } }, null),
+  );
+  return { followUps };
 }
 
 // --- evaluate_boards: shared job boards judged against this workspace's ICP and services --------
@@ -781,6 +872,7 @@ export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise
   scan_job_board: scanJobBoard,
   scan_tenders: scanTenders,
   match_osm: matchOsm,
+  discover_npi: discoverNpi,
 };
 
 /** The AI wrapper for a job: counts calls and draws from the workspace's daily AI budget. */

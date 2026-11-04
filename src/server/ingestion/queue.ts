@@ -49,7 +49,7 @@ export async function claimNext(workspaceId?: string): Promise<JobRow | null> {
       -- The once-a-day discovery jobs go before routine per-company checks, so "Run now" isn't stuck
       -- behind a backlog of slow website reads. Board evaluation repeats every few minutes while
       -- boards wait, so it takes its turn by time instead of starving the website reads.
-      order by (kind in ('discover_companies', 'discover_cqc', 'scan_tenders')) desc, run_after
+      order by (kind in ('discover_companies', 'discover_cqc', 'discover_npi', 'scan_tenders')) desc, run_after
       limit 1
       for update skip locked
     )

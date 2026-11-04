@@ -8,6 +8,7 @@ import {
   companyIdentifiers,
   companyLocations,
   companyPeople,
+  contactPoints,
   people,
   sourceRecords,
 } from "@/db/schema";
@@ -209,6 +210,10 @@ export async function addFoundPeople(
       sourceSlug,
       observedAt: new Date(),
     });
+    // Published by the register for this person: shown as published, never as verified.
+    if (person.phone) {
+      await tx.insert(contactPoints).values({ personId: row.id, type: "phone", value: person.phone, isPrimary: true, source: sourceSlug }).onConflictDoNothing();
+    }
     added++;
   }
   return added;
@@ -223,12 +228,13 @@ export async function saveSourceLocations(
   companyId: string,
   sourceSlug: SourceSlug,
   sites: { externalId: string; name: string; address: string | null; city: string | null; region: string | null; postalCode: string | null; website: string | null; phone: string | null }[],
+  country = "GB",
 ): Promise<void> {
   for (const site of sites) {
     const values = { name: site.name, address: site.address, city: site.city, region: site.region, postalCode: site.postalCode, website: site.website, phone: site.phone };
     await tx
       .insert(companyLocations)
-      .values({ companyId, type: "branch", country: "GB", sourceSlug, externalId: site.externalId, ...values })
+      .values({ companyId, type: "branch", country, sourceSlug, externalId: site.externalId, ...values })
       .onConflictDoUpdate({
         target: [companyLocations.companyId, companyLocations.sourceSlug, companyLocations.externalId],
         targetWhere: sql`${companyLocations.externalId} is not null`,

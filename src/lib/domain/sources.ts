@@ -11,6 +11,7 @@ export const SOURCE_SLUGS = [
   "board_directory",
   "uk_tenders",
   "openstreetmap",
+  "us_npi",
   "fca_register",
 ] as const;
 export type SourceSlug = (typeof SOURCE_SLUGS)[number];
@@ -23,6 +24,7 @@ export const SOURCE_LABELS: Record<SourceSlug, string> = {
   board_directory: "Job-board discovery",
   uk_tenders: "UK public tenders",
   openstreetmap: "OpenStreetMap",
+  us_npi: "NPI Registry (US)",
   fca_register: "FCA register",
 };
 
@@ -34,6 +36,8 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
   board_directory:
     "Finds Greenhouse, Lever, Ashby and Workable boards in the Common Crawl web archive, checks each one, and keeps the jobs that match your services. Coverage is broad but not complete.",
   uk_tenders: "Public-sector contracts on Contracts Finder that match your services.",
+  us_npi:
+    "Every US healthcare organization registered with CMS (dental practices, clinics, therapy, optometry): each practice's address and phone, and its authorized official. Public data, no key.",
   openstreetmap:
     "Phone, website and email that businesses have on OpenStreetMap, matched carefully to your companies and their practices. Shown as published there, not verified. © OpenStreetMap contributors, ODbL.",
   fca_register: "Financial firms and approved people. Not used: the FCA's terms need written permission to store or redistribute register data.",
@@ -53,6 +57,7 @@ export const INGESTION_JOB_KINDS = [
   "scan_job_board",
   "scan_tenders",
   "match_osm",
+  "discover_npi",
 ] as const;
 export type IngestionJobKind = (typeof INGESTION_JOB_KINDS)[number];
 
@@ -66,6 +71,7 @@ export const JOB_KIND_SOURCE: Record<IngestionJobKind, SourceSlug> = {
   scan_job_board: "job_board",
   scan_tenders: "uk_tenders",
   match_osm: "openstreetmap",
+  discover_npi: "us_npi",
 };
 
 /** The credit ODbL requires wherever OpenStreetMap data is shown or exported. */
@@ -76,7 +82,7 @@ export const INGESTION_JOB_STATUSES = ["queued", "running", "done", "failed", "s
 export type IngestionJobStatus = (typeof INGESTION_JOB_STATUSES)[number];
 
 /** Identifier schemes for `company_identifiers`. */
-export const COMPANY_ID_SCHEMES = ["gb_company_number", "gb_cqc_provider"] as const;
+export const COMPANY_ID_SCHEMES = ["gb_company_number", "gb_cqc_provider", "us_npi"] as const;
 export type CompanyIdScheme = (typeof COMPANY_ID_SCHEMES)[number];
 
 /**

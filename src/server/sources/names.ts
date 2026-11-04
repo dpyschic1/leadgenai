@@ -5,7 +5,7 @@ import type { FoundPerson } from "./index";
 
 const KEEP_UPPER = new Set(["LTD", "LLP", "PLC", "UK", "CIC", "LP", "IT", "HR", "NHS", "AI", "UKI", "GB"]);
 const LOWER_WORDS = new Set(["and", "of", "the", "for", "in", "on", "at", "to", "by"]);
-const COMPANY_SUFFIX: Record<string, string> = { LTD: "Ltd", LIMITED: "Limited", PLC: "plc" };
+const COMPANY_SUFFIX: Record<string, string> = { LTD: "Ltd", LIMITED: "Limited", PLC: "plc", PLLC: "PLLC", LLC: "LLC", INC: "Inc", PC: "PC", PA: "PA", DDS: "DDS", DMD: "DMD", MD: "MD" };
 
 const capitalise = (word: string) =>
   word
@@ -22,6 +22,8 @@ export function titleCaseCompanyName(name: string): string {
       const bare = word.replace(/[^A-Z0-9&]/g, "");
       if (COMPANY_SUFFIX[bare]) return word.replace(bare, COMPANY_SUFFIX[bare]);
       if (KEEP_UPPER.has(bare) || /^[A-Z]&[A-Z]$/.test(bare)) return word;
+      // Dotted initials stay as written: "P.A.", "D.D.S.", "L.L.C.".
+      if (/^([A-Z]\.){2,}$/.test(word)) return word;
       if (index > 0 && LOWER_WORDS.has(word.toLowerCase())) return word.toLowerCase();
       return capitalise(word);
     })

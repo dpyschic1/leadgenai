@@ -17,6 +17,8 @@ import {
   titleCaseCompanyName,
 } from "./names";
 import { isAllowed, parseRobots } from "./http";
+import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
+import { npiSteps } from "@/server/ingestion/handlers";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender } from "./uk-tenders";
 import {
@@ -735,5 +737,83 @@ describe("OpenStreetMap", () => {
         ["l2", 2, "postcode_name"],
       ]);
     });
+  });
+});
+
+describe("US NPI Registry", () => {
+  // A real registry result (trimmed), checked live in Nov 2026.
+  const org = {
+    number: "1154494250",
+    enumeration_type: "NPI-2",
+    basic: {
+      organization_name: "360 DENTAL CARE P.A.",
+      organizational_subpart: "NO",
+      enumeration_date: "2006-11-16",
+      status: "A",
+      authorized_official_first_name: "MICHAEL",
+      authorized_official_last_name: "NUSSBAUM",
+      authorized_official_title_or_position: "President",
+      authorized_official_telephone_number: "5123273631",
+    },
+    addresses: [
+      { address_purpose: "MAILING", address_1: "PO BOX 1", city: "IRVINE", state: "CA", postal_code: "926120001", telephone_number: "949-555-0100" },
+      { address_purpose: "LOCATION", address_1: "3660 STONERIDGE RD STE B101", city: "AUSTIN", state: "TX", postal_code: "787467759", telephone_number: "512-327-3631" },
+    ],
+    other_names: [{ code: "3", type: "Doing Business As", organization_name: "MICHAEL B. NUSSBAUM D.D.S." }],
+    taxonomies: [{ code: "1223G0001X", desc: "Dentist, General Practice", primary: true }],
+  };
+
+  it("reads organizations, and throws on the registry's error replies", () => {
+    expect(parseSearch({ result_count: 1, results: [org, { number: "1", enumeration_type: "NPI-1" }] }).map((o) => o.number)).toEqual(["1154494250"]);
+    expect(() => parseSearch({ Errors: [{ description: "No taxonomy codes found" }] })).toThrow("No taxonomy codes found");
+  });
+
+  it("turns an organization into a company at its place of business, with its phone and authorized official", () => {
+    const [parsed] = parseSearch({ results: [org] });
+    expect(toNpiCompany(parsed, "dental")).toMatchObject({
+      name: "360 Dental Care P.A.",
+      industry: "dental",
+      hq: { city: "Austin", region: "TX", country: "US", postalCode: "78746" },
+      identifiers: [{ scheme: "us_npi", value: "1154494250" }],
+      identity: "verified",
+      foundedOn: "2006-11-16",
+      record: { sourceSlug: "us_npi", externalId: "npi:1154494250", url: "https://npiregistry.cms.hhs.gov/provider-view/1154494250" },
+    });
+    expect(toNpiLocation(parsed)).toEqual({
+      externalId: "1154494250",
+      name: "360 Dental Care P.A.",
+      address: "3660 Stoneridge Rd Ste B101",
+      city: "Austin",
+      region: "TX",
+      postalCode: "78746",
+      website: null,
+      phone: "512-327-3631",
+    });
+    expect(toNpiPeople(parsed)).toEqual([
+      { name: "Michael Nussbaum", title: "President", seniority: "c_level", jobFunction: null, relationship: "employee", confidence: 90, phone: "512-327-3631" },
+    ]);
+  });
+
+  it("keeps only organizations whose main specialty is the industry", () => {
+    const [parsed] = parseSearch({ results: [org] });
+    expect(fitsIndustry(parsed, "dental")).toBe(true);
+    expect(fitsIndustry(parsed, "healthcare")).toBe(false);
+    expect(fitsIndustry({ ...parsed, taxonomies: [{ code: "208D00000X", desc: "General Practice", primary: true }] }, "dental")).toBe(false);
+  });
+
+  it("formats US phone numbers and rejects others", () => {
+    expect(usPhone("5123273631")).toBe("512-327-3631");
+    expect(usPhone("1 (512) 327-3631")).toBe("512-327-3631");
+    expect(usPhone("0113 496 0000")).toBeNull();
+    expect(usPhone(null)).toBeNull();
+  });
+
+  it("walks every state on page one before reading page two", () => {
+    const steps = npiSteps(["dental"]);
+    expect(steps[0]).toEqual({ industry: "dental", taxonomy: "Dentist", state: "CA", skip: 0 });
+    expect(steps[1]).toEqual({ industry: "dental", taxonomy: "Dental", state: "CA", skip: 0 });
+    expect(steps.length).toBe(2 * 51 * 6);
+    expect(steps.find((s) => s.skip > 0)).toMatchObject({ state: "CA", skip: 200 });
+    expect(npiSteps(["accounting"])).toEqual([]);
   });
 });

@@ -28,6 +28,7 @@ import type { DiscoveryCriteria, FoundCompany } from "@/server/sources";
 import { companiesHouse } from "@/server/sources/companies-house";
 import { loadDirectory, type CqcLocation } from "@/server/sources/cqc";
 import { findWebsite, readWebsite } from "@/server/sources/company-website";
+import { parseSearch, searchOrganizations } from "@/server/sources/nppes";
 import { searchTenders, type Tender } from "@/server/sources/uk-tenders";
 
 /**
@@ -62,6 +63,10 @@ vi.mock("@/server/sources/company-website", async (original) => ({
 vi.mock("@/server/sources/uk-tenders", async (original) => ({
   ...(await original<typeof import("@/server/sources/uk-tenders")>()),
   searchTenders: vi.fn(),
+}));
+vi.mock("@/server/sources/nppes", async (original) => ({
+  ...(await original<typeof import("@/server/sources/nppes")>()),
+  searchOrganizations: vi.fn(async () => []),
 }));
 vi.mock("@/server/ai/signal-analysis", () => ({ analyzeSignal: vi.fn() }));
 vi.mock("@/server/ai/website-extract", () => ({ extractWebsiteFacts: vi.fn() }));
@@ -580,5 +585,58 @@ describe("OpenStreetMap contacts", () => {
     // Another workspace has no links of its own.
     expect(await db.select().from(osmMatches).where(eq(osmMatches.workspaceId, other.workspaceId))).toEqual([]);
     vi.mocked(loadDirectory).mockResolvedValue([]);
+  });
+});
+
+describe("US NPI Registry", () => {
+  const recent = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+  const org = (number: string, name: string, enumerated: string, taxonomy = "1223G0001X") => ({
+    number,
+    enumeration_type: "NPI-2",
+    basic: {
+      organization_name: name,
+      enumeration_date: enumerated,
+      status: "A",
+      authorized_official_first_name: "MARIA",
+      authorized_official_last_name: `GARCIA${number.slice(-3)}`,
+      authorized_official_title_or_position: "Owner",
+      authorized_official_telephone_number: "5125550142",
+    },
+    addresses: [{ address_purpose: "LOCATION", address_1: "100 CONGRESS AVE", city: "AUSTIN", state: "TX", postal_code: "787011234", telephone_number: "512-555-0100" }],
+    taxonomies: [{ code: taxonomy, desc: "Dentist, General Practice", primary: true }],
+  });
+
+  it("adds new US practices with their phone and authorized official, a new-practice signal, and nothing twice", async () => {
+    const number = (n: number) => `19${run.replace(/\D/g, "").padEnd(7, "0").slice(0, 7)}${n}`;
+    vi.mocked(searchOrganizations).mockResolvedValueOnce(
+      parseSearch({
+        results: [
+          org(number(1), `LONE STAR SMILES ${run} PLLC`, recent),
+          org(number(2), `OLD TOWN DENTAL ${run} PA`, "2009-03-01"),
+          // A pharmacy listed under a dental search: not a dental practice.
+          org(number(3), `CORNER PHARMACY ${run}`, recent, "3336C0003X"),
+        ],
+      }),
+    );
+    await runNow(owner);
+    await runNow(owner); // nothing twice
+
+    const found = (await listCompanies(owner, `Lone Star Smiles ${run}`)).items;
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ discoveredBy: "us_npi", headquarters: { city: "Austin", country: "US" } });
+    expect((await listCompanies(owner, `Corner Pharmacy ${run}`)).total).toBe(0);
+
+    const detail = await getCompany(owner, found[0].id);
+    expect(detail.people).toMatchObject([{ name: `Maria Garcia${number(1).slice(-3)}`, title: "Owner", phone: "512-555-0142", source: "us_npi" }]);
+    const [site] = await db.select().from(companyLocations).where(and(eq(companyLocations.companyId, found[0].id), eq(companyLocations.sourceSlug, "us_npi")));
+    expect(site).toMatchObject({ phone: "512-555-0100", postalCode: "78701", country: "US", externalId: number(1) });
+
+    // Registered last month: a new practice. The 2009 one is not.
+    const [signal] = await listCompanySignals(owner, found[0].id);
+    expect(signal).toMatchObject({ signalType: "new_startup", origin: "us_npi" });
+    expect(signal.summary).toContain("with the US NPI Registry");
+    const old = (await listCompanies(owner, `Old Town Dental ${run}`)).items[0];
+    expect(await listCompanySignals(owner, old.id)).toEqual([]);
+    expect((await getCompany(owner, found[0].id)).opportunity).not.toBeNull();
   });
 });

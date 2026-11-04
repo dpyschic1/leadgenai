@@ -86,7 +86,7 @@ export function newLocationSignal(
  * corroborate it. Null for companies older than a year.
  */
 export function formationSignal(
-  company: { name: string; foundedOn: string | null; registerUrl: string | null },
+  company: { name: string; foundedOn: string | null; registerUrl: string | null; register?: string },
   serviceCategories: string[],
   now = new Date(),
 ): DetectedSignalValues | null {
@@ -100,7 +100,7 @@ export function formationSignal(
     intentLevel: "low",
     urgency: "unknown",
     serviceCategories,
-    summary: `${company.name} was registered at Companies House on ${date}: a new business that may need help to get started.`,
+    summary: `${company.name} was registered ${company.register ?? "at Companies House"} on ${date}: a new business that may need help to get started.`,
     personId: null,
     occurredOn: company.foundedOn,
     sourceUrl: company.registerUrl,
