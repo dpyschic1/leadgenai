@@ -4,7 +4,7 @@
  * The database enums are built from these arrays.
  */
 
-export const JOB_BOARD_PROVIDERS = ["greenhouse", "lever", "ashby", "workable"] as const;
+export const JOB_BOARD_PROVIDERS = ["greenhouse", "lever", "ashby", "workable", "smartrecruiters", "personio", "breezy"] as const;
 export type JobBoardProvider = (typeof JOB_BOARD_PROVIDERS)[number];
 
 export const JOB_BOARD_PROVIDER_LABELS: Record<JobBoardProvider, string> = {
@@ -12,6 +12,9 @@ export const JOB_BOARD_PROVIDER_LABELS: Record<JobBoardProvider, string> = {
   lever: "Lever",
   ashby: "Ashby",
   workable: "Workable",
+  smartrecruiters: "SmartRecruiters",
+  personio: "Personio",
+  breezy: "Breezy HR",
 };
 
 /**

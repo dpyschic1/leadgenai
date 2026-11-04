@@ -51,7 +51,18 @@ const BOARD_HOSTS: Record<JobBoardProvider, string[]> = {
   ashby: ["jobs.ashbyhq.com"],
   // Older boards live on {slug}.workable.com, which redirects here.
   workable: ["apply.workable.com"],
+  smartrecruiters: ["jobs.smartrecruiters.com", "careers.smartrecruiters.com"],
+  // Boards on their own subdomain: the archive is asked for every subdomain of these.
+  personio: ["*.jobs.personio.de", "*.jobs.personio.com"],
+  breezy: ["*.breezy.hr"],
 };
+
+/** Providers whose boards are subdomains ({slug}.breezy.hr), and the provider's own subdomains to ignore. */
+const SUBDOMAIN_BOARDS: { provider: JobBoardProvider; suffix: string; own: RegExp }[] = [
+  { provider: "personio", suffix: ".jobs.personio.de", own: /^(www|api|app)$/ },
+  { provider: "personio", suffix: ".jobs.personio.com", own: /^(www|api|app)$/ },
+  { provider: "breezy", suffix: ".breezy.hr", own: /^(www|app|api|help|developer|developers|marketing|blog|status|assets|cdn|support|careers)$/ },
+];
 
 /** Path segments that are pages of the provider, not company boards. */
 const NOT_A_BOARD = /^(embed|api|v\d+|jobs|job|careers|search|static|assets|favicon\.ico|robots\.txt|sitemap.*|login|apply|_next|images?|j|oops)$/i;
@@ -73,6 +84,11 @@ export function boardFromUrl(url: string): { provider: JobBoardProvider; boardTo
   // A legacy Workable board: the account is the subdomain.
   const legacyWorkable = host.endsWith(".workable.com") && !WORKABLE_OWN_HOSTS.test(host) ? host.slice(0, -".workable.com".length) : null;
   if (legacyWorkable) return !legacyWorkable.includes(".") && BOARD_TOKEN_PATTERN.test(legacyWorkable) ? { provider: "workable", boardToken: legacyWorkable } : null;
+  for (const { provider, suffix, own } of SUBDOMAIN_BOARDS) {
+    if (!host.endsWith(suffix)) continue;
+    const slug = host.slice(0, -suffix.length);
+    return slug && !slug.includes(".") && !own.test(slug) && BOARD_TOKEN_PATTERN.test(slug) ? { provider, boardToken: slug } : null;
+  }
   const provider = JOB_BOARD_PROVIDERS.find((p) => BOARD_HOSTS[p].includes(host));
   if (!provider) return null;
   // Greenhouse also embeds boards as /embed/job_board?for=<token>.
@@ -121,6 +137,15 @@ async function boardProfile(provider: JobBoardProvider, token: string): Promise<
       const page = await politeGet(`https://boards-api.greenhouse.io/v1/boards/${token}`, { sameSite: false, timeoutMs: 10_000 });
       return page.status === 200 ? { name: cleanBoardName((JSON.parse(page.body) as { name?: string }).name), website: null } : none;
     }
+    if (provider === "smartrecruiters" || provider === "breezy") {
+      // The company's name comes with each job.
+      const page = await politeGet(JOB_BOARD_ADAPTERS[provider].probeEndpoint(token), { sameSite: false, timeoutMs: 10_000 });
+      if (page.status !== 200) return none;
+      const body = JSON.parse(page.body) as { content?: { company?: { name?: string } }[] } | { company?: { name?: string } }[];
+      const first = Array.isArray(body) ? body[0] : body.content?.[0];
+      return { name: cleanBoardName(first?.company?.name), website: null };
+    }
+    if (provider === "personio") return none;
     if (provider === "workable") {
       const page = await politeGet(JOB_BOARD_ADAPTERS.workable.probeEndpoint(token), { sameSite: false, timeoutMs: 10_000 });
       return page.status === 200 ? workableProfile(JSON.parse(page.body)) : none;
@@ -357,7 +382,9 @@ export async function collectFromArchive(): Promise<number> {
     .sort((a, b) => Number(recentlyFailed(a)) - Number(recentlyFailed(b)) || (a.state?.nextPage ?? 0) - (b.state?.nextPage ?? 0))[0];
   if (!next) return 0;
 
-  const query = `${INDEX}/${crawl}-index?url=${encodeURIComponent(`${next.host}/*`)}&output=json&fl=url`;
+  // "*.breezy.hr" asks for every subdomain; a plain host for every path under it.
+  const pattern = next.host.startsWith("*.") ? next.host : `${next.host}/*`;
+  const query = `${INDEX}/${crawl}-index?url=${encodeURIComponent(pattern)}&output=json&fl=url`;
   let added = 0;
   let page = next.state?.nextPage ?? 0;
   try {

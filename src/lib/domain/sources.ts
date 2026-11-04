@@ -32,9 +32,9 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
   companies_house: "Official UK company register: finds companies by industry and area, with their directors.",
   cqc: "Every dental practice, clinic and care service registered in England, with each location's website and phone. Contains CQC information, used under the Open Government Licence v3.0.",
   company_website: "Reads a company's own public pages (about, team, contact, careers, news), politely and within robots.txt.",
-  job_board: "Open jobs from the company's Greenhouse, Lever, Ashby or Workable board, through their public APIs.",
+  job_board: "Open jobs from the company's own job board on Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Personio or Breezy HR, through their public feeds.",
   board_directory:
-    "Finds Greenhouse, Lever, Ashby and Workable boards in the Common Crawl web archive, checks each one, and keeps the jobs that match your services. Coverage is broad but not complete.",
+    "Finds Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Personio and Breezy HR boards in the Common Crawl web archive, checks each one, and keeps the jobs that match your services. Coverage is broad but not complete.",
   uk_tenders: "Public-sector contracts on Contracts Finder that match your services.",
   us_npi:
     "Every US healthcare organization registered with CMS (dental practices, clinics, therapy, optometry): each practice's address and phone, and its authorized official. Public data, no key.",

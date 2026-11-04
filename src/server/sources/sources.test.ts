@@ -578,6 +578,18 @@ describe("job-board discovery", () => {
     expect(boardFromUrl("https://help.workable.com/hc/en-us")).toBeNull();
   });
 
+  it("finds SmartRecruiters, Personio and Breezy boards, but not the providers' own pages", () => {
+    expect(boardFromUrl("https://jobs.smartrecruiters.com/Ubisoft2/744000159658729-cg-supervisor")).toEqual({ provider: "smartrecruiters", boardToken: "ubisoft2" });
+    expect(boardFromUrl("https://acme-gmbh.jobs.personio.de/job/1676226")).toEqual({ provider: "personio", boardToken: "acme-gmbh" });
+    expect(boardFromUrl("https://acme.jobs.personio.com/")).toEqual({ provider: "personio", boardToken: "acme" });
+    expect(boardFromUrl("https://brightway.breezy.hr/p/98323abf2296-qa")).toEqual({ provider: "breezy", boardToken: "brightway" });
+    expect(boardFromUrl("https://www.breezy.hr/pricing")).toBeNull();
+    expect(boardFromUrl("https://app.breezy.hr/signin")).toBeNull();
+    expect(jobBoardFromHtml(`<a href="https://Brightway.breezy.hr/">Careers</a>`)).toEqual({ provider: "breezy", boardToken: "brightway" });
+    expect(jobBoardFromHtml(`<a href="https://careers.smartrecruiters.com/Ubisoft2">Jobs</a>`)).toEqual({ provider: "smartrecruiters", boardToken: "Ubisoft2" });
+    expect(jobBoardFromHtml(`<a href="https://acme.jobs.personio.de/">Jobs</a>`)).toEqual({ provider: "personio", boardToken: "acme" });
+  });
+
   it("reads a Workable account's name and own website", () => {
     expect(workableProfile({ name: "Blueground Careers", url: "https://www.theblueground.com/" })).toEqual({ name: "Blueground", website: "theblueground.com" });
     expect(workableProfile({ name: "HelloFresh", url: "http://www.hellofresh.com" })).toEqual({ name: "HelloFresh", website: "hellofresh.com" });

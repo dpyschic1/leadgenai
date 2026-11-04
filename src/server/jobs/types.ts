@@ -20,6 +20,13 @@ export type JobBoardAdapter = {
   probeEndpoint: (token: string) => string;
   /** The board's public page, linked as the source of what was found on it. */
   boardUrl: (token: string) => string;
-  /** Parses the provider's response into jobs; throws when the shape is not what we expect. */
+  /** Parses the provider's response (JSON, or the raw text for XML feeds) into jobs; throws when the shape is not what we expect. */
   parse: (body: unknown) => NormalizedJob[];
+  /** The feed's format; JSON unless stated. */
+  format?: "json" | "xml";
+  /**
+   * The provider answers an unknown board with an empty list instead of a 404 (SmartRecruiters), so
+   * a board with no open jobs can't be told from one that doesn't exist: treat it as missing.
+   */
+  emptyMeansMissing?: boolean;
 };

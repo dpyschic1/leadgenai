@@ -359,7 +359,7 @@ async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
 
 /** Boards judged per run; more wait for the next run a few minutes later. */
 const BOARDS_PER_EVALUATION = 10;
-const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com)$/i;
+const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|personio\.(de|com)|breezy\.hr)$/i;
 
 /** The site a board's job links point to when it isn't the board itself (Greenhouse lets companies host jobs on their own careers page). */
 function candidateWebsite(jobs: { url: string }[]): string | null {

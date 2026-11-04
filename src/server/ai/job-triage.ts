@@ -90,7 +90,8 @@ export async function triageJobs(
   for (let attempt = 1; ; attempt++) {
     try {
       const result = await generateText({
-        model: languageModel(),
+        // A title check: the small model, on its own daily quota.
+        model: languageModel("fast"),
         system: systemPrompt(services, ref),
         messages,
         output: Output.object({ schema: outputSchema }),

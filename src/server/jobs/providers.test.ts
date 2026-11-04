@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { htmlToText } from "./html-to-text";
-import { JOB_BOARD_ADAPTERS } from "./providers";
+import { JOB_BOARD_ADAPTERS, parsePersonio } from "./providers";
 
 /** Trimmed copies of real responses (shapes checked against the live APIs, Nov 2026). */
 
@@ -139,6 +139,95 @@ describe("workable adapter", () => {
 
   it("reads an account with no published jobs as an empty board", () => {
     expect(JOB_BOARD_ADAPTERS.workable.parse({ name: "HelloFresh", jobs: [] })).toEqual([]);
+  });
+});
+
+describe("smartrecruiters adapter", () => {
+  it("reads postings, linking each to its page, with remote roles marked", () => {
+    const jobs = JOB_BOARD_ADAPTERS.smartrecruiters.parse({
+      totalFound: 1,
+      content: [
+        {
+          id: "744000159658729",
+          name: "CG Supervisor ",
+          releasedDate: "2026-11-04T15:09:00.494Z",
+          company: { identifier: "Ubisoft2", name: "Ubisoft" },
+          location: { city: "Montreal", country: "ca", remote: true, fullLocation: "Montreal, QC, Canada" },
+          department: { label: "Ubisoft" },
+        },
+      ],
+    });
+    expect(jobs).toEqual([
+      {
+        externalId: "744000159658729",
+        title: "CG Supervisor",
+        department: "Ubisoft",
+        location: "Montreal, QC, Canada; Remote",
+        url: "https://jobs.smartrecruiters.com/Ubisoft2/744000159658729",
+        description: null,
+        postedAt: new Date("2026-11-04T15:09:00.494Z"),
+      },
+    ]);
+    // Unknown companies answer with an empty list, so an empty board counts as missing.
+    expect(JOB_BOARD_ADAPTERS.smartrecruiters.emptyMeansMissing).toBe(true);
+  });
+});
+
+describe("personio adapter", () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<workzag-jobs>
+<position>
+  <id>1676226</id>
+  <office>London</office>
+  <department>Engineering</department>
+  <name>Senior React Developer</name>
+  <jobDescriptions><jobDescription><name>Your mission</name><value><![CDATA[<p>Build our <b>booking</b> app.</p>]]></value></jobDescription></jobDescriptions>
+  <createdAt>2026-10-10T11:33:38+00:00</createdAt>
+</position>
+<position><id>2</id></position>
+</workzag-jobs>`;
+
+  it("reads the XML feed's fixed fields, with the description sections as text", () => {
+    expect(parsePersonio(xml, "acme")).toEqual([
+      {
+        externalId: "1676226",
+        title: "Senior React Developer",
+        department: "Engineering",
+        location: "London",
+        url: "https://acme.jobs.personio.de/job/1676226",
+        description: "Your mission\nBuild our booking app.",
+        postedAt: new Date("2026-10-10T11:33:38+00:00"),
+      },
+    ]);
+    expect(parsePersonio("<workzag-jobs></workzag-jobs>", "acme")).toEqual([]);
+    expect(() => parsePersonio("<html>Not found</html>", "acme")).toThrow();
+  });
+});
+
+describe("breezy adapter", () => {
+  it("reads the public list with each job's own link", () => {
+    expect(
+      JOB_BOARD_ADAPTERS.breezy.parse([
+        {
+          id: "98323abf2296",
+          name: "QA Engineer",
+          url: "https://acme.breezy.hr/p/98323abf2296-qa-engineer",
+          published_date: "2026-10-15T14:37:22.684Z",
+          department: "Engineering",
+          location: { name: "Austin, TX", is_remote: true, country: { name: "United States", id: "US" } },
+        },
+      ]),
+    ).toEqual([
+      {
+        externalId: "98323abf2296",
+        title: "QA Engineer",
+        department: "Engineering",
+        location: "Austin, TX, United States; Remote",
+        url: "https://acme.breezy.hr/p/98323abf2296-qa-engineer",
+        description: null,
+        postedAt: new Date("2026-10-15T14:37:22.684Z"),
+      },
+    ]);
   });
 });
 

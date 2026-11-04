@@ -11,12 +11,18 @@ import { AppError } from "@/server/http/errors";
  */
 export const AI_MODEL_ID = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
-export function languageModel() {
+/**
+ * A smaller model for high-volume, simple checks (job-title triage). Groq gives every model its own
+ * daily allowance, so these don't use up the main model's quota (200,000 tokens a day on the free plan).
+ */
+export const FAST_AI_MODEL_ID = process.env.GROQ_FAST_MODEL || "openai/gpt-oss-20b";
+
+export function languageModel(kind: "main" | "fast" = "main") {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
     throw new AppError("AI_UNAVAILABLE", "AI analysis isn't configured. Add GROQ_API_KEY to the server environment.");
   }
-  return createGroq({ apiKey })(AI_MODEL_ID);
+  return createGroq({ apiKey })(kind === "fast" ? FAST_AI_MODEL_ID : AI_MODEL_ID);
 }
 
 /**

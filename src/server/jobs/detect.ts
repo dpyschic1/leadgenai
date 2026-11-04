@@ -31,7 +31,7 @@ export function candidateTokens(company: { name: string; domain: string | null }
     words.join("-"),
     words[0],
   ];
-  return [...new Set(candidates.filter((c): c is string => !!c && c.length >= 2))].slice(0, 4);
+  return [...new Set(candidates.filter((c): c is string => !!c && c.length >= 2))].slice(0, 3);
 }
 
 /**

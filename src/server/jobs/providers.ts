@@ -199,4 +199,112 @@ const workable: JobBoardAdapter = {
   },
 };
 
-export const JOB_BOARD_ADAPTERS: Record<JobBoardProvider, JobBoardAdapter> = { greenhouse, lever, ashby, workable };
+// --- SmartRecruiters: GET api.smartrecruiters.com/v1/companies/{id}/postings -------------------
+// Public Posting API. An unknown company answers 200 with no postings, so an empty board counts as
+// missing. The list has no descriptions (the AI title check runs on titles); the newest 100 are read.
+
+const smartRecruitersJob = z.object({
+  id: z.string(),
+  name: z.string(),
+  releasedDate: text,
+  company: z.object({ identifier: z.string() }),
+  location: z.object({ fullLocation: text, city: text, country: text, remote: z.boolean().nullish() }).nullish(),
+  department: z.object({ label: text }).nullish(),
+});
+
+const smartRecruiters: JobBoardAdapter = {
+  provider: "smartrecruiters",
+  endpoint: (token) => `https://api.smartrecruiters.com/v1/companies/${token}/postings?limit=100`,
+  probeEndpoint: (token) => `https://api.smartrecruiters.com/v1/companies/${token}/postings?limit=1`,
+  boardUrl: (token) => `https://careers.smartrecruiters.com/${token}`,
+  emptyMeansMissing: true,
+  parse: (body) =>
+    parseEach(z.object({ content: z.array(z.unknown()) }).parse(body).content, smartRecruitersJob, (job) => ({
+      externalId: job.id,
+      title: job.name.trim(),
+      department: clean(job.department?.label),
+      location: [clean(job.location?.fullLocation) ?? clean(job.location?.city), job.location?.remote ? "Remote" : null].filter(Boolean).join("; ") || null,
+      url: `https://jobs.smartrecruiters.com/${job.company.identifier}/${job.id}`,
+      description: null,
+      postedAt: toDate(job.releasedDate),
+    })),
+};
+
+// --- Personio: GET {slug}.jobs.personio.de/xml (XML feed) ---------------------------------------
+// The feed behind Personio's own careers pages. Only its fixed fields are read, so no XML library.
+
+const xmlTag = (block: string, tag: string) => {
+  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return match ? decodeEntities(match[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, "$1")).trim() || null : null;
+};
+
+/** Jobs from a Personio XML feed, linked to their page on the board. Pure. */
+export function parsePersonio(xml: string, token: string): NormalizedJob[] {
+  if (!/<workzag-jobs\s*\/?>/.test(xml)) throw new Error("Not a Personio jobs feed.");
+  return [...xml.matchAll(/<position>([\s\S]*?)<\/position>/g)].flatMap(([, block]) => {
+    const id = xmlTag(block, "id");
+    const title = xmlTag(block, "name");
+    if (!id || !title) return [];
+    const descriptions = [...block.matchAll(/<jobDescription>([\s\S]*?)<\/jobDescription>/g)]
+      .map(([, d]) => [xmlTag(d, "name"), htmlToText(xmlTag(d, "value") ?? "")].filter(Boolean).join("\n"))
+      .filter(Boolean);
+    return [
+      {
+        externalId: id,
+        title,
+        department: xmlTag(block, "department"),
+        location: xmlTag(block, "office"),
+        url: `https://${token}.jobs.personio.de/job/${id}`,
+        description: descriptions.join("\n\n") || null,
+        postedAt: toDate(xmlTag(block, "createdAt")),
+      },
+    ];
+  });
+}
+
+const personio: JobBoardAdapter = {
+  provider: "personio",
+  endpoint: (token) => `https://${token}.jobs.personio.de/xml?language=en`,
+  probeEndpoint: (token) => `https://${token}.jobs.personio.de/xml`,
+  boardUrl: (token) => `https://${token}.jobs.personio.de/`,
+  format: "xml",
+  // The token is needed for job links, so the fetcher passes it with the text.
+  parse: (body) => {
+    const { xml, token } = body as { xml: string; token: string };
+    return parsePersonio(xml, token);
+  },
+};
+
+// --- Breezy HR: GET {slug}.breezy.hr/json --------------------------------------------------------
+// The public list behind a Breezy careers page. No descriptions in the list; titles are judged.
+
+const breezyJob = z.object({
+  id: z.string(),
+  name: z.string(),
+  url: z.string(),
+  published_date: text,
+  department: text,
+  location: z.object({ name: text, is_remote: z.boolean().nullish(), country: z.object({ name: text }).nullish() }).nullish(),
+});
+
+const breezy: JobBoardAdapter = {
+  provider: "breezy",
+  endpoint: (token) => `https://${token}.breezy.hr/json`,
+  probeEndpoint: (token) => `https://${token}.breezy.hr/json`,
+  boardUrl: (token) => `https://${token}.breezy.hr/`,
+  parse: (body) =>
+    parseEach(z.array(z.unknown()).parse(body), breezyJob, (job) => ({
+      externalId: job.id,
+      title: job.name.trim(),
+      department: clean(job.department),
+      location:
+        [clean(job.location?.name) && `${job.location!.name}${job.location?.country?.name ? `, ${job.location.country.name}` : ""}`, job.location?.is_remote ? "Remote" : null]
+          .filter(Boolean)
+          .join("; ") || null,
+      url: job.url,
+      description: null,
+      postedAt: toDate(job.published_date),
+    })),
+};
+
+export const JOB_BOARD_ADAPTERS: Record<JobBoardProvider, JobBoardAdapter> = { greenhouse, lever, ashby, workable, smartrecruiters: smartRecruiters, personio, breezy };

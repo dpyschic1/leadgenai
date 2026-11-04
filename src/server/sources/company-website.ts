@@ -306,15 +306,18 @@ const BOARD_LINKS: [JobBoardProvider, RegExp][] = [
   // apply.workable.com/{account}/ (not /j/{job}, which names no account), or a legacy {account}.workable.com.
   ["workable", /apply\.workable\.com\/(?!j\/|api\/)([a-z0-9][a-z0-9-]*)/i],
   ["workable", /\/\/(?!(?:www|apply|jobs|help|resources|developers|blog|careers)\.)([a-z0-9][a-z0-9-]*)\.workable\.com/i],
+  ["smartrecruiters", /(?:jobs|careers)\.smartrecruiters\.com\/([A-Za-z0-9_-]+)/i],
+  ["personio", /\/\/(?!(?:www|api|app)\.)([a-z0-9][a-z0-9-]*)\.jobs\.personio\.(?:de|com)/i],
+  ["breezy", /\/\/(?!(?:www|app|api|help|marketing|blog)\.)([a-z0-9][a-z0-9-]*)\.breezy\.hr/i],
 ];
 
-/** A Greenhouse, Lever, Ashby or Workable board the site links to or embeds. */
+/** A job board (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Personio, Breezy) the site links to or embeds. */
 export function jobBoardFromHtml(html: string): { provider: JobBoardProvider; boardToken: string } | null {
   for (const [provider, pattern] of BOARD_LINKS) {
     const token = pattern.exec(html)?.[1];
     if (token && BOARD_TOKEN_PATTERN.test(token) && !/^(embed|api|v\d)$/i.test(token)) {
       // Workable account names are lowercase; the others keep the case the site used.
-      return { provider, boardToken: provider === "workable" ? token.toLowerCase() : token };
+      return { provider, boardToken: ["workable", "personio", "breezy"].includes(provider) ? token.toLowerCase() : token };
     }
   }
   return null;

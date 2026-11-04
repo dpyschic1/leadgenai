@@ -96,7 +96,7 @@ Nothing to set up: from **Services & ICP** (target industries and countries) the
      no online booking for dental, health and hospitality. These are recorded as low-intent
      "possible problems", with evidence, only for workspaces that sell a fix.
 3. **discovers job boards on its own.**
-   - Candidate Greenhouse, Lever, Ashby and Workable boards come from the **Common Crawl** archive index
+   - Candidate Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Personio and Breezy HR boards come from the **Common Crawl** archive index
      (plus boards found on websites). Each is **validated** against the provider's public API, and
      its jobs are cached once for all workspaces (`job_board_directory`, `board_jobs`).
    - Each workspace then judges the jobs in its own target countries with a cheap AI title check.
