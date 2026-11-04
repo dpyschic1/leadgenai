@@ -62,17 +62,48 @@ async function fetchHtml(url: string, timeoutMs?: number): Promise<{ url: string
   }
 }
 
-/** Finds the company's website from its name: the first candidate whose home page names it. */
-export async function findWebsite(company: { name: string; companyNumber: string | null; city: string | null }): Promise<{ domain: string; confidence: number } | null> {
+/** Contact, about and legal pages read per candidate site when its home page alone doesn't settle it. */
+const MAX_EVIDENCE_PAGES = 3;
+
+/**
+ * Finds the company's website from its name. Each existing candidate domain is read: parked and
+ * for-sale domains are skipped; a site whose home page names the company is checked further on its
+ * contact, about and legal pages, where UK companies show their number and registered address.
+ * Accepted only with that evidence (see `websiteMatchConfidence`).
+ */
+export async function findWebsite(company: {
+  name: string;
+  companyNumber: string | null;
+  city: string | null;
+  postcode?: string | null;
+}): Promise<{ domain: string; confidence: number } | null> {
   // Most guesses don't exist: a parallel DNS check rules them out at once, then only real sites
   // are fetched, a few at most, with a short timeout.
   const candidates = candidateDomains(company.name);
   const exists = await Promise.all(candidates.map(hostResolves));
-  for (const domain of candidates.filter((_, i) => exists[i]).slice(0, MAX_WEBSITE_GUESSES)) {
+  let checked = 0;
+  for (const domain of candidates.filter((_, i) => exists[i])) {
+    if (checked >= MAX_WEBSITE_GUESSES) break;
     const page = await fetchHtml(`https://${domain}/`, GUESS_TIMEOUT_MS);
-    if (!page) continue;
-    const confidence = websiteMatchConfidence(htmlToText(page.html), company);
-    if (confidence >= 70) return { domain: siteOf(new URL(page.url).hostname), confidence };
+    if (!page || isParkedPage(page.html)) continue;
+    checked++;
+    const site = siteOf(new URL(page.url).hostname);
+    let text = htmlToText(page.html);
+    let confidence = websiteMatchConfidence(text, company);
+    // It names the company but doesn't prove it yet: look where the proof usually is.
+    if (confidence > 0 && confidence < 85) {
+      const links = extractLinks(page.html, page.url).filter((l) => new URL(l.url).hostname.replace(/^www\./, "") === site);
+      const evidence = [
+        ...pickPages(links, site).filter((p) => p.kind === "contact" || p.kind === "about").map((p) => p.url),
+        ...links.filter((l) => LEGAL_PAGE.test(`${new URL(l.url).pathname} ${l.text}`.toLowerCase())).map((l) => l.url),
+      ];
+      for (const url of [...new Set(evidence)].slice(0, MAX_EVIDENCE_PAGES)) {
+        const more = await fetchHtml(url, GUESS_TIMEOUT_MS);
+        if (more) text += ` ${htmlToText(more.html)}`;
+      }
+      confidence = websiteMatchConfidence(text, company);
+    }
+    if (confidence >= 70) return { domain: site, confidence };
   }
   return null;
 }
@@ -186,22 +217,44 @@ export function candidateDomains(name: string): string[] {
 }
 
 /**
- * How sure we are that a website belongs to the company. UK companies must show their registered
- * number on their website, so finding it is near-certain. The name alone is weak (many businesses
- * share a phrase like "More Smiles"), so it only counts together with the company's town.
+ * How sure we are that a website belongs to the company, from the text of the pages read. UK
+ * companies must show their registered number on their website, so finding it is near-certain.
+ * The name alone is weak (many businesses share a phrase: "Largo Law" is also a Fife holiday park),
+ * so it counts only with the registered-office postcode (strong) or the town (enough). A site that
+ * shows a different company number is someone else's.
  */
-export function websiteMatchConfidence(pageText: string, company: { name: string; companyNumber: string | null; city?: string | null }): number {
+export function websiteMatchConfidence(
+  pageText: string,
+  company: { name: string; companyNumber: string | null; city?: string | null; postcode?: string | null },
+): number {
   const text = pageText.toLowerCase().replace(/\s+/g, " ");
   if (company.companyNumber) {
     const number = company.companyNumber.toLowerCase();
     const spaced = number.replace(/^(\w{2})(\w{3})(\w{3})$/, "$1 $2 $3");
     if (new RegExp(`\\b(${number}|${spaced})\\b`).test(text)) return 95;
+    // "Company number 12345678" naming another company.
+    if (/\bcompany (?:no\.?|number|registration(?: number)?|reg\.? no\.?)\s*:?\s*(?:sc|ni|oc)?\d{6,8}\b/.test(text)) return 0;
   }
   const words = nameWords(company.name);
   if (words.length === 0) return 0;
   if (!text.includes(words.join(" "))) return 0;
+  const postcode = company.postcode?.replace(/\s+/g, "").toLowerCase();
+  if (postcode && postcode.length >= 5 && text.replace(/\s+/g, "").includes(postcode)) return 85;
   return company.city && text.includes(company.city.toLowerCase()) ? 70 : 40;
 }
+
+/**
+ * A parked, for-sale or placeholder domain: no business lives there, so it is skipped without
+ * reading further. Pure.
+ */
+export function isParkedPage(html: string): boolean {
+  if (/window\.location\.href\s*=\s*["']\/lander|\b(sedoparking|parkingcrew|bodis\.com|above\.com\/|dan\.com|afternic|hugedomains|undeveloped\.com)\b/i.test(html)) return true;
+  const text = htmlToText(html).toLowerCase();
+  return /\b(this domain (?:name )?(?:is|may be) for sale|buy this domain|domain (?:is )?for sale|domain has (?:just )?been registered|parked (?:free|domain|page)|is parked\b|future home of|website coming soon|under construction)\b/.test(text) && text.length < 3000;
+}
+
+/** Pages where a UK business shows its registration details: legal notices, privacy, terms. */
+const LEGAL_PAGE = /\b(privacy|terms|legal|imprint|cookies?|disclaimer|company[- ]information)\b/;
 
 /** Same-site links on a page, absolute, without fragments. */
 export function extractLinks(html: string, baseUrl: string): { url: string; text: string }[] {

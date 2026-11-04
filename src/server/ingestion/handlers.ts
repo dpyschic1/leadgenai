@@ -71,6 +71,7 @@ async function loadCompany(actor: Actor, companyId: string) {
       industry: companies.industry,
       identity: companies.identityStatus,
       city: companyLocations.city,
+      postcode: companyLocations.postalCode,
     })
     .from(companies)
     .leftJoin(companyLocations, and(eq(companyLocations.companyId, companies.id), eq(companyLocations.type, "headquarters")))
@@ -424,8 +425,8 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
     let site: WebsiteEvidence | null = await websiteFromRegister(company.id);
     site ??= await candidateFromBoard(actor, company.id);
     if (!site) {
-      const found = await findWebsite({ name: company.name, companyNumber: company.companyNumber, city: company.city });
-      site = found ? { ...found, matchedBy: found.confidence >= 95 ? "company_number" : "name" } : null;
+      const found = await findWebsite({ name: company.name, companyNumber: company.companyNumber, city: company.city, postcode: company.postcode });
+      site = found ? { ...found, matchedBy: found.confidence >= 95 ? "company_number" : found.confidence >= 85 ? "registered_address" : "name" } : null;
     }
     if (site && (await confirmWebsite(actor, company, site))) domain = site.domain;
   }
@@ -433,7 +434,7 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
   return { followUps: domain ? [{ kind: "scan_website", entityId: company.id }] : [] };
 }
 
-type WebsiteEvidence = { domain: string; confidence: number; matchedBy: "company_number" | "name" | "job_board_link" | "regulator_listing" };
+type WebsiteEvidence = { domain: string; confidence: number; matchedBy: "company_number" | "registered_address" | "name" | "job_board_link" | "regulator_listing" };
 
 /** The provider's own site, from the websites its CQC locations list (see `providerWebsite`). */
 async function websiteFromRegister(companyId: string): Promise<WebsiteEvidence | null> {

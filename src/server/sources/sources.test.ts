@@ -35,6 +35,7 @@ import {
   phonesFrom,
   pickPages,
   websiteMatchConfidence,
+  isParkedPage,
 } from "./company-website";
 
 describe("robots.txt", () => {
@@ -150,6 +151,22 @@ describe("company websites", () => {
     // A shared phrase without the town isn't enough to claim the site.
     expect(websiteMatchConfidence("Welcome to Brightsmile Dental", { ...company, city: "Leeds" })).toBe(40);
     expect(websiteMatchConfidence("Bright smiles for everyone", company)).toBe(0);
+  });
+
+  it("accepts the name with the registered-office postcode, and rejects a site registered to someone else", () => {
+    const company = { name: "Worthy Care Services Ltd", companyNumber: "17053601", city: "Leeds", postcode: "LS14 6SX" };
+    expect(websiteMatchConfidence("Worthy Care Services, 3 Kentmere Ave, Leeds LS146SX", company)).toBe(85);
+    // Same name, another business: "Company No. 09876543" is not ours.
+    expect(websiteMatchConfidence("Worthy Care Services Ltd, Leeds. Company No. 09876543", company)).toBe(0);
+    // A namesake elsewhere (the Fife holiday park called Largo Law): no postcode, no town, not enough.
+    expect(websiteMatchConfidence("Largo Law | Caravans, Glamping & Holiday Houses in Fife KY8 5QG", { name: "Largo Law Limited", companyNumber: "SC880256", city: "Leven", postcode: "KY8 4NB" })).toBe(40);
+  });
+
+  it("recognises parked and for-sale domains", () => {
+    expect(isParkedPage(`<html><head><script>window.onload=function(){window.location.href="/lander"}</script></head></html>`)).toBe(true);
+    expect(isParkedPage("<h1>This domain is for sale!</h1><p>Make an offer.</p>")).toBe(true);
+    expect(isParkedPage(`<script src="https://www.sedoparking.com/js.js"></script>`)).toBe(true);
+    expect(isParkedPage("<h1>Worthy Care Services</h1><p>We offer the very best in care services.</p>")).toBe(false);
   });
 
   it("picks one page of each kind on the same site", () => {

@@ -29,7 +29,8 @@ const RECORD_LABELS: Record<string, string> = {
 /** Why the website was accepted as the company's (the evidence recorded with it). */
 const WEBSITE_MATCH: Record<string, string> = {
   company_number: "Shows the company number",
-  name: "Shows the company name",
+  registered_address: "Shows the name and registered-office postcode",
+  name: "Shows the company name and town",
   job_board_link: "Links to the company's job board",
   regulator_listing: "Listed for its practices on the CQC register",
 };
