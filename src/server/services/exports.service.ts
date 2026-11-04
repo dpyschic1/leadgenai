@@ -9,11 +9,9 @@ import {
   lists,
   opportunities,
   opportunitySignals,
-  opportunityTypes,
   people,
   savedOpportunities,
   services,
-  signalEvidence,
   signals,
 } from "@/db/schema";
 import { toCsv, type CsvValue } from "@/lib/csv";
@@ -21,35 +19,29 @@ import type { OpportunityExportQuery } from "@/lib/validation/opportunities";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { refreshStaleScores } from "@/server/scoring/rescore";
-import { companyContactFromOsm, companyEmail, companyPhone, feedFilter, priorityOrder } from "./opportunities.service";
+import { companyContactFromOsm, companyEmail, companyPhone, feedFilter, priorityOrder, signalEvidenceLink } from "./opportunities.service";
+import { STATUS_LABELS } from "@/lib/domain/opportunities";
 import { OSM_ATTRIBUTION, OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 
-/** Columns of the CSV export, in order: the PRD §17 field list, then status and matched service. */
+/**
+ * Columns of the CSV export, in order: what a salesperson works from, as on the Leads page. Who to
+ * talk to and how (the person's own phone and email first, else the company's line), why now and
+ * where it was found, and where it stands. Rows come in priority order; scores stay in the app.
+ */
 export const EXPORT_COLUMNS = [
-  "opportunity_id",
-  "company_name",
-  "domain",
-  "person_name",
-  "job_title",
-  "email",
+  "company",
+  "website",
+  "contact_name",
+  "contact_title",
   "phone",
-  "opportunity_type",
-  "problem",
-  "why_now",
-  "intent_score",
-  "icp_score",
-  "identity_confidence",
-  "service_fit",
-  "opportunity_score",
-  "latest_signal_date",
-  "source_url",
-  "status",
+  "email",
+  // Named contact / Company line / No contact yet, with the OpenStreetMap credit (ODbL) when it applies.
+  "contact_type",
   "matched_service",
-  // The company's own published line, for when no person (or no personal contact) is known.
-  "company_phone",
-  "company_email",
-  // ODbL: a company phone/email taken from OpenStreetMap is credited on its own row.
-  "company_contact_source",
+  "signal",
+  "signal_link",
+  "status",
+  "latest_signal_date",
 ] as const;
 
 type ExportRow = Record<(typeof EXPORT_COLUMNS)[number], CsvValue>;
@@ -69,38 +61,23 @@ const contact = (type: "email" | "phone") => sql<string | null>`(
 )`;
 
 const exportColumns = {
-  id: opportunities.id,
   companyName: companies.canonicalName,
   domain: companies.domain,
   personName: sql<string | null>`case when ${suppressed} then null else ${people.name} end`,
   jobTitle: sql<string | null>`case when ${suppressed} then null else ${companyPeople.title} end`,
   email: sql<string | null>`case when ${suppressed} then null else ${contact("email")} end`,
   phone: sql<string | null>`case when ${suppressed} then null else ${contact("phone")} end`,
-  type: opportunityTypes.name,
-  problem: opportunities.problem,
-  /** The supporting signals' summaries, newest first. */
-  whyNow: sql<string | null>`(
-    select string_agg(${signals.summary}, ' | ' order by ${signals.occurredAt} desc)
+  /** Why now: the primary signal's summary, else the newest supporting one's. */
+  signal: sql<string | null>`(
+    select ${signals.summary}
     from ${opportunitySignals} join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
     where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
-  )`,
-  /** Unscored opportunities (no positive signal left) export blank scores, not zeros. */
-  scored: sql<boolean>`${opportunities.scoreFactors} ? 'intent'`,
-  intentScore: opportunities.intentScore,
-  icpScore: opportunities.icpScore,
-  identityConfidence: opportunities.identityConfidence,
-  serviceFit: opportunities.serviceFit,
-  opportunityScore: opportunities.opportunityScore,
-  latestSignalAt: opportunities.latestSignalAt,
-  /** Evidence link of the primary signal, else of the newest supporting one. */
-  sourceUrl: sql<string | null>`(
-    select ${signalEvidence.sourceUrl}
-    from ${opportunitySignals} join ${signalEvidence} on ${signalEvidence.signalId} = ${opportunitySignals.signalId}
-    where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
-      and ${signalEvidence.sourceUrl} is not null
-    order by (${opportunitySignals.role} = 'primary') desc, ${signalEvidence.capturedAt} desc
+    order by (${opportunitySignals.role} = 'primary') desc, ${signals.occurredAt} desc
     limit 1
   )`,
+  latestSignalAt: opportunities.latestSignalAt,
+  /** Evidence link of the primary signal, else of the newest supporting one. */
+  sourceUrl: sql<string | null>`(${signalEvidenceLink}) ->> 'url'`,
   status: opportunities.status,
   serviceName: services.name,
   companyPhone,
@@ -121,7 +98,6 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
     .select(exportColumns)
     .from(opportunities)
     .innerJoin(companies, eq(companies.id, opportunities.companyId))
-    .innerJoin(opportunityTypes, eq(opportunityTypes.slug, opportunities.type))
     .leftJoin(services, eq(services.id, opportunities.serviceId))
     .leftJoin(people, eq(people.id, opportunities.primaryPersonId))
     .leftJoin(
@@ -150,30 +126,31 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
   const csv = toCsv(
     EXPORT_COLUMNS,
     rows.map(
-      (row): ExportRow => ({
-        opportunity_id: row.id,
-        company_name: row.companyName,
-        domain: row.domain,
-        person_name: row.personName,
-        job_title: row.jobTitle,
-        email: row.email,
-        phone: row.phone,
-        opportunity_type: row.type,
-        problem: row.problem,
-        why_now: row.whyNow,
-        intent_score: row.scored ? row.intentScore : null,
-        icp_score: row.scored ? row.icpScore : null,
-        identity_confidence: row.scored ? row.identityConfidence : null,
-        service_fit: row.scored ? row.serviceFit : null,
-        opportunity_score: row.scored ? row.opportunityScore : null,
-        latest_signal_date: row.latestSignalAt?.toISOString().slice(0, 10),
-        source_url: row.sourceUrl,
-        status: row.status,
-        matched_service: row.serviceName,
-        company_phone: row.companyPhone,
-        company_email: row.companyEmail,
-        company_contact_source: row.companyContactFromOsm ? `OpenStreetMap (${OSM_ATTRIBUTION}, ${OSM_COPYRIGHT_URL}); not verified` : null,
-      }),
+      (row): ExportRow => {
+        // The person's own line first, else the company's, as on the Leads page.
+        const phone = row.phone ?? row.companyPhone;
+        const email = row.email ?? row.companyEmail;
+        const named = Boolean(row.phone || row.email);
+        const companyLine = (!row.phone && row.companyPhone) || (!row.email && row.companyEmail);
+        const contactType = named ? "Named contact" : phone || email ? "Company line" : "No contact yet";
+        return {
+          company: row.companyName,
+          website: row.domain,
+          contact_name: row.personName,
+          contact_title: row.jobTitle,
+          phone,
+          email,
+          contact_type:
+            companyLine && row.companyContactFromOsm
+              ? `${contactType}; company line from OpenStreetMap (${OSM_ATTRIBUTION}, ${OSM_COPYRIGHT_URL}), not verified`
+              : contactType,
+          matched_service: row.serviceName,
+          signal: row.signal,
+          signal_link: row.sourceUrl,
+          status: STATUS_LABELS[row.status],
+          latest_signal_date: row.latestSignalAt?.toISOString().slice(0, 10),
+        };
+      },
     ),
   );
 

@@ -2,7 +2,7 @@
 import type { memberRole, signalRole } from "@/db/schema";
 import type { FeedbackVerdict } from "@/lib/domain/feedback";
 import type { CompanyIdentity, SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
-import type { OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
+import type { LeadTab, OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
 import type {
   CompanyRelationship,
   ContactVerification,
@@ -275,7 +275,8 @@ export type OpportunitySummary = {
   /** YYYY-MM-DD of the newest supporting signal. */
   latestSignalOn: string | null;
   signalCount: number;
-  contact: { id: string; name: string; title: string | null } | null;
+  /** The suggested person, with their own email/phone when known (never for a suppressed person). */
+  contact: { id: string; name: string; title: string | null; email: string | null; phone: string | null } | null;
   /** The company's own published phone and email (switchboard, info@, a practice's phone): a way in even with no named person. */
   companyContact: {
     phone: string | null;
@@ -283,6 +284,8 @@ export type OpportunitySummary = {
     /** The phone or email shown is from OpenStreetMap (the company has none of its own): credit it (ODbL). */
     fromOpenStreetMap: boolean;
   };
+  /** Where its evidence can be read (the primary or newest linked signal's source), with that signal's summary. */
+  evidence: { url: string; summary: string } | null;
   /** Who on the team judged it and how, newest first; the card shows these as "1 good fit" / "2 flagged". */
   feedbackVotes: FeedbackVote[];
   updatedAt: string;
@@ -293,6 +296,9 @@ export type OpportunityList = Page<OpportunitySummary> & {
   /** Totals per status tab, independent of the selected tab. */
   counts: Record<StatusGroup, number>;
 };
+
+/** One page of the Leads page; `total` is the selected tab's count. */
+export type LeadList = Page<OpportunitySummary> & { counts: Record<LeadTab, number> };
 
 export type CompanyList = Page<CompanySummary>;
 export type ServiceList = Page<Service>;

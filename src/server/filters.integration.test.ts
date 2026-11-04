@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { users, workspaces } from "@/db/schema";
-import { companySchema } from "@/lib/validation/companies";
-import { opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
+import { companyContactPoints, users, workspaces } from "@/db/schema";
+import { companySchema, personSchema } from "@/lib/validation/companies";
+import { leadListQuerySchema, opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
 import { serviceSchema } from "@/lib/validation/services";
 import { signalSchema } from "@/lib/validation/signals";
 import type { AuthContext } from "@/server/auth/session";
@@ -12,7 +12,8 @@ import { rescoreCompany } from "@/server/scoring/rescore";
 import { registerOwner } from "@/server/services/auth.service";
 import { createCompany, listCompanies } from "@/server/services/companies.service";
 import { exportOpportunities } from "@/server/services/exports.service";
-import { listOpportunities } from "@/server/services/opportunities.service";
+import { listLeads, listOpportunities, updateOpportunity } from "@/server/services/opportunities.service";
+import { addPerson } from "@/server/services/people.service";
 import { createService, listServices } from "@/server/services/services.service";
 import { createSignal } from "@/server/services/signals.service";
 
@@ -202,5 +203,89 @@ describe("pagination", () => {
 
   it("rejects a page size over the limit", () => {
     expect(() => opportunityListQuerySchema.parse({ pageSize: "500" })).toThrow();
+  });
+});
+
+describe("contacts and the Leads page", () => {
+  const ids = new Map<string, string>();
+
+  beforeAll(async () => {
+    for (const company of (await listCompanies(auth, undefined, { page: 1, pageSize: 100 })).items) ids.set(company.name, company.id);
+    // Northbridge: a named person with an email. Ledgerline: only the company's own line. Medisync: nothing.
+    await addPerson(
+      auth,
+      ids.get("Northbridge Legal")!,
+      personSchema.parse({
+        name: "James Whitaker",
+        title: "Managing Partner",
+        seniority: "owner",
+        jobFunction: null,
+        relationship: "employee",
+        email: `james-${run}@northbridge.example`,
+        phone: null,
+        professionalUrl: null,
+        location: null,
+        identity: "likely",
+        emailVerification: "unknown",
+      }),
+    );
+    await db.insert(companyContactPoints).values({ companyId: ids.get("Ledgerline")!, type: "phone", value: "0113 496 0000", sourceSlug: "company_website" });
+    // Medisync has no contact, but its signal links to where it was found.
+    await createSignal(
+      auth,
+      ids.get("Medisync Health")!,
+      signalSchema.parse({
+        signalType: "engineering_hiring",
+        intentLevel: "high",
+        urgency: "medium",
+        serviceCategories: ["staff_augmentation"],
+        summary: "Hiring three React engineers.",
+        personId: null,
+        occurredOn: daysAgo(1),
+        sourceUrl: `https://jobs.example/medisync-${run}`,
+        excerpt: null,
+        evidenceLabel: "observed",
+        source: "manual",
+        confidence: null,
+      }),
+    );
+    for (const id of ids.values()) await rescoreCompany(auth.workspaceId, id);
+  });
+
+  const leads = (query: Record<string, unknown>) => listLeads(auth, leadListQuerySchema.parse(query));
+
+  it("gives a lead with no contact the website and the page its signal was found on", async () => {
+    const [lead] = (await leads({ tab: "none" })).items;
+    expect(lead.company).toMatchObject({ name: "Medisync Health", domain: `medisynchealth-${run}.example` });
+    expect(lead.evidence).toEqual({ url: `https://jobs.example/medisync-${run}`, summary: "Hiring three React engineers." });
+  });
+
+  it("sorts every active lead by how it can be reached, with a count per tab", async () => {
+    const all = await leads({});
+    expect(all.counts).toEqual({ all: 3, person: 1, company: 1, none: 1 });
+    expect(all.total).toBe(3);
+
+    const [named] = (await leads({ tab: "person" })).items;
+    expect(named.company.name).toBe("Northbridge Legal");
+    expect(named.contact).toMatchObject({ name: "James Whitaker", email: `james-${run}@northbridge.example`, phone: null });
+    const [line] = (await leads({ tab: "company" })).items;
+    expect(line).toMatchObject({ company: { name: "Ledgerline" }, companyContact: { phone: "0113 496 0000" } });
+    expect((await leads({ tab: "none" })).items.map((i) => i.company.name)).toEqual(["Medisync Health"]);
+    // Search narrows every tab's count.
+    expect((await leads({ q: "ledger" })).counts).toEqual({ all: 1, person: 0, company: 1, none: 0 });
+  });
+
+  it("filters the feed and the export to leads someone can be contacted at", async () => {
+    expect(await feed({ contact: "any" })).toEqual(["Ledgerline", "Northbridge Legal"]);
+    expect(await feed({ contact: "none" })).toEqual(["Medisync Health"]);
+    const { count } = await exportOpportunities(auth, opportunityExportQuerySchema.parse({ group: "open", contact: "any" }));
+    expect(count).toBe(2);
+  });
+
+  it("leaves won and closed leads off the Leads page", async () => {
+    const { items } = await leads({ tab: "none" });
+    await updateOpportunity(auth, items[0].id, { status: "won" });
+    expect((await leads({})).counts.all).toBe(2);
+    await updateOpportunity(auth, items[0].id, { status: "new" });
   });
 });

@@ -3,6 +3,7 @@
 import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { activeFilterCount, useFilterOptions, type ListFilterKey } from "@/hooks/use-filter-options";
+import { CONTACT_REACH_LABELS } from "@/lib/domain/opportunities";
 import { EMPTY_FILTERS, type OpportunityFilters } from "@/lib/validation/opportunities";
 
 const LIST_LABELS: Record<ListFilterKey, string> = {
@@ -44,6 +45,10 @@ export function ActiveFilters({
       label: filters.withinDays === 1 ? "Signal today" : `Signal in last ${filters.withinDays} days`,
       remove: (f) => ({ ...f, withinDays: null }),
     });
+  }
+
+  if (filters.contact !== null) {
+    chips.push({ key: "contact", label: CONTACT_REACH_LABELS[filters.contact], remove: (f) => ({ ...f, contact: null }) });
   }
 
   return (

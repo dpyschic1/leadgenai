@@ -460,7 +460,10 @@ describe("CQC providers and their practices", () => {
       { type: "phone", value: "01134960000", label: "Smiles Leeds", source: "cqc", url: `smiles-leeds-${run}.example` },
     ]);
     const { csv } = await exportOpportunities(owner, opportunityExportQuerySchema.parse({ group: "open", q: `Smiles Group ${run}` }));
-    expect(csv.split(/\r?\n/)[0]).toContain("company_phone,company_email");
+    // Only what a salesperson works from, as on the Leads page.
+    // (The file starts with a byte-order mark, so Excel reads it as UTF-8.)
+    expect(csv.replace(/^﻿/, "").split(/\r?\n/)[0]).toBe("company,website,contact_name,contact_title,phone,email,contact_type,matched_service,signal,signal_link,status,latest_signal_date");
+    expect(csv).toContain("Company line");
     expect(csv).toContain("01134960000");
     vi.mocked(loadDirectory).mockResolvedValue([]);
   });

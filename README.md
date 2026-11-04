@@ -148,7 +148,7 @@ company's **Sources** card. Adapters live in `src/server/sources/`, the job queu
   A place two companies could claim links to neither. Links are rechecked on every run.
 - *Shown after the company's own contacts,* as "Published on OpenStreetMap, not verified by us"
   with "© OpenStreetMap contributors" linked to openstreetmap.org/copyright: on the card, the
-  opportunity page, the Sources card, and a `company_contact_source` column in CSV exports.
+  opportunity page, the Sources card, and in the `contact_type` column of CSV exports.
 - *Licence (ODbL 1.0):* OSM data stays in `osm_places` and `osm_matches` and is never copied into
   our company rows, so the OSM-derived database stays separate from ours. This section and
   `osm.ts` are the method of making it, which ODbL 4.6 asks us to offer. Have the design reviewed

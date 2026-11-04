@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { COUNTRY_CODES } from "@/lib/countries";
-import { OPPORTUNITY_STATUSES, STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
+import { CONTACT_REACH, LEAD_TABS, OPPORTUNITY_STATUSES, STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
 import { paginationFields } from "./pagination";
 
 /** Shared by the opportunity pages, the AI search and the route handlers. */
@@ -55,6 +55,8 @@ export const opportunityFiltersSchema = z.object({
   minScore: optionalInt(0, 100),
   /** Latest supporting signal within this many days. */
   withinDays: optionalInt(1, 365),
+  /** How the lead can be reached (see `CONTACT_REACH`); missing means any. */
+  contact: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(CONTACT_REACH).nullable()).default(null),
 });
 
 export type OpportunityFilters = z.output<typeof opportunityFiltersSchema>;
@@ -69,6 +71,7 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   countries: [],
   minScore: null,
   withinDays: null,
+  contact: null,
 };
 
 const groupField = { group: z.enum(Object.keys(STATUS_GROUPS) as [StatusGroup, ...StatusGroup[]]).default("open") };
@@ -108,3 +111,11 @@ export type OpportunityExportQuery = z.output<typeof opportunityExportQuerySchem
 export type InterpretSearchInput = z.infer<typeof interpretSearchSchema>;
 export type UpdateOpportunityInput = z.input<typeof updateOpportunitySchema>;
 export type UpdateOpportunityValues = z.output<typeof updateOpportunitySchema>;
+
+/** One page of the Leads page: a tab, a search, a page. */
+export const leadListQuerySchema = z.object({
+  q: z.string().trim().max(200).default(""),
+  tab: z.enum(LEAD_TABS).default("all"),
+  ...paginationFields,
+});
+export type LeadListQuery = z.output<typeof leadListQuerySchema>;

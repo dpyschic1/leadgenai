@@ -3,7 +3,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { opportunitiesApi } from "@/lib/api/opportunities";
 import type { OpportunityDetail } from "@/lib/api/types";
-import type { StatusGroup } from "@/lib/domain/opportunities";
+import type { LeadTab, StatusGroup } from "@/lib/domain/opportunities";
 import type { FeedbackInput } from "@/lib/validation/feedback";
 import { EMPTY_FILTERS, type OpportunityFilters, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { FIRST_PAGE, type Pagination } from "@/lib/validation/pagination";
@@ -13,6 +13,15 @@ export function useOpportunities(group: StatusGroup, filters: OpportunityFilters
   return useQuery({
     queryKey: queryKeys.opportunityList(group, filters, page),
     queryFn: ({ signal }) => opportunitiesApi.list(group, filters, page, signal),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** One tab and page of the Leads page. */
+export function useLeads(tab: LeadTab, q: string, page: Pagination) {
+  return useQuery({
+    queryKey: queryKeys.leads(tab, q, page),
+    queryFn: ({ signal }) => opportunitiesApi.leads(tab, q, page, signal),
     placeholderData: keepPreviousData,
   });
 }

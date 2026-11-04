@@ -25,6 +25,8 @@ export const queryKeys = {
   /** Prefix of every opportunity query; invalidate it after anything that changes scores. */
   opportunities: ["opportunities"] as const,
   opportunityList: (group: string, filters: OpportunityFilters, page: Pagination) => ["opportunities", "list", group, filters, page] as const,
+  /** Under "opportunities", so anything that refreshes opportunities refreshes the Leads page too. */
+  leads: (tab: string, q: string, page: Pagination) => ["opportunities", "leads", tab, q, page] as const,
   opportunity: (id: string) => ["opportunities", "detail", id] as const,
   /** The saved lists with their counts. */
   lists: ["lists"] as const,

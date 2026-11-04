@@ -41,6 +41,7 @@ export function activeFilterCount(filters: OpportunityFilters): number {
   return (
     lists.filter((key) => filters[key].length > 0).length +
     (filters.minScore === null ? 0 : 1) +
-    (filters.withinDays === null ? 0 : 1)
+    (filters.withinDays === null ? 0 : 1) +
+    (filters.contact === null ? 0 : 1)
   );
 }

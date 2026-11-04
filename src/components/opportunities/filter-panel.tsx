@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { activeFilterCount, useFilterOptions, type ListFilterKey } from "@/hooks/use-filter-options";
+import { CONTACT_REACH, CONTACT_REACH_LABELS, type ContactReach } from "@/lib/domain/opportunities";
 import { EMPTY_FILTERS, type OpportunityFilters } from "@/lib/validation/opportunities";
 
 export const MIN_SCORE_CHOICES = [50, 60, 70, 80, 90] as const;
@@ -93,6 +94,22 @@ export function FilterPanel({
               </Group>
             </div>
           </div>
+
+          <Group label="Contact">
+            <Select value={filters.contact ?? ANY} onValueChange={(next) => onChange({ ...filters, contact: next === ANY ? null : (next as ContactReach) })}>
+              <SelectTrigger aria-label="How the lead can be reached" className="h-10! w-full sm:w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Any</SelectItem>
+                {CONTACT_REACH.map((reach) => (
+                  <SelectItem key={reach} value={reach}>
+                    {CONTACT_REACH_LABELS[reach]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Group>
 
           {options.services.length > 0 && (
             <Group label="Matches your service">

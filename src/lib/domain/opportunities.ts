@@ -39,3 +39,25 @@ export const STATUS_GROUPS = {
 } as const satisfies Record<string, readonly OpportunityStatus[]>;
 
 export type StatusGroup = keyof typeof STATUS_GROUPS;
+
+/**
+ * How a lead can be reached, by what the system holds for it:
+ * - `person`: the suggested person has their own email or phone
+ * - `company`: only the company's own line (switchboard, info@, a practice's phone)
+ * - `none`: no way in yet
+ * `any` (person or company) is the "has contact" filter.
+ */
+export const CONTACT_REACH = ["any", "person", "company", "none"] as const;
+export type ContactReach = (typeof CONTACT_REACH)[number];
+
+export const CONTACT_REACH_LABELS: Record<ContactReach, string> = {
+  any: "Has contact",
+  person: "Named contact",
+  company: "Company line only",
+  none: "No contact yet",
+};
+
+/** The Leads page: every lead still being worked (new or in progress), by how it can be reached. */
+export const LEAD_TABS = ["all", "person", "company", "none"] as const;
+export type LeadTab = (typeof LEAD_TABS)[number];
+export const LEAD_STATUSES = [...STATUS_GROUPS.open, ...STATUS_GROUPS.inProgress];

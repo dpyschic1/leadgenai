@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { SearchIcon, TargetIcon } from "lucide-react";
+import { PhoneIcon, SearchIcon, TargetIcon } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Pagination, usePage } from "@/components/layout/pagination";
 import { Button } from "@/components/ui/button";
@@ -113,6 +113,16 @@ export function OpportunitiesView() {
                   className="h-9 bg-card pl-9"
                 />
               </div>
+              {/* The one filter a caller reaches for most: only leads someone can be contacted at. */}
+              <Button
+                variant="outline"
+                aria-pressed={filters.contact === "any"}
+                onClick={() => setFilters({ ...filters, contact: filters.contact === "any" ? null : "any" })}
+                className={cn("h-9 shrink-0 bg-card", filters.contact === "any" && "border-primary/40 bg-signal-tint text-[var(--signal-deep)]")}
+              >
+                <PhoneIcon />
+                Has contact
+              </Button>
               <FilterPanel filters={filters} onChange={setFilters} />
             </div>
           </div>

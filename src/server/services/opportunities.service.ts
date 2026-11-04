@@ -7,6 +7,7 @@ import {
   companyContactPoints,
   companyLocations,
   companyPeople,
+  contactPoints,
   opportunities,
   opportunityFeedback,
   opportunitySignals,
@@ -14,15 +15,16 @@ import {
   osmPlaces,
   people,
   savedOpportunities,
+  signalEvidence,
   services,
   signals,
   signalTypes,
   users,
 } from "@/db/schema";
-import type { CompanyContact, FeedbackVote, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
-import { STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
+import type { CompanyContact, FeedbackVote, LeadList, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
+import { LEAD_STATUSES, LEAD_TABS, STATUS_GROUPS, type ContactReach, type LeadTab, type StatusGroup } from "@/lib/domain/opportunities";
 import type { SourceSlug } from "@/lib/domain/sources";
-import type { OpportunityFilters, OpportunityListQuery, UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import { EMPTY_FILTERS, type LeadListQuery, type OpportunityFilters, type OpportunityListQuery, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { offsetOf } from "@/lib/validation/pagination";
 import type { ScoreFactor } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
@@ -66,6 +68,49 @@ const ownEmail = sql`(select ${companyContactPoints.value} from ${companyContact
 /** The company's published email (info@, reception@): its own first, OpenStreetMap's only when it has none. */
 export const companyEmail = sql<string | null>`coalesce(${ownEmail}, ${osmContact("email")})`;
 
+/**
+ * The suggested person's own email or phone: primary first, never one known to be invalid, and
+ * never for a suppressed person (SRS SEC-007).
+ */
+const personContact = (type: "email" | "phone") => sql<string | null>`(
+    select cp.value from ${contactPoints} cp join ${people} p on p.id = cp.person_id
+    where cp.person_id = ${opportunities.primaryPersonId} and cp.type = ${type} and cp.verification <> 'invalid'
+      and p.identity_status <> 'suppressed'
+    order by cp.is_primary desc, cp.created_at limit 1)`;
+export const personEmail = personContact("email");
+export const personPhone = personContact("phone");
+
+/** How the lead can be reached (`CONTACT_REACH`): through its person, only its company line, or not yet. */
+const reachesPerson = sql`(${personEmail} is not null or ${personPhone} is not null)`;
+const reachesCompany = sql`(${companyPhone} is not null or ${companyEmail} is not null)`;
+export function contactReach(reach: ContactReach): SQL {
+  switch (reach) {
+    case "any":
+      return sql`(${reachesPerson} or ${reachesCompany})`;
+    case "person":
+      return reachesPerson;
+    case "company":
+      return sql`(not ${reachesPerson} and ${reachesCompany})`;
+    case "none":
+      return sql`(not ${reachesPerson} and not ${reachesCompany})`;
+  }
+}
+
+/**
+ * Where the opportunity's evidence can be read: the source link of its primary signal, else of
+ * its newest supporting one that has a link (a job posting, a tender, a register entry, a news
+ * page), with that signal's summary. Null when no signal links anywhere.
+ */
+export const signalEvidenceLink = sql<{ url: string; summary: string } | null>`(
+    select json_build_object('url', ${signalEvidence.sourceUrl}, 'summary', ${signals.summary})
+    from ${opportunitySignals}
+    join ${signalEvidence} on ${signalEvidence.signalId} = ${opportunitySignals.signalId}
+    join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+    where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+      and ${signalEvidence.sourceUrl} is not null
+    order by (${opportunitySignals.role} = 'primary') desc, ${signalEvidence.capturedAt} desc
+    limit 1)`;
+
 /** True when the phone or email shown comes from OpenStreetMap, which must then be credited (ODbL). */
 export const companyContactFromOsm = sql<boolean>`((${ownPhone}) is null and ${osmContact("phone")} is not null)
     or ((${ownEmail}) is null and ${osmContact("email")} is not null)`;
@@ -81,6 +126,9 @@ const summaryColumns = {
   companyPhone,
   companyEmail,
   companyContactFromOsm,
+  personEmail,
+  personPhone,
+  signalEvidenceLink,
   feedbackVotes: sql<FeedbackVote[]>`(
     select coalesce(json_agg(json_build_object('name', coalesce(${users.name}, ${users.email}, 'A former teammate'), 'verdict', ${opportunityFeedback.verdict}) order by ${opportunityFeedback.updatedAt} desc), '[]')
     from ${opportunityFeedback} left join ${users} on ${users.id} = ${opportunityFeedback.userId}
@@ -98,6 +146,9 @@ export type SummaryRow = {
   companyPhone: string | null;
   companyEmail: string | null;
   companyContactFromOsm: boolean;
+  personEmail: string | null;
+  personPhone: string | null;
+  signalEvidenceLink: { url: string; summary: string } | null;
   signalCount: number;
   feedbackVotes: FeedbackVote[];
 };
@@ -145,6 +196,32 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
 
   // The tab counts use the same filters, so the selected tab's count is this list's total.
   return { items: rows.map(toSummary), counts, total: counts[query.group], page, pageSize };
+}
+
+/**
+ * The Leads page: every lead still being worked (new or in progress), in priority order, one tab
+ * per way it can be reached. Each tab's count follows the search, so every tab says what it holds.
+ */
+export async function listLeads(auth: AuthContext, query: LeadListQuery): Promise<LeadList> {
+  await refreshStaleScores(auth.workspaceId);
+  const { page, pageSize } = query;
+  const base = and(matchesFilters(auth.workspaceId, { ...EMPTY_FILTERS, q: query.q }), inArray(opportunities.status, LEAD_STATUSES));
+  const tabFilter = (tab: LeadTab) => (tab === "all" ? undefined : contactReach(tab));
+
+  const [rows, [countRow]] = await Promise.all([
+    summaryQuery().where(and(base, tabFilter(query.tab))).orderBy(...priorityOrder()).limit(pageSize).offset(offsetOf({ page, pageSize })),
+    db
+      .select(
+        Object.fromEntries(
+          LEAD_TABS.map((tab) => [tab, tab === "all" ? sql<number>`count(*)::int` : sql<number>`(count(*) filter (where ${contactReach(tab)}))::int`]),
+        ) as Record<LeadTab, SQL<number>>,
+      )
+      .from(opportunities)
+      .innerJoin(companies, eq(companies.id, opportunities.companyId))
+      .where(base),
+  ]);
+  const counts = countRow as Record<LeadTab, number>;
+  return { items: rows.map(toSummary), counts, total: counts[query.tab], page, pageSize };
 }
 
 /** Feed order: highest priority first, unscored last, then freshest evidence, then by name (id breaks ties, so pages never overlap). */
@@ -195,6 +272,7 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
     filters.withinDays === null
       ? undefined
       : gte(opportunities.latestSignalAt, sql`now() - make_interval(days => ${filters.withinDays})`),
+    filters.contact === null ? undefined : contactReach(filters.contact),
   );
 }
 
@@ -353,9 +431,10 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
     signalCount: row.signalCount,
     contact:
       opportunity.primaryPersonId && row.contactName
-        ? { id: opportunity.primaryPersonId, name: row.contactName, title: row.contactTitle }
+        ? { id: opportunity.primaryPersonId, name: row.contactName, title: row.contactTitle, email: row.personEmail, phone: row.personPhone }
         : null,
     companyContact: { phone: row.companyPhone, email: row.companyEmail, fromOpenStreetMap: Boolean(row.companyContactFromOsm) },
+    evidence: row.signalEvidenceLink,
     feedbackVotes: row.feedbackVotes,
     updatedAt: opportunity.updatedAt.toISOString(),
   };
