@@ -148,7 +148,7 @@ async function discoverCompanies({ actor }: JobContext): Promise<JobResult> {
   for (const company of found) {
     const result = await db.transaction(async (tx) => {
       const resolved = await resolveCompany(tx, actor, company);
-      const formation = formationSignal({ name: company.name, foundedOn: company.foundedOn, registerUrl: company.record.url }, icp.categories);
+      const formation = formationSignal({ name: company.name, foundedOn: company.foundedOn, registerUrl: company.record.url, industry: company.industry }, icp.categories);
       const signal = formation ? await insertDetectedSignal(tx, actor, resolved.companyId, formation, resolved.recordId) : null;
       return { ...resolved, signalCreated: signal?.created ?? false };
     });
@@ -341,7 +341,7 @@ async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
       const location = toNpiLocation(org);
       if (location) await saveSourceLocations(tx, resolved.companyId, "us_npi", [location], "US");
       await addFoundPeople(tx, actor, resolved.companyId, toNpiPeople(org), "us_npi");
-      const formation = formationSignal({ name: found.name, foundedOn: found.foundedOn, registerUrl: found.record.url, register: "with the US NPI Registry" }, icp.categories);
+      const formation = formationSignal({ name: found.name, foundedOn: found.foundedOn, registerUrl: found.record.url, register: "with the US NPI Registry (CMS)", industry }, icp.categories);
       const signal = formation ? await insertDetectedSignal(tx, actor, resolved.companyId, formation, resolved.recordId) : null;
       return { ...resolved, signalCreated: signal?.created ?? false };
     });

@@ -80,13 +80,25 @@ export function newLocationSignal(
   };
 }
 
+/** What a newly registered business plausibly needs first; software only for a software or IT business. */
+const NEW_BUSINESS_NEEDS = ["web_development", "branding_design", "seo"];
+const NEW_TECH_BUSINESS_NEEDS = ["mvp_development", "software_development", "ui_ux_design"];
+
+/** The services a newly registered company might need, among those the workspace sells. Pure. */
+export function newBusinessNeeds(industry: string | null, sold: string[]): string[] {
+  const needs = [...NEW_BUSINESS_NEEDS, ...(industry === "saas" || industry === "it_services" ? NEW_TECH_BUSINESS_NEEDS : [])];
+  return sold.filter((category) => needs.includes(category));
+}
+
 /**
- * A newly formed company (Startup / MVP workflow): stated by the register itself, so it is
- * `provider`-sourced and observed. Low intent on its own; website, hiring or funding signals
- * corroborate it. Null for companies older than a year.
+ * A company registered within the last year, exactly as the register states it ("registered at
+ * Companies House on 12 October 2026"): a fact about the company, recorded as context. It doesn't
+ * say the company needs anything, so on its own it never makes an opportunity (see
+ * `CONTEXT_SIGNAL_TYPES` in the scoring engine); with real evidence it adds that the company is new.
+ * Null for older companies, or when the workspace sells nothing a new business plausibly needs.
  */
 export function formationSignal(
-  company: { name: string; foundedOn: string | null; registerUrl: string | null; register?: string },
+  company: { name: string; foundedOn: string | null; registerUrl: string | null; register?: string; industry?: string | null },
   serviceCategories: string[],
   now = new Date(),
 ): DetectedSignalValues | null {
@@ -94,13 +106,15 @@ export function formationSignal(
   const formed = new Date(`${company.foundedOn}T12:00:00Z`);
   const age = (now.getTime() - formed.getTime()) / DAY_MS;
   if (Number.isNaN(age) || age < 0 || age > NEW_COMPANY_DAYS) return null;
+  const categories = newBusinessNeeds(company.industry ?? null, serviceCategories);
+  if (categories.length === 0) return null;
   const date = formed.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
   return {
-    signalType: "new_startup",
+    signalType: "company_formation",
     intentLevel: "low",
     urgency: "unknown",
-    serviceCategories,
-    summary: `${company.name} was registered ${company.register ?? "at Companies House"} on ${date}: a new business that may need help to get started.`,
+    serviceCategories: categories,
+    summary: `${company.name} was registered ${company.register ?? "at Companies House"} on ${date}.`,
     personId: null,
     occurredOn: company.foundedOn,
     sourceUrl: company.registerUrl,

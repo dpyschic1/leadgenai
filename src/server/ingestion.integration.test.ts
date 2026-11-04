@@ -227,10 +227,11 @@ describe("automatic ingestion", () => {
     expect(sources).toMatchObject({ discoveredBy: "companies_house", companyNumber: number(1), website: { confidence: 95, matchedBy: "company_number" } });
     expect(sources.contacts.map((c) => c.value).sort()).toEqual(["01134960000", `hello@newsmile-${run}.example`]);
 
-    // A company formed this year is a new-startup signal, straight from the register.
+    // A company formed this year: the register's own fact, stated as such.
     const found = await listCompanySignals(owner, newsmile!.id);
-    const formation = found.find((s) => s.signalType === "new_startup");
-    expect(formation).toMatchObject({ source: "provider", origin: "companies_house" });
+    const formation = found.find((s) => s.signalType === "company_formation");
+    expect(formation).toMatchObject({ source: "provider", origin: "companies_house", serviceCategories: ["web_development"] });
+    expect(formation?.summary).toMatch(/^Newsmile .* was registered at Companies House on \d{1,2} \w+ \d{4}\.$/);
     // A dental site without online booking: a possible problem for a website service, by rule, not AI.
     expect(found.find((s) => s.signalType === "no_online_booking")).toMatchObject({
       intentLevel: "low",
@@ -634,12 +635,13 @@ describe("US NPI Registry", () => {
     const [site] = await db.select().from(companyLocations).where(and(eq(companyLocations.companyId, found[0].id), eq(companyLocations.sourceSlug, "us_npi")));
     expect(site).toMatchObject({ phone: "512-555-0100", postalCode: "78701", country: "US", externalId: number(1) });
 
-    // Registered last month: a new practice. The 2009 one is not.
+    // Registered last month: recorded as the registry states it. The 2009 one is not recorded.
     const [signal] = await listCompanySignals(owner, found[0].id);
-    expect(signal).toMatchObject({ signalType: "new_startup", origin: "us_npi" });
-    expect(signal.summary).toContain("with the US NPI Registry");
+    expect(signal).toMatchObject({ signalType: "company_formation", origin: "us_npi" });
+    expect(signal.summary).toContain("with the US NPI Registry (CMS)");
     const old = (await listCompanies(owner, `Old Town Dental ${run}`)).items[0];
     expect(await listCompanySignals(owner, old.id)).toEqual([]);
-    expect((await getCompany(owner, found[0].id)).opportunity).not.toBeNull();
+    // A registration says nothing about need: the practice is watched, not an opportunity, until real evidence appears.
+    expect((await getCompany(owner, found[0].id)).opportunity).toBeNull();
   });
 });

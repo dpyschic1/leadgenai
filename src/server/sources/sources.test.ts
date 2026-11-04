@@ -304,16 +304,30 @@ describe("found signals", () => {
     expect(signalFromAnalysis({ ...analysis, confidence: 30 }, { ...base, evidenceText: "" })).toBeNull();
   });
 
-  it("marks a company formed this year as a new startup, from the register", () => {
+  it("records a recent registration as the register states it, tagged only with what a new business plausibly needs", () => {
     const now = new Date("2026-11-03T12:00:00Z");
-    expect(formationSignal({ name: "Acme Ltd", foundedOn: "2026-08-12", registerUrl: "https://x/company/1" }, ["mvp_development"], now)).toMatchObject({
-      signalType: "new_startup",
-      source: "provider",
-      evidenceLabel: "observed",
+    const sold = ["web_development", "seo", "mvp_development", "staff_augmentation", "qa_testing"];
+    expect(formationSignal({ name: "Acme Ltd", foundedOn: "2026-08-12", registerUrl: "https://x/company/1", industry: "accounting" }, sold, now)).toEqual({
+      signalType: "company_formation",
+      intentLevel: "low",
+      urgency: "unknown",
+      // A website and search visibility; not staff augmentation or QA for a firm with no product.
+      serviceCategories: ["web_development", "seo"],
+      // Only the fact: no guess that it "may need help".
+      summary: "Acme Ltd was registered at Companies House on 12 August 2026.",
+      personId: null,
       occurredOn: "2026-08-12",
-      summary: "Acme Ltd was registered at Companies House on 12 August 2026: a new business that may need help to get started.",
+      sourceUrl: "https://x/company/1",
+      excerpt: null,
+      evidenceLabel: "observed",
+      source: "provider",
+      confidence: null,
     });
-    expect(formationSignal({ name: "Old Ltd", foundedOn: "2019-01-01", registerUrl: null }, [], now)).toBeNull();
+    // A software business may also need software built.
+    expect(formationSignal({ name: "Byte Ltd", foundedOn: "2026-08-12", registerUrl: null, industry: "saas" }, sold, now)?.serviceCategories).toEqual(["web_development", "seo", "mvp_development"]);
+    // Nothing a new business needs is sold: nothing to record.
+    expect(formationSignal({ name: "Acme Ltd", foundedOn: "2026-08-12", registerUrl: null }, ["staff_augmentation"], now)).toBeNull();
+    expect(formationSignal({ name: "Old Ltd", foundedOn: "2019-01-01", registerUrl: null }, sold, now)).toBeNull();
   });
 });
 

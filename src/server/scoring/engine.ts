@@ -196,11 +196,19 @@ const dateLabel = (date: Date) =>
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** Scores one company. Returns null when it has no positive signal, i.e. no opportunity. */
+/**
+ * Registry events: a company was registered, got its healthcare provider id, opened a site. They are
+ * facts about the company, not evidence that it needs anything, so on their own they never make an
+ * opportunity (the company is only being watched). With real evidence they still add context.
+ */
+export const CONTEXT_SIGNAL_TYPES = new Set(["company_formation", "new_startup", "new_location"]);
+
 export function scoreCompany(input: EngineInput): ScoreResult | null {
   const { signals, now, labels } = input;
   const positives = signals.filter((s) => s.category !== "negative");
   const negatives = signals.filter((s) => s.category === "negative");
-  if (positives.length === 0) return null;
+  // An opportunity needs evidence of need: hiring, a tender, a request, a problem found on its site.
+  if (!positives.some((s) => !CONTEXT_SIGNAL_TYPES.has(s.signalType))) return null;
 
   // The strongest positive signal leads: intent strength, discounted by age.
   const strength = (s: EngineSignal) => INTENT_BASE[s.intentLevel] * recencyMultiplier(daysBetween(s.occurredAt, now));

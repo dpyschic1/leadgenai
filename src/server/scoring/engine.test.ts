@@ -79,6 +79,16 @@ describe("scoreCompany", () => {
     expect(scoreCompany({ ...base, signals: [signal({ category: "negative", signalType: "hiring_freeze" })] })).toBeNull();
   });
 
+  it("makes no opportunity from a registration alone, but counts it alongside real evidence", () => {
+    const registered = signal({ id: "s0", signalType: "company_formation", category: "company_event", intentLevel: "low", summary: "Registered at Companies House on 12 August 2026." });
+    const newPractice = signal({ id: "s2", signalType: "new_location", category: "company_event", intentLevel: "low" });
+    expect(scoreCompany({ ...base, signals: [registered] })).toBeNull();
+    expect(scoreCompany({ ...base, signals: [registered, newPractice] })).toBeNull();
+    // With a real signal it is an opportunity, and the registration still counts as corroboration.
+    const withEvidence = scoreCompany({ ...base, signals: [registered, signal()] });
+    expect(withEvidence?.signalRoles.map((r) => [r.signalId, r.role])).toEqual(expect.arrayContaining([["s1", "primary"], ["s0", "corroborating"]]));
+  });
+
   it("scores a 3-day-old explicit request from an ideal customer at 91", () => {
     const result = score();
     // Intent = 30 explicit + 15 severity + 15 evaluating + 15×0.85 recency + 10×0.6 urgency + 0 corroboration + 5 source
