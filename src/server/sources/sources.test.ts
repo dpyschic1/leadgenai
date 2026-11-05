@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardFromUrl, boardsFromIndexPage, cleanBoardName, jobInCountries, nameFromBoardTitle, workableProfile } from "./board-directory";
+import { boardFromUrl, boardsFromIndexPage, cleanBoardName, hiringEmails, jobInCountries, nameFromBoardTitle, siteOf, sitesInJobPosts, workableProfile } from "./board-directory";
 import { finalizeFacts } from "@/server/ai/website-extract";
 import { formationSignal, newLocationSignal, signalFromAnalysis } from "@/server/ingestion/found-signal";
 import type { SignalAnalysis } from "@/lib/api/types";
@@ -20,9 +20,12 @@ import { isAllowed, parseRobots } from "./http";
 import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
 import { npiSteps } from "@/server/ingestion/handlers";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
-import { tenderSourceText, toTender } from "./uk-tenders";
+import { tenderSourceText, toTender, toTenderContact } from "./uk-tenders";
 import {
   bookingEvidence,
+  frameSources,
+  isMobileFriendly,
+  takesAppointments,
   candidateDomains,
   generatorOf,
   parseJsonLd,
@@ -491,7 +494,7 @@ describe("website checks (no AI)", () => {
     secure: true,
     generator: null,
     booking: null,
-    pagesChecked: ["https://smiles.example/", "https://smiles.example/contact"],
+    pagesChecked: ["https://smiles.example/", "https://smiles.example/contact", "https://smiles.example/about"],
     ...overrides,
   });
 
@@ -500,6 +503,41 @@ describe("website checks (no AI)", () => {
     expect(bookingEvidence('<a href="https://portal.dentally.co/book">Book now</a>')).toMatch(/^dental booking system/);
     expect(bookingEvidence("<a href='/appointments'>Book an appointment</a>")).toBe("booking link: Book an appointment");
     expect(bookingEvidence("<p>Call us to book</p>")).toBeNull();
+  });
+
+  it("recognises the booking systems and links real practices use", () => {
+    // Pearl portal (Dental Harmony) and Software of Excellence (The Dental Implant Clinic).
+    expect(bookingEvidence('<a href="http://www.pearlportal.net/login/DHLN">Patient portal</a>')).toMatch(/^dental booking system/);
+    expect(bookingEvidence('<a class="btn" href="https://booking.uk.hsone.app/soe/new/?pid=UKJSC02"><span>Book</span></a>')).toMatch(/^dental booking system/);
+    // Words split across nested tags, and a link known only by its address.
+    expect(bookingEvidence('<a href="/x"><span>Book</span> <b>online</b></a>')).toBe("booking link: Book online");
+    expect(bookingEvidence('<a href="/book-appointment"><img src="cal.png"></a>')).toBe("booking link: /book-appointment");
+    // An appointment request form (Kensington Dentist).
+    expect(bookingEvidence('<h2>Request an Appointment</h2><form action="send.php"><input name="name"><input name="phone"></form>')).toMatch(/^appointment request form/);
+    expect(bookingEvidence('<form><input name="email"><button>Subscribe</button></form>')).toBeNull();
+  });
+
+  it("calls a frames or non-mobile site outdated, and reads its frames", () => {
+    expect(frameSources('<frameset><frame src="top.htm"><frame src="home.htm"></frameset>', "https://ledbury.example/")).toEqual([
+      "https://ledbury.example/top.htm",
+      "https://ledbury.example/home.htm",
+    ]);
+    expect(frameSources("<html><body>Hi</body></html>", "https://x.example/")).toEqual([]);
+    expect(isMobileFriendly('<meta name="viewport" content="width=device-width">')).toBe(true);
+    const framed = websiteFindings("Ledbury Ltd", checks({ frameset: true, booking: { url: "x", evidence: "booking link" } }), "dental");
+    expect(framed.map((f) => f.signalType)).toEqual(["outdated_website"]);
+    expect(framed[0].summary).toMatch(/HTML frames/);
+    expect(websiteFindings("Old Ltd", checks({ mobileFriendly: false, booking: { url: "x", evidence: "b" } }), "dental")[0].summary).toMatch(/no mobile layout/);
+  });
+
+  it("claims no online booking only for appointment businesses, after enough of the site was read", () => {
+    const noBooking = (overrides: Partial<SiteChecks>, industry = "dental") =>
+      websiteFindings("Smiles Ltd", checks(overrides), industry).some((f) => f.signalType === "no_online_booking");
+    expect(noBooking({})).toBe(true);
+    expect(noBooking({ pagesChecked: ["https://smiles.example/"] })).toBe(false);
+    expect(noBooking({ takesAppointments: false }, "healthcare")).toBe(false);
+    expect(takesAppointments("Book a check-up with our hygienist. Appointments at our practice for every treatment.")).toBe(true);
+    expect(takesAppointments("Home care and live-in care. Our carers and care workers support you at home. Book a consultation.")).toBe(false);
   });
 
   it("flags possible problems with their evidence, without calling them buying intent", () => {
@@ -841,5 +879,38 @@ describe("US NPI Registry", () => {
     expect(steps.length).toBe(2 * 51 * 6);
     expect(steps.find((s) => s.skip > 0)).toMatchObject({ state: "CA", skip: 200 });
     expect(npiSteps(["accounting"])).toEqual([]);
+  });
+});
+
+describe("toTenderContact", () => {
+  it("reads the buyer contact a notice publishes, dropping unusable values", () => {
+    const raw = {
+      notice: {
+        contactDetails: { name: "Tom Outing", email: "T.Outing@northyorkmoors.org.uk", phone: "+44 7896056846", webAddress: "https://www.northyorkmoors.org.uk" },
+      },
+    };
+    expect(toTenderContact(raw)).toEqual({ name: "Tom Outing", email: "t.outing@northyorkmoors.org.uk", phone: "+44 7896056846", website: "https://www.northyorkmoors.org.uk" });
+    expect(toTenderContact({ notice: { contactDetails: { name: "Procurement", email: "n/a", phone: "", webAddress: "" } } })).toBeNull();
+    expect(toTenderContact({ notice: {} })).toBeNull();
+  });
+});
+
+describe("company site from its job posts", () => {
+  const toast = [
+    "Learn more at https://careers.toasttab.com/toast-benefits. Contact candidateaccommodations@toasttab.com. Apply on https://boards.greenhouse.io/toast",
+    "See https://careers.toasttab.com/locations-toast and https://www.linkedin.com/company/toast",
+    "Equal opportunity: https://www.eeoc.gov/poster",
+  ];
+
+  it("finds the employer's own site, not job boards, social or government", () => {
+    expect(siteOf("careers.toasttab.com")).toBe("toasttab.com");
+    expect(siteOf("jobs.acme.co.uk")).toBe("acme.co.uk");
+    expect(sitesInJobPosts(toast)).toEqual([{ site: "toasttab.com", posts: 2 }]);
+  });
+
+  it("keeps hiring inboxes at that site, never accommodation or privacy addresses", () => {
+    expect(hiringEmails(toast, "toasttab.com")).toEqual([]);
+    const posts = ["Send your CV to Careers@Acme.co.uk or recruitment@jobs.acme.co.uk", "privacy@acme.co.uk, accommodations@acme.co.uk, careers@gmail.com, jobs@other.com"];
+    expect(hiringEmails(posts, "acme.co.uk")).toEqual(["careers@acme.co.uk", "recruitment@jobs.acme.co.uk"]);
   });
 });

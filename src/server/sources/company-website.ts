@@ -29,6 +29,12 @@ export type SiteChecks = {
   generator: string | null;
   /** The first page showing an online-booking link or widget, with what was found. */
   booking: { url: string; evidence: string } | null;
+  /** False when the home page has no mobile layout (no viewport tag). */
+  mobileFriendly?: boolean;
+  /** True when the home page is built from HTML frames. */
+  frameset?: boolean;
+  /** True when the site describes a business patients book visits with (clinic, surgery, appointments). */
+  takesAppointments?: boolean;
   pagesChecked: string[];
 };
 
@@ -119,8 +125,20 @@ export async function readWebsite(domain: string): Promise<SiteRead | null> {
     secure = home.url.startsWith("https:");
   }
   const site = siteOf(new URL(home.url).hostname);
+  // A home page on its own subdomain (toasttab.com → pos.toasttab.com) still belongs to the domain asked for.
+  const asked = siteOf(domain);
+  const ownDomain = site.endsWith(`.${asked}`) ? asked : site;
 
-  const links = extractLinks(home.html, home.url);
+  // A frameset home page is an empty shell: its frames hold the real content and menu.
+  const frames: { url: string; kind: PageKind; html: string }[] = [];
+  for (const src of frameSources(home.html, home.url).slice(0, 3)) {
+    if (siteOf(new URL(src).hostname) !== site) continue;
+    const frame = await fetchHtml(src);
+    if (frame) frames.push({ url: frame.url, kind: "home", html: frame.html });
+  }
+  const contentHtml = frames.find((f) => /<body/i.test(f.html))?.html ?? home.html;
+
+  const links = [extractLinks(home.html, home.url), ...frames.map((f) => extractLinks(f.html, f.url))].flat();
   let targets = pickPages(links, site);
   // The menu may not link the team or about page; the sitemap usually lists them.
   if (targets.length < 3) {
@@ -128,7 +146,7 @@ export async function readWebsite(domain: string): Promise<SiteRead | null> {
     if (sitemap) targets = pickPages([...links, ...sitemapLinks(sitemap)], site);
   }
 
-  const pages: { url: string; kind: PageKind; html: string }[] = [{ url: home.url, kind: "home", html: home.html }];
+  const pages: { url: string; kind: PageKind; html: string }[] = [{ url: home.url, kind: "home", html: home.html }, ...frames];
   for (const target of targets) {
     const page = await fetchHtml(target.url);
     if (page) pages.push({ url: page.url, kind: target.kind, html: page.html });
@@ -136,13 +154,13 @@ export async function readWebsite(domain: string): Promise<SiteRead | null> {
 
   const allHtml = pages.map((p) => p.html).join("\n");
   return {
-    domain: site,
+    domain: ownDomain,
     pages: pages.map((p) => {
       const text = htmlToText(p.html.replace(/<(nav|footer|header)\b[\s\S]*?<\/\1>/gi, " ")).slice(0, MAX_PAGE_TEXT);
       return { url: p.url, kind: p.kind, text, contentHash: hash(text) };
     }),
     // Footers carry the contact details, so they're read from the full HTML.
-    emails: emailsFrom(allHtml, site),
+    emails: emailsFrom(allHtml, ownDomain),
     phones: phonesFrom(pages.find((p) => p.kind === "contact")?.html ?? allHtml),
     jobBoard: jobBoardFromHtml(allHtml),
     structured: structuredFacts(pages.flatMap((p) => parseJsonLd(p.html))),
@@ -150,6 +168,10 @@ export async function readWebsite(domain: string): Promise<SiteRead | null> {
       homeUrl: home.url,
       secure,
       generator: generatorOf(home.html),
+      frameset: frames.length > 0,
+      takesAppointments: takesAppointments(pages.map((p) => htmlToText(p.html)).join(" ")),
+      // Judged only on a home page that really loaded (not a cookie wall, redirect or script shell).
+      mobileFriendly: htmlToText(contentHtml).length < MIN_HOME_TEXT ? undefined : isMobileFriendly(contentHtml) || isMobileFriendly(home.html),
       booking: pages.flatMap((p) => {
         const evidence = bookingEvidence(p.html);
         return evidence ? [{ url: p.url, evidence }] : [];
@@ -446,20 +468,78 @@ export function generatorOf(html: string): string | null {
 }
 
 /** Online booking links and widgets: booking systems by name, or plain "book online" links. */
-const BOOKING_PATTERNS: [RegExp, string][] = [
-  [/(dentally\.co|portal\.dentally|pearl-?dental|exact-booking)/i, "dental booking system"],
-  [/(calendly\.com|setmore\.com|simplybook\.(me|it)|acuityscheduling\.com|bookingbug|fresha\.com|cliniko\.com|jane\.app|doctolib|zocdoc|resdiary|opentable|squareup\.com\/appointments|booksy\.com)/i, "booking widget"],
-  [/<a[^>]*>[^<]*\b(book (an? )?(appointment|consultation|online|now)|online booking|make an appointment|request an appointment)\b[^<]*<\/a>/i, "booking link"],
+// Booking systems, matched by the address the site links to or embeds. UK dental practices mostly
+// use Software of Excellence (hsone.app), Pearl (pearlportal.net), Dentally or Dentr.
+const BOOKING_SYSTEMS: [RegExp, string][] = [
+  [/(dentally\.co|portal\.dentally|pearl-?dental|pearlportal\.net|exact-booking|hsone\.app|softwareofexcellence|dentr\.(co\.uk|net|com)|nexhealth\.com|carestack\.com|localmed\.com|dentalhub|toothpick\.com|practiceplan)/i, "dental booking system"],
+  [/(calendly\.com|setmore\.com|simplybook\.(me|it)|acuityscheduling\.com|bookingbug|fresha\.com|cliniko\.com|jane\.app|doctolib|zocdoc|resdiary|opentable|squareup\.com\/appointments|booksy\.com|treatwell|phorest\.com|timely\.(app|com)|vagaro\.com|mindbodyonline|zenoti\.com|healthengine|hotdoc|appointedd|youcanbook\.me|bookwhen\.com)/i, "booking widget"],
+  // NHS GP online services: patients book appointments through them.
+  [/(systmonline|tpp-uk\.com|patientaccess\.com|nhsapp|nhs\.uk\/nhs-app|accurx|engageconsult|engage\.gp|patchs\.ai|klinik\.co\.uk|askmygp|airmid|doctorlink|econsult|myGP|evergreen-life|online\.emisnationalapplication)/i, "GP online booking"],
+  // A booking subdomain of any provider (booking.example.com, booking-api.opticalexpress.co.uk).
+  [/https?:\/\/(book|booking|bookings|appointments?|onlinebooking)(-[a-z0-9]+)?\.[a-z0-9-]+\.[a-z.]{2,}/i, "booking system"],
 ];
+const BOOKING_WORDS = /\b(book (an? |your )?(appointment|consultation|visit|online|now)|online booking|book online|make an appointment|request an appointment|appointment request)\b/i;
+const BOOKING_HREF = /href=["'][^"']*(book-?(an?-?)?(appointment|online|consultation)|online-?booking|\/book(ing)?(\/|["'?#]|-now))[^"']*["']/i;
 
-/** What on a page shows it takes bookings online, or null. Pure. */
+/**
+ * What on a page shows it takes bookings online, or null: a booking system, a booking link (by its
+ * address or its words, even inside nested tags), or an appointment request form. Pure.
+ */
 export function bookingEvidence(html: string): string | null {
-  for (const [pattern, label] of BOOKING_PATTERNS) {
+  const quote = (text: string) => decodeEntities(text.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim().slice(0, 120);
+  for (const [pattern, label] of BOOKING_SYSTEMS) {
     const match = html.match(pattern);
-    if (match) return `${label}: ${decodeEntities(match[0].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim().slice(0, 120)}`;
+    if (match) return `${label}: ${quote(match[0])}`;
   }
+  for (const [, attrs, inner] of html.matchAll(/<a\b([^>]*)>([\s\S]{0,400}?)<\/a>/gi)) {
+    const text = quote(inner);
+    if (BOOKING_WORDS.test(text)) return `booking link: ${text}`;
+    if (BOOKING_HREF.test(attrs)) return `booking link: ${text || quote(attrs.match(/href=["']([^"']+)/i)?.[1] ?? "")}`;
+  }
+  // A form patients fill in to ask for an appointment, with a way to reach them.
+  for (const [form] of html.matchAll(/<form\b[\s\S]{0,6000}?<\/form>/gi)) {
+    const contactable = /name=["'][^"']*(email|phone|tel)/i.test(form);
+    if (contactable && /\b(appointment|booking)\b/i.test(quote(form))) return "appointment request form";
+  }
+  const heading = html.match(/<h[1-4][^>]*>[^<]*\b(request an appointment|book an appointment)\b[^<]*<\/h[1-4]>/i);
+  if (heading && /<form\b/i.test(html)) return `appointment request form: ${quote(heading[0])}`;
   return null;
 }
+
+/** True when the page tells phones how to lay it out; sites built before smartphones don't. Pure. */
+export function isMobileFriendly(html: string): boolean {
+  return /<meta[^>]+name=["']viewport["']/i.test(html);
+}
+
+/** The pages a frameset home page shows (sites built with HTML frames, a 1990s technique). Pure. */
+export function frameSources(html: string, baseUrl: string): string[] {
+  if (!/<frameset\b/i.test(html)) return [];
+  return [...html.matchAll(/<frame\b[^>]*\bsrc=["']([^"']+)["']/gi)].flatMap(([, src]) => {
+    try {
+      return [new URL(src, baseUrl).toString()];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * True when the site reads like a business people book visits with (a practice, clinic or surgery
+ * taking appointments), not a care provider or a service delivered at home, where online booking
+ * isn't expected. Pure.
+ */
+export function takesAppointments(text: string): boolean {
+  // "Practice" alone is too common ("best practice") to count.
+  const visits = (text.match(/\b(appointments?|consultations?|clinic|surgery|dental practice|treatments?|check-?ups?|hygienist|dentist)\b/gi) ?? []).length;
+  const care = (text.match(/\b(home care|domiciliary|care homes?|supported living|live-in care|care workers?|carers?|residential care|nursing home|respite)\b/gi) ?? []).length;
+  return visits >= 3 && visits > care * 2;
+}
+
+/** Text a home page needs before its layout is judged. */
+const MIN_HOME_TEXT = 500;
+
+/** Pages that must have been read before "no online booking" is claimed. */
+const MIN_PAGES_FOR_NO_BOOKING = 3;
 
 /** Industries where customers expect to book online, so its absence is a possible problem. */
 const BOOKING_INDUSTRIES = new Set(["dental", "healthcare", "hospitality"]);
@@ -515,7 +595,28 @@ export function websiteFindings(company: string, checks: SiteChecks, industry: s
       break;
     }
   }
-  if (industry && BOOKING_INDUSTRIES.has(industry) && !checks.booking) {
+  // A site built before smartphones: frames, or no mobile layout at all.
+  if (!findings.some((f) => f.signalType === "outdated_website") && (checks.frameset || checks.mobileFriendly === false)) {
+    findings.push({
+      signalType: "outdated_website",
+      summary: checks.frameset
+        ? `Possible problem: ${company}'s website is built with HTML frames, a 1990s technique that doesn't work on phones.`
+        : `Possible problem: ${company}'s website has no mobile layout, so it doesn't adapt to phones.`,
+      excerpt: checks.frameset ? "<frameset> on the home page" : 'No <meta name="viewport"> tag on the home page',
+      url: checks.homeUrl,
+      confidence: 85,
+      evidenceLabel: "observed",
+      categories: ["web_development", "ui_ux_design"],
+    });
+  }
+  // Absence is only worth claiming when enough of the site was read (not a blocked or one-page read).
+  if (
+    industry &&
+    BOOKING_INDUSTRIES.has(industry) &&
+    checks.takesAppointments !== false &&
+    !checks.booking &&
+    checks.pagesChecked.length >= MIN_PAGES_FOR_NO_BOOKING
+  ) {
     findings.push({
       signalType: "no_online_booking",
       summary: `Possible problem: no online booking found on ${company}'s website (${checks.pagesChecked.length} pages checked).`,

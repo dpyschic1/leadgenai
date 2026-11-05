@@ -9,7 +9,7 @@ import { fetchBoardJobs } from "@/server/jobs/fetch-jobs";
 import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { decodeEntities } from "@/server/jobs/html-to-text";
 import type { NormalizedJob } from "@/server/jobs/types";
-import { politeGet } from "./http";
+import { politeGet, registrableDomain } from "./http";
 import type { HealthStatus, SourceAdapter } from "./index";
 
 /**
@@ -445,6 +445,47 @@ export function jobInCountries(location: string | null, countries: string[]): bo
   });
   if (hit) return true;
   return ANYWHERE.test(location ?? "") && !ONLY_ELSEWHERE.test(location ?? "");
+}
+
+// Hosts job posts link to that are never the employer's own site.
+const THIRD_PARTY_HOSTS =
+  /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|personio\.(de|com)|breezy\.hr|linkedin\.com|glassdoor\.[a-z.]+|indeed\.[a-z.]+|facebook\.com|instagram\.com|twitter\.com|x\.com|youtube\.com|tiktok\.com|google\.com|goo\.gl|bit\.ly|apple\.com|microsoft\.com|gov(\.[a-z]{2})?|europa\.eu|wikipedia\.org|github\.com|medium\.com|gmail\.com|outlook\.com|hotmail\.com|yahoo\.com|icloud\.com|workday\.com|myworkdayjobs\.com|icims\.com|taleo\.net|jobvite\.com|bamboohr\.com|recruitee\.com|teamtailor\.com|onetrust\.com)$/i;
+/** "careers.toasttab.com" -> "toasttab.com"; "jobs.acme.co.uk" -> "acme.co.uk". Pure. */
+export const siteOf = registrableDomain;
+
+/**
+ * The sites a company's own job posts link to or give email addresses at (its careers page, its
+ * accommodation or recruiting inbox), with how many posts mention each, most mentioned first. Job
+ * boards, social networks, government and webmail are left out. Pure.
+ */
+export function sitesInJobPosts(descriptions: (string | null)[]): { site: string; posts: number }[] {
+  const counts = new Map<string, number>();
+  for (const text of descriptions) {
+    if (!text) continue;
+    const hosts = new Set<string>();
+    for (const [, host] of text.matchAll(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi)) hosts.add(host);
+    for (const [, host] of text.matchAll(/[a-z0-9._%+-]+@([a-z0-9.-]+\.[a-z]{2,})/gi)) hosts.add(host);
+    const sites = new Set([...hosts].map((h) => h.toLowerCase().replace(/\.$/, "")).filter((h) => !THIRD_PARTY_HOSTS.test(h)).map(siteOf));
+    for (const site of sites) counts.set(site, (counts.get(site) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([site, posts]) => ({ site, posts })).sort((a, b) => b.posts - a.posts);
+}
+
+// The inbox applicants are asked to send their CV to; never accessibility, privacy, legal or
+// benefits addresses, which are for candidates' own requests and not for anyone selling.
+const HIRING_INBOX = /^(careers?|jobs?|recruit(ing|ment|er|ers)?|talent([._-]?acquisition)?|hiring|hr|people|apply|applications?|resumes?|cv|vacanc(y|ies)|join(us)?|work(withus)?)([._-]?[a-z]{2,3})?$/;
+const NOT_FOR_SALES = /accommodat|disabilit|accessib|privacy|gdpr|dpo|legal|ethic|complian|benefit|payroll|security|abuse|fraud|eeo|noreply|no-reply|donotreply/;
+
+/** Hiring inboxes at the company's own site found in its job posts (e.g. careers@acme.com). Pure. */
+export function hiringEmails(descriptions: (string | null)[], site: string): string[] {
+  const found = new Set<string>();
+  for (const text of descriptions) {
+    for (const [email] of (text ?? "").matchAll(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi)) {
+      const [local, host] = email.toLowerCase().split("@");
+      if (siteOf(host) === site && HIRING_INBOX.test(local) && !NOT_FOR_SALES.test(local)) found.add(email.toLowerCase());
+    }
+  }
+  return [...found];
 }
 
 export const boardDirectory: SourceAdapter = {

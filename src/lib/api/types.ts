@@ -316,6 +316,8 @@ export type OpportunityDetail = OpportunitySummary & {
   contactDetails: CompanyPerson | null;
   /** Every published company phone/email, with where it came from (e.g. "Swindon practice" from CQC). */
   companyContacts: CompanyContact[];
+  /** For a public tender: its notice and closing date (ISO), shown with the contact. */
+  tender: { url: string | null; closesAt: string | null; closed: boolean } | null;
   scoredAt: string;
   /** Saved lists this opportunity is on. */
   listIds: string[];

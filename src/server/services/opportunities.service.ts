@@ -19,6 +19,7 @@ import {
   services,
   signals,
   signalTypes,
+  sourceRecords,
   users,
 } from "@/db/schema";
 import type { CompanyContact, FeedbackVote, LeadList, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
@@ -299,7 +300,10 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .where(and(eq(savedOpportunities.opportunityId, opportunity.id), eq(savedOpportunities.workspaceId, auth.workspaceId))),
     listFeedback(auth, opportunity.id),
   ]);
-  const companyContacts = await loadCompanyContacts(opportunity.companyId);
+  const [companyContacts, tender] = await Promise.all([
+    loadCompanyContacts(opportunity.companyId),
+    opportunity.type === "rfp" ? loadTender(auth.workspaceId, links.map((l) => l.signalId)) : null,
+  ]);
   const roleOf = new Map(links.map((l) => [l.signalId, l.role]));
   const roleOrder = { primary: 0, corroborating: 1, negative: 2 } as const;
 
@@ -314,10 +318,27 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .sort((a, b) => roleOrder[a.role] - roleOrder[b.role] || b.occurredOn.localeCompare(a.occurredOn)),
     contactDetails: companyPeople.find((p) => p.id === opportunity.primaryPersonId) ?? null,
     companyContacts,
+    tender,
     scoredAt: opportunity.scoredAt.toISOString(),
     listIds: saved.map((s) => s.listId),
     feedback,
   };
+}
+
+/** The public tender behind an RFP opportunity: its notice and closing date, latest first. */
+async function loadTender(workspaceId: string, signalIds: string[]): Promise<OpportunityDetail["tender"]> {
+  if (signalIds.length === 0) return null;
+  const [row] = await db
+    .select({ url: sourceRecords.url, data: sourceRecords.data })
+    .from(signals)
+    .innerJoin(sourceRecords, eq(sourceRecords.id, signals.sourceRecordId))
+    .where(and(eq(signals.workspaceId, workspaceId), inArray(signals.id, signalIds), eq(sourceRecords.sourceSlug, "uk_tenders")))
+    .orderBy(desc(signals.occurredAt))
+    .limit(1);
+  if (!row) return null;
+  const deadline = typeof row.data?.deadline === "string" ? row.data.deadline : null;
+  const closesAt = deadline ? new Date(deadline).getTime() : NaN;
+  return { url: row.url, closesAt: deadline, closed: closesAt < Date.now() };
 }
 
 /** Sites listed per company on the opportunity page; the Sources card on the company page lists them all. */

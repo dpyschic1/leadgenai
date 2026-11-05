@@ -104,6 +104,48 @@ export async function searchTenders({ cpvCodes, from, size }: { cpvCodes: string
     .sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
 }
 
+/** The buyer's contact as the notice publishes it ("About the buyer"). */
+export type TenderContact = { name: string | null; email: string | null; phone: string | null; website: string | null };
+
+const detail = z.object({
+  notice: z.object({
+    contactDetails: z
+      .object({ name: z.string().nullish(), email: z.string().nullish(), phone: z.string().nullish(), webAddress: z.string().nullish() })
+      .nullish(),
+  }),
+});
+
+/** Parses a notice's detail response into its buyer contact; null when it publishes none. Exported for tests. */
+export function toTenderContact(raw: unknown): TenderContact | null {
+  const c = detail.safeParse(raw).data?.notice.contactDetails;
+  if (!c) return null;
+  const email = clean(c.email).toLowerCase();
+  const phone = clean(c.phone);
+  const website = clean(c.webAddress);
+  const contact = {
+    name: clean(c.name) || null,
+    email: /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email) ? email : null,
+    phone: /^\+?[0-9 ().-]{6,30}$/.test(phone) ? phone : null,
+    website: /^(https?:\/\/)?[a-z0-9.-]+\.[a-z]{2,}/i.test(website) ? website : null,
+  };
+  return contact.email || contact.phone || contact.website ? contact : null;
+}
+
+/** The search hits carry no contact, so it's read from the notice itself; null when unavailable. */
+export async function fetchTenderContact(id: string): Promise<TenderContact | null> {
+  try {
+    const result = await fetch(`https://www.contractsfinder.service.gov.uk/api/rest/2/get_published_notice/json/${encodeURIComponent(id)}`, {
+      headers: { accept: "application/json" },
+      redirect: "error",
+      cache: "no-store",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    return result.ok ? toTenderContact(await result.json()) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The text the AI analyses for a tender: the facts, then the description. */
 export function tenderSourceText(tender: Tender): string {
   const value =

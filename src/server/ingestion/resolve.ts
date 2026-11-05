@@ -214,6 +214,9 @@ export async function addFoundPeople(
     if (person.phone) {
       await tx.insert(contactPoints).values({ personId: row.id, type: "phone", value: person.phone, isPrimary: true, source: sourceSlug }).onConflictDoNothing();
     }
+    if (person.email) {
+      await tx.insert(contactPoints).values({ personId: row.id, type: "email", value: person.email, isPrimary: true, source: sourceSlug }).onConflictDoNothing();
+    }
     added++;
   }
   return added;

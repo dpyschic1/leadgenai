@@ -223,7 +223,7 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
     .filter((s) => rejectedServices.has(s.id))
     .map((s) => `Not matched to ${s.name}: your team flagged it as the wrong service`);
 
-  const best = pickService(candidates, positives, labels);
+  const best = pickService(candidates, positives, labels, input.company.industry);
   const service = best?.service ?? null;
   // Never suggest someone the team flagged, or isn't sure is the right person.
   const person = pickPerson(
@@ -347,9 +347,9 @@ function recencyFactor(latest: Date, now: Date) {
  * with no overlap at all is never chosen, so the opportunity shows "No matching service" instead
  * of a match that isn't one.
  */
-function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels) {
+function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels, industry: string | null = null) {
   const categorised = positives.filter((s) => s.serviceCategories.length > 0);
-  let best: { service: EngineService; fit: number; reasons: string[] } | null = null;
+  let best: { service: EngineService; fit: number; rank: number; reasons: string[] } | null = null;
 
   for (const service of services) {
     const offered = new Set(service.categories);
@@ -366,8 +366,12 @@ function pickService(services: EngineService[], positives: EngineSignal[], label
       total += weight;
     }
     const fit = total === 0 ? 0 : (weighted / total) * 100;
-    if (fit > 0 && (!best || fit > best.fit)) {
-      best = { service, fit, reasons: [`Matches ${service.name}: ${[...matched].map(labels.category).join(", ")}`] };
+    // A service aimed at other industries (a dental service for a care provider) only wins when
+    // nothing aimed at this company fits as well. Ranking only: the fit itself is unchanged.
+    const elsewhere = industry !== null && service.targetIndustries.length > 0 && !service.targetIndustries.includes(industry);
+    const rank = elsewhere ? fit * 0.5 : fit;
+    if (fit > 0 && (!best || rank > best.rank)) {
+      best = { service, fit, rank, reasons: [`Matches ${service.name}: ${[...matched].map(labels.category).join(", ")}`] };
     }
   }
   return best;

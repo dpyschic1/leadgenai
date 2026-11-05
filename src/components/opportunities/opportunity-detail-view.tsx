@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeftIcon, Building2Icon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
+import { ArrowLeftIcon, Building2Icon, GlobeIcon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { IdentityBadge, OsmCredit, VerificationMark } from "@/components/companies/contact-status";
 import { SaveToListMenu } from "@/components/lists/save-to-list-menu";
@@ -221,7 +221,50 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
         </p>
       )}
       {opportunity.companyContacts.length > 0 && <CompanyContacts contacts={opportunity.companyContacts} />}
+      {opportunity.company.domain && (
+        <div className="mt-4 border-t pt-3">
+          <p className="mb-1 text-xs text-muted-foreground">Website</p>
+          <ContactLink href={`https://${opportunity.company.domain}`} label={opportunity.company.domain} icon={GlobeIcon} external />
+        </div>
+      )}
+      {opportunity.type === "rfp" && <TenderNote tender={opportunity.tender} />}
     </section>
+  );
+}
+
+/**
+ * Procurement rules: while a tender is open, the buyer's contact is for questions only, and
+ * canvassing them can disqualify a bid. The bid itself goes through the notice's portal.
+ */
+function TenderNote({ tender }: { tender: OpportunityDetail["tender"] }) {
+  const closes = tender?.closesAt ? new Date(tender.closesAt) : null;
+  const closesText =
+    closes && !Number.isNaN(closes.getTime())
+      ? closes.toLocaleString("en-GB", { day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Europe/London" })
+      : null;
+  if (tender?.closed && closesText) {
+    return (
+      <div className="mt-4 rounded-lg border p-3 text-sm">
+        <p className="font-medium">Public tender: closed on {closesText}</p>
+        <p className="mt-1 text-muted-foreground">Bids are no longer accepted. The contact is still useful for the buyer&apos;s future work.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+      <p className="font-medium">Public tender: contact for questions only</p>
+      <p className="mt-1 text-muted-foreground">
+        Submit your bid through the{" "}
+        {tender?.url ? (
+          <a href={tender.url} target="_blank" rel="noopener noreferrer" className="font-medium text-primary hover:underline underline-offset-4">
+            tender notice
+          </a>
+        ) : (
+          "tender notice"
+        )}
+        {closesText ? ` by ${closesText}` : " before it closes"}. Don&apos;t pitch the buyer while it&apos;s open: canvassing can disqualify a bid.
+      </p>
+    </div>
   );
 }
 

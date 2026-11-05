@@ -32,6 +32,7 @@ const WEBSITE_MATCH: Record<string, string> = {
   registered_address: "Shows the name and registered-office postcode",
   name: "Shows the company name and town",
   job_board_link: "Links to the company's job board",
+  job_post_links: "Its job posts link to this site, which carries its name",
   regulator_listing: "Listed for its practices on the CQC register",
 };
 

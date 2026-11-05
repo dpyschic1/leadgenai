@@ -54,6 +54,8 @@ export type FoundPerson = {
   confidence: number;
   /** A direct phone the register publishes for them (e.g. an NPI authorized official). */
   phone?: string | null;
+  /** Their own email as the source publishes it (e.g. a tender's named buyer contact). */
+  email?: string | null;
 };
 
 export type DiscoveryCriteria = {

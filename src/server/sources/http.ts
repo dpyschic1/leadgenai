@@ -80,6 +80,14 @@ export async function hostResolves(hostname: string): Promise<boolean> {
 /** The site a host belongs to for throttling and robots: "www.example.co.uk" → "example.co.uk". */
 export const siteOf = (hostname: string) => hostname.toLowerCase().replace(/^www\./, "");
 
+const TWO_PART_SUFFIX = /\.(co|com|org|net|ac|gov|ltd|plc|nhs)\.[a-z]{2}$/;
+
+/** The registered domain a host belongs to: "careers.toasttab.com" -> "toasttab.com"; "jobs.acme.co.uk" -> "acme.co.uk". */
+export function registrableDomain(hostname: string): string {
+  const parts = siteOf(hostname).split(".");
+  return parts.slice(TWO_PART_SUFFIX.test(`.${parts.slice(-2).join(".")}`) ? -3 : -2).join(".");
+}
+
 async function throttle(site: string): Promise<void> {
   const wait = (lastRequestAt.get(site) ?? 0) + SITE_INTERVAL_MS - Date.now();
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
@@ -129,11 +137,12 @@ export async function politeGet(
   } = {},
 ): Promise<FetchedPage> {
   let current = new URL(url);
-  const site = siteOf(current.hostname);
+  // Redirects may move between the company's own hosts (toasttab.com → pos.toasttab.com), never off it.
+  const site = registrableDomain(current.hostname);
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (!/^https?:$/.test(current.protocol)) throw new FetchBlockedError(`Unsupported protocol ${current.protocol}`);
-    if (sameSite && siteOf(current.hostname) !== site) throw new FetchBlockedError(`Redirected off-site to ${current.hostname}`);
+    if (sameSite && registrableDomain(current.hostname) !== site) throw new FetchBlockedError(`Redirected off-site to ${current.hostname}`);
     await assertPublicHost(current.hostname);
     if (sameSite && !(await robotsAllow(current))) throw new FetchBlockedError(`robots.txt disallows ${current.pathname}`);
     await throttle(siteOf(current.hostname));

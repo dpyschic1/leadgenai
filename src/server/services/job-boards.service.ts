@@ -185,6 +185,14 @@ export async function syncCompanyJobs(
     const groups = await relevantRoles(auth, companyId);
     const industryName = ref.industries.find((i) => i.slug === company.industry)?.name ?? null;
     let analysed = 0;
+    // The free AI analyses only so many jobs a day, so every company gets its first signal before
+    // any gets more: a company that already has one adds a single role per fetch, and a new one
+    // stops once its first role becomes a signal.
+    const [{ withSignal }] = await db
+      .select({ withSignal: count() })
+      .from(jobPostings)
+      .where(and(eq(jobPostings.companyId, companyId), eq(jobPostings.workspaceId, auth.workspaceId), isNotNull(jobPostings.signalId)));
+    const maxAnalyses = withSignal > 0 ? 1 : MAX_ANALYSES_PER_FETCH;
 
     for (const group of groups) {
       if (group.decided) {
@@ -195,7 +203,7 @@ export async function syncCompanyJobs(
         if (!group.decided.signalId) skipped += group.jobs.length;
         continue;
       }
-      if (analysed >= MAX_ANALYSES_PER_FETCH) continue;
+      if (analysed >= maxAnalyses || (withSignal === 0 && signalsCreated > 0)) continue;
       analysed++;
 
       const [lead] = group.jobs;
