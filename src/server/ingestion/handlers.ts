@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
 import {
@@ -10,17 +10,14 @@ import {
   companyPeople,
   contactPoints,
   jobPostings,
+  opportunities,
   people,
   signals,
   sourceRecords,
 } from "@/db/schema";
 import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import type { IngestionJobKind } from "@/lib/domain/sources";
-import {
-  CATEGORY_CPV_CODES,
-  INDUSTRY_CQC_SERVICE_TYPES,
-  INDUSTRY_SIC_CODES,
-} from "@/lib/domain/uk-codes";
+import { CATEGORY_CPV_CODES, INDUSTRY_CQC_SERVICE_TYPES, INDUSTRY_SIC_CODES } from "@/lib/domain/uk-codes";
 import { TRIAGE_BATCH_SIZE, triageJobs } from "@/server/ai/job-triage";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
 import { extractWebsiteFacts } from "@/server/ai/website-extract";
@@ -30,30 +27,12 @@ import { detectBoard } from "@/server/jobs/detect";
 import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
 import { getReferenceData } from "@/server/services/reference-data.service";
-import {
-  connectDetectedBoard,
-  syncCompanyJobs,
-} from "@/server/services/job-boards.service";
+import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal } from "@/server/services/signals.service";
-import {
-  boardJobsFor,
-  cleanBoardName,
-  hiringEmails,
-  jobInCountries,
-  siteOf,
-  sitesInJobPosts,
-} from "@/server/sources/board-directory";
-import {
-  companiesHouse,
-  findCompanyNumber,
-} from "@/server/sources/companies-house";
-import {
-  findWebsite,
-  readWebsite,
-  usableEmails,
-  websiteFindings,
-} from "@/server/sources/company-website";
+import { boardJobsFor, cleanBoardName, hiringEmails, jobInCountries, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
+import { companiesHouse, findCompanyNumber } from "@/server/sources/companies-house";
+import { findWebsite, readWebsite, usableEmails, websiteFindings } from "@/server/sources/company-website";
 import {
   fetchLocationDetail,
   loadDirectory,
@@ -84,28 +63,12 @@ import {
   type NpiOrganization,
 } from "@/server/sources/nppes";
 import { matchWorkspace, osmImported } from "@/server/sources/osm";
-import {
-  fetchTenderContact,
-  searchTenders,
-  tenderSourceText,
-  type TenderContact,
-} from "@/server/sources/uk-tenders";
+import { creditsLeft, employeeRange, searchJobs, theirStackJobsPerRun, theirStackJobText, titlesFor, type TheirStackJob } from "@/server/sources/theirstack";
+import { fetchTenderContact, searchTenders, tenderSourceText, type TenderContact } from "@/server/sources/uk-tenders";
 import { normalizeDomain } from "@/lib/validation/companies";
-import {
-  formationSignal,
-  NEW_COMPANY_DAYS,
-  newLocationSignal,
-  signalFromAnalysis,
-} from "./found-signal";
+import { formationSignal, NEW_COMPANY_DAYS, newLocationSignal, signalFromAnalysis } from "./found-signal";
 import { sourceRunnable, type JobRow } from "./queue";
-import {
-  addFoundPeople,
-  knownIdentifiers,
-  replaceCompanyContacts,
-  resolveCompany,
-  saveSourceLocations,
-  saveSourceRecord,
-} from "./resolve";
+import { addFoundPeople, knownIdentifiers, replaceCompanyContacts, resolveCompany, saveSourceLocations, saveSourceRecord } from "./resolve";
 
 /**
  * One handler per kind of background job (Spec §11). Each does a small piece of work, records
@@ -145,19 +108,8 @@ async function loadCompany(actor: Actor, companyId: string) {
       postcode: companyLocations.postalCode,
     })
     .from(companies)
-    .leftJoin(
-      companyLocations,
-      and(
-        eq(companyLocations.companyId, companies.id),
-        eq(companyLocations.type, "headquarters"),
-      ),
-    )
-    .where(
-      and(
-        eq(companies.id, companyId),
-        eq(companies.workspaceId, actor.workspaceId),
-      ),
-    )
+    .leftJoin(companyLocations, and(eq(companyLocations.companyId, companies.id), eq(companyLocations.type, "headquarters")))
+    .where(and(eq(companies.id, companyId), eq(companies.workspaceId, actor.workspaceId)))
     .limit(1);
   if (!row) return null;
   const identifiers = await db
@@ -170,8 +122,7 @@ async function loadCompany(actor: Actor, companyId: string) {
   return {
     ...row,
     identifiers,
-    companyNumber:
-      identifiers.find((i) => i.scheme === "gb_company_number")?.value ?? null,
+    companyNumber: identifiers.find((i) => i.scheme === "gb_company_number")?.value ?? null,
   };
 }
 
@@ -184,13 +135,9 @@ const COMPANIES_PER_RUN = 15;
  * and their service categories.
  */
 async function icpOf(actor: Actor) {
-  const ukServices = (await loadServices(actor.workspaceId)).filter(
-    (s) => s.targetCountries.length === 0 || s.targetCountries.includes("GB"),
-  );
+  const ukServices = (await loadServices(actor.workspaceId)).filter((s) => s.targetCountries.length === 0 || s.targetCountries.includes("GB"));
   return {
-    industries: [
-      ...new Set(ukServices.flatMap((s) => s.targetIndustries)),
-    ].filter((slug) => INDUSTRY_SIC_CODES[slug]),
+    industries: [...new Set(ukServices.flatMap((s) => s.targetIndustries))].filter((slug) => INDUSTRY_SIC_CODES[slug]),
     targetsUk: ukServices.length > 0,
     categories: [...new Set(ukServices.flatMap((s) => s.categories))],
   };
@@ -198,27 +145,20 @@ async function icpOf(actor: Actor) {
 
 /** The same for the US sources: services aimed at the US (or at any country). */
 async function usIcpOf(actor: Actor) {
-  const usServices = (await loadServices(actor.workspaceId)).filter(
-    (s) => s.targetCountries.length === 0 || s.targetCountries.includes("US"),
-  );
+  const usServices = (await loadServices(actor.workspaceId)).filter((s) => s.targetCountries.length === 0 || s.targetCountries.includes("US"));
   return {
     industries: [...new Set(usServices.flatMap((s) => s.targetIndustries))],
     categories: [...new Set(usServices.flatMap((s) => s.categories))],
   };
 }
 
-const isoDaysAgo = (days: number) =>
-  new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
+const isoDaysAgo = (days: number) => new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
 
 // --- discover_companies: new UK companies matching the ICP ------------------------------------
 
 async function discoverCompanies({ actor }: JobContext): Promise<JobResult> {
   const icp = await icpOf(actor);
-  if (
-    !icp.targetsUk ||
-    icp.industries.length === 0 ||
-    !(await sourceRunnable(actor.workspaceId, "companies_house"))
-  ) {
+  if (!icp.targetsUk || icp.industries.length === 0 || !(await sourceRunnable(actor.workspaceId, "companies_house"))) {
     return { followUps: [], skipped: true };
   }
   // Newly formed companies first: being new is itself a signal (a new business needs a website,
@@ -258,19 +198,10 @@ async function discoverCompanies({ actor }: JobContext): Promise<JobResult> {
         },
         icp.categories,
       );
-      const signal = formation
-        ? await insertDetectedSignal(
-            tx,
-            actor,
-            resolved.companyId,
-            formation,
-            resolved.recordId,
-          )
-        : null;
+      const signal = formation ? await insertDetectedSignal(tx, actor, resolved.companyId, formation, resolved.recordId) : null;
       return { ...resolved, signalCreated: signal?.created ?? false };
     });
-    if (result.signalCreated)
-      await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
+    if (result.signalCreated) await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
     followUps.push({ kind: "enrich_company", entityId: result.companyId });
   }
   return { followUps };
@@ -284,83 +215,34 @@ const CQC_API_LOCATIONS_PER_PROVIDER = 3;
 
 async function discoverCqc({ actor }: JobContext): Promise<JobResult> {
   const icp = await icpOf(actor);
-  const industries = icp.industries.filter(
-    (slug) => INDUSTRY_CQC_SERVICE_TYPES[slug],
-  );
-  if (
-    !icp.targetsUk ||
-    industries.length === 0 ||
-    !(await sourceRunnable(actor.workspaceId, "cqc"))
-  ) {
+  const industries = icp.industries.filter((slug) => INDUSTRY_CQC_SERVICE_TYPES[slug]);
+  if (!icp.targetsUk || industries.length === 0 || !(await sourceRunnable(actor.workspaceId, "cqc"))) {
     return { followUps: [], skipped: true };
   }
 
   const directory = await loadDirectory();
-  const known = await knownIdentifiers(
-    db,
-    actor.workspaceId,
-    "gb_cqc_provider",
-  );
-  await newPracticesOfKnownProviders(
-    actor,
-    directory,
-    industries,
-    icp.categories,
-  );
+  const known = await knownIdentifiers(db, actor.workspaceId, "gb_cqc_provider");
+  await newPracticesOfKnownProviders(actor, directory, industries, icp.categories);
   // Providers that list a website first: they can be read and checked further.
   const providers = providersFor(directory, industries)
     .filter((p) => !known.has(p.providerId))
-    .sort(
-      (a, b) =>
-        Number(b.locations.some((l) => l.website)) -
-        Number(a.locations.some((l) => l.website)),
-    )
+    .sort((a, b) => Number(b.locations.some((l) => l.website)) - Number(a.locations.some((l) => l.website)))
     .slice(0, CQC_PROVIDERS_PER_RUN);
 
   const followUps: FollowUp[] = [];
   for (const provider of providers) {
-    const postcodes = provider.locations
-      .map((l) => l.postcode)
-      .filter((p): p is string => p !== null);
-    const companyNumber = await findCompanyNumber(
-      provider.providerName,
-      postcodes,
-    );
-    const details = await Promise.all(
-      provider.locations
-        .slice(0, CQC_API_LOCATIONS_PER_PROVIDER)
-        .map(fetchLocationDetail),
-    );
+    const postcodes = provider.locations.map((l) => l.postcode).filter((p): p is string => p !== null);
+    const companyNumber = await findCompanyNumber(provider.providerName, postcodes);
+    const details = await Promise.all(provider.locations.slice(0, CQC_API_LOCATIONS_PER_PROVIDER).map(fetchLocationDetail));
 
     const result = await db.transaction(async (tx) => {
-      const resolved = await resolveCompany(
-        tx,
-        actor,
-        toCqcCompany(provider, industries, companyNumber),
-      );
-      await saveSourceLocations(
-        tx,
-        resolved.companyId,
-        "cqc",
-        provider.locations.map(toSavedLocation),
-      );
-      await rememberPractices(
-        tx,
-        actor.workspaceId,
-        resolved.companyId,
-        provider.providerId,
-        directory,
-      );
+      const resolved = await resolveCompany(tx, actor, toCqcCompany(provider, industries, companyNumber));
+      await saveSourceLocations(tx, resolved.companyId, "cqc", provider.locations.map(toSavedLocation));
+      await rememberPractices(tx, actor.workspaceId, resolved.companyId, provider.providerId, directory);
       let signalCreated = false;
       for (const [index, detail] of details.entries()) {
         if (!detail) continue;
-        await addFoundPeople(
-          tx,
-          actor,
-          resolved.companyId,
-          detail.managers,
-          "cqc",
-        );
+        await addFoundPeople(tx, actor, resolved.companyId, detail.managers, "cqc");
         const location = provider.locations[index];
         const signal = newLocationSignal(
           {
@@ -371,38 +253,19 @@ async function discoverCqc({ actor }: JobContext): Promise<JobResult> {
           },
           icp.categories,
         );
-        if (signal)
-          signalCreated =
-            (
-              await insertDetectedSignal(
-                tx,
-                actor,
-                resolved.companyId,
-                signal,
-                resolved.recordId,
-              )
-            ).created || signalCreated;
+        if (signal) signalCreated = (await insertDetectedSignal(tx, actor, resolved.companyId, signal, resolved.recordId)).created || signalCreated;
       }
       return { ...resolved, signalCreated };
     });
-    if (result.signalCreated)
-      await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
+    if (result.signalCreated) await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
     followUps.push({ kind: "enrich_company", entityId: result.companyId });
   }
   return { followUps };
 }
 
 /** Practices of one provider seen in the directory, kept so next week's new ones stand out. */
-async function rememberPractices(
-  tx: Tx,
-  workspaceId: string,
-  companyId: string,
-  providerId: string,
-  directory: CqcLocation[],
-) {
-  const locationIds = directory
-    .filter((l) => l.providerId === providerId)
-    .map((l) => l.locationId);
+async function rememberPractices(tx: Tx, workspaceId: string, companyId: string, providerId: string, directory: CqcLocation[]) {
+  const locationIds = directory.filter((l) => l.providerId === providerId).map((l) => l.locationId);
   await saveSourceRecord(
     tx,
     workspaceId,
@@ -425,12 +288,7 @@ async function rememberPractices(
  * so widening the ICP later never makes old practices look new. The first run for a provider only
  * remembers its practices.
  */
-async function newPracticesOfKnownProviders(
-  actor: Actor,
-  directory: CqcLocation[],
-  industries: string[],
-  categories: string[],
-): Promise<void> {
+async function newPracticesOfKnownProviders(actor: Actor, directory: CqcLocation[], industries: string[], categories: string[]): Promise<void> {
   const followed = await db
     .select({
       providerId: companyIdentifiers.value,
@@ -443,84 +301,47 @@ async function newPracticesOfKnownProviders(
       and(
         eq(sourceRecords.workspaceId, actor.workspaceId),
         eq(sourceRecords.sourceSlug, "cqc"),
-        eq(
-          sourceRecords.externalId,
-          sql`'locations:' || ${companyIdentifiers.value}`,
-        ),
+        eq(sourceRecords.externalId, sql`'locations:' || ${companyIdentifiers.value}`),
       ),
     )
-    .where(
-      and(
-        eq(companyIdentifiers.workspaceId, actor.workspaceId),
-        eq(companyIdentifiers.scheme, "gb_cqc_provider"),
-      ),
-    );
+    .where(and(eq(companyIdentifiers.workspaceId, actor.workspaceId), eq(companyIdentifiers.scheme, "gb_cqc_provider")));
   if (followed.length === 0) return;
 
   const ids = new Set(followed.map((f) => f.providerId));
   const ofFollowed = directory.filter((l) => ids.has(l.providerId));
-  const wanted = new Map(
-    providersFor(ofFollowed, industries).map((p) => [p.providerId, p]),
-  );
+  const wanted = new Map(providersFor(ofFollowed, industries).map((p) => [p.providerId, p]));
   const today = new Date().toISOString().slice(0, 10);
   for (const { providerId, companyId, data } of followed) {
-    const before = new Set(
-      (data as { locationIds?: string[] } | null)?.locationIds ?? [],
-    );
+    const before = new Set((data as { locationIds?: string[] } | null)?.locationIds ?? []);
     const isFirstLook = !data;
     const current = ofFollowed.filter((l) => l.providerId === providerId);
-    if (!isFirstLook && current.every((l) => before.has(l.locationId)))
-      continue;
-    const opened = isFirstLook
-      ? []
-      : (wanted.get(providerId)?.locations ?? []).filter(
-          (l) => !before.has(l.locationId),
-        );
+    if (!isFirstLook && current.every((l) => before.has(l.locationId))) continue;
+    const opened = isFirstLook ? [] : (wanted.get(providerId)?.locations ?? []).filter((l) => !before.has(l.locationId));
 
     // The API (when configured) gives the real registration date; otherwise it's the day first seen.
-    const details = await Promise.all(
-      opened.slice(0, CQC_API_LOCATIONS_PER_PROVIDER).map(fetchLocationDetail),
-    );
-    const signals = opened
-      .slice(0, CQC_API_LOCATIONS_PER_PROVIDER)
-      .flatMap((location, index) => {
-        const signal = newLocationSignal(
-          {
-            providerName: location.providerName,
-            name: location.name,
-            registeredOn: details[index]?.registeredOn ?? null,
-            firstListedOn: today,
-            url: location.url,
-          },
-          categories,
-        );
-        return signal ? [signal] : [];
-      });
+    const details = await Promise.all(opened.slice(0, CQC_API_LOCATIONS_PER_PROVIDER).map(fetchLocationDetail));
+    const signals = opened.slice(0, CQC_API_LOCATIONS_PER_PROVIDER).flatMap((location, index) => {
+      const signal = newLocationSignal(
+        {
+          providerName: location.providerName,
+          name: location.name,
+          registeredOn: details[index]?.registeredOn ?? null,
+          firstListedOn: today,
+          url: location.url,
+        },
+        categories,
+      );
+      return signal ? [signal] : [];
+    });
 
     const signalCreated = await db.transaction(async (tx) => {
-      await rememberPractices(
-        tx,
-        actor.workspaceId,
-        companyId,
-        providerId,
-        current,
-      );
-      if (opened.length > 0)
-        await saveSourceLocations(
-          tx,
-          companyId,
-          "cqc",
-          opened.map(toSavedLocation),
-        );
+      await rememberPractices(tx, actor.workspaceId, companyId, providerId, current);
+      if (opened.length > 0) await saveSourceLocations(tx, companyId, "cqc", opened.map(toSavedLocation));
       let created = false;
-      for (const signal of signals)
-        created =
-          (await insertDetectedSignal(tx, actor, companyId, signal)).created ||
-          created;
+      for (const signal of signals) created = (await insertDetectedSignal(tx, actor, companyId, signal)).created || created;
       return created;
     });
-    if (signalCreated)
-      await rescoreAfterCompanyChange(actor.workspaceId, companyId);
+    if (signalCreated) await rescoreAfterCompanyChange(actor.workspaceId, companyId);
   }
 }
 
@@ -546,9 +367,7 @@ const NPI_PAGES_PER_RUN = 3;
  * Every (search, state, page) the ICP's industries call for, in the order runs read them: page 1
  * of every state first, then page 2, so each run brings variety. Pure.
  */
-export function npiSteps(
-  industries: string[],
-): { industry: string; taxonomy: string; state: string; skip: number }[] {
+export function npiSteps(industries: string[]): { industry: string; taxonomy: string; state: string; skip: number }[] {
   const searches = industries.flatMap((industry) =>
     (INDUSTRY_NPI_TAXONOMIES[industry]?.searches ?? []).map((taxonomy) => ({
       industry,
@@ -557,8 +376,7 @@ export function npiSteps(
   );
   const steps = [];
   for (let skip = 0; skip <= MAX_SKIP; skip += NPI_PAGE_SIZE) {
-    for (const state of US_STATES)
-      for (const search of searches) steps.push({ ...search, state, skip });
+    for (const state of US_STATES) for (const search of searches) steps.push({ ...search, state, skip });
   }
   return steps;
 }
@@ -566,47 +384,27 @@ export function npiSteps(
 async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
   const icp = await usIcpOf(actor);
   const steps = npiSteps(icp.industries);
-  if (
-    steps.length === 0 ||
-    !(await sourceRunnable(actor.workspaceId, "us_npi"))
-  )
-    return { followUps: [], skipped: true };
+  if (steps.length === 0 || !(await sourceRunnable(actor.workspaceId, "us_npi"))) return { followUps: [], skipped: true };
 
   // Where the last run stopped, per workspace.
   const cursorId = "cursor:npi";
   const [cursor] = await db
     .select({ data: sourceRecords.data })
     .from(sourceRecords)
-    .where(
-      and(
-        eq(sourceRecords.workspaceId, actor.workspaceId),
-        eq(sourceRecords.sourceSlug, "us_npi"),
-        eq(sourceRecords.externalId, cursorId),
-      ),
-    )
+    .where(and(eq(sourceRecords.workspaceId, actor.workspaceId), eq(sourceRecords.sourceSlug, "us_npi"), eq(sourceRecords.externalId, cursorId)))
     .limit(1);
-  let step =
-    Number((cursor?.data as { step?: number } | undefined)?.step ?? 0) %
-    steps.length;
+  let step = Number((cursor?.data as { step?: number } | undefined)?.step ?? 0) % steps.length;
 
   const known = await knownIdentifiers(db, actor.workspaceId, "us_npi");
   const picked: { org: NpiOrganization; industry: string }[] = [];
-  for (
-    let page = 0;
-    page < NPI_PAGES_PER_RUN && picked.length < COMPANIES_PER_RUN;
-    page++
-  ) {
+  for (let page = 0; page < NPI_PAGES_PER_RUN && picked.length < COMPANIES_PER_RUN; page++) {
     const { industry, taxonomy, state, skip } = steps[step];
     step = (step + 1) % steps.length;
     const orgs = await searchOrganizations({ taxonomy, state, skip });
     // Newest practices first: being new is itself a signal.
     const fresh = orgs
       .filter((org) => !known.has(org.number) && fitsIndustry(org, industry))
-      .sort((a, b) =>
-        (b.basic.enumeration_date ?? "").localeCompare(
-          a.basic.enumeration_date ?? "",
-        ),
-      );
+      .sort((a, b) => (b.basic.enumeration_date ?? "").localeCompare(a.basic.enumeration_date ?? ""));
     for (const org of fresh.slice(0, COMPANIES_PER_RUN - picked.length)) {
       known.add(org.number);
       picked.push({ org, industry });
@@ -619,21 +417,8 @@ async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
     const result = await db.transaction(async (tx) => {
       const resolved = await resolveCompany(tx, actor, found);
       const location = toNpiLocation(org);
-      if (location)
-        await saveSourceLocations(
-          tx,
-          resolved.companyId,
-          "us_npi",
-          [location],
-          "US",
-        );
-      await addFoundPeople(
-        tx,
-        actor,
-        resolved.companyId,
-        toNpiPeople(org),
-        "us_npi",
-      );
+      if (location) await saveSourceLocations(tx, resolved.companyId, "us_npi", [location], "US");
+      await addFoundPeople(tx, actor, resolved.companyId, toNpiPeople(org), "us_npi");
       const formation = formationSignal(
         {
           name: found.name,
@@ -644,19 +429,10 @@ async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
         },
         icp.categories,
       );
-      const signal = formation
-        ? await insertDetectedSignal(
-            tx,
-            actor,
-            resolved.companyId,
-            formation,
-            resolved.recordId,
-          )
-        : null;
+      const signal = formation ? await insertDetectedSignal(tx, actor, resolved.companyId, formation, resolved.recordId) : null;
       return { ...resolved, signalCreated: signal?.created ?? false };
     });
-    if (result.signalCreated)
-      await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
+    if (result.signalCreated) await rescoreAfterCompanyChange(actor.workspaceId, result.companyId);
     followUps.push({ kind: "enrich_company", entityId: result.companyId });
   }
 
@@ -682,17 +458,14 @@ async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
 
 /** Boards judged per run; more wait for the next run a few minutes later. */
 const BOARDS_PER_EVALUATION = 10;
-const ATS_HOSTS =
-  /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|personio\.(de|com)|breezy\.hr)$/i;
+const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|personio\.(de|com)|breezy\.hr)$/i;
 
 /** The site a board's job links point to when it isn't the board itself (Greenhouse lets companies host jobs on their own careers page). */
 function candidateWebsite(jobs: { url: string }[]): string | null {
   const counts = new Map<string, number>();
   for (const job of jobs) {
     try {
-      const host = new URL(job.url).hostname
-        .toLowerCase()
-        .replace(/^www\./, "");
+      const host = new URL(job.url).hostname.toLowerCase().replace(/^www\./, "");
       if (!ATS_HOSTS.test(host)) counts.set(host, (counts.get(host) ?? 0) + 1);
     } catch {
       // Not a URL.
@@ -701,8 +474,7 @@ function candidateWebsite(jobs: { url: string }[]): string | null {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
-const titleFromToken = (token: string) =>
-  token.replace(/[-_.]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+const titleFromToken = (token: string) => token.replace(/[-_.]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
 /**
  * Judges validated public boards for this workspace: only open jobs in its target countries, then a
@@ -714,8 +486,7 @@ const titleFromToken = (token: string) =>
  * jobs change.
  */
 async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
-  if (!(await sourceRunnable(actor.workspaceId, "board_directory")))
-    return { followUps: [], skipped: true };
+  if (!(await sourceRunnable(actor.workspaceId, "board_directory"))) return { followUps: [], skipped: true };
   const services = await loadServices(actor.workspaceId);
   if (services.length === 0) return { followUps: [], skipped: true };
   const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
@@ -764,22 +535,11 @@ async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
       .select({ companyId: companyJobBoards.companyId })
       .from(companyJobBoards)
       .where(
-        and(
-          eq(companyJobBoards.workspaceId, actor.workspaceId),
-          eq(companyJobBoards.provider, provider),
-          eq(companyJobBoards.boardToken, token),
-        ),
+        and(eq(companyJobBoards.workspaceId, actor.workspaceId), eq(companyJobBoards.provider, provider), eq(companyJobBoards.boardToken, token)),
       )
       .limit(1);
     if (connected) {
-      await db.transaction((tx) =>
-        saveSourceRecord(
-          tx,
-          actor.workspaceId,
-          outcome({ relevant: true }),
-          connected.companyId,
-        ),
-      );
+      await db.transaction((tx) => saveSourceRecord(tx, actor.workspaceId, outcome({ relevant: true }), connected.companyId));
       followUps.push({ kind: "scan_job_board", entityId: connected.companyId });
       continue;
     }
@@ -804,12 +564,7 @@ async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
     const verdicts = await ai(() => triageJobs(jobs, services, ref));
     if (!verdicts.some((v) => v?.relevant)) {
       await db.transaction((tx) =>
-        saveSourceRecord(
-          tx,
-          actor.workspaceId,
-          outcome({ relevant: false, reason: "No job matches your services" }),
-          null,
-        ),
+        saveSourceRecord(tx, actor.workspaceId, outcome({ relevant: false, reason: "No job matches your services" }), null),
       );
       continue;
     }
@@ -858,21 +613,14 @@ async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
             description: job.description,
             postedAt: job.postedAt,
             boardJobId: job.boardJobId,
-            triage: verdicts[index]
-              ? verdicts[index]!.relevant
-                ? ("relevant" as const)
-                : ("skipped" as const)
-              : ("pending" as const),
+            triage: verdicts[index] ? (verdicts[index]!.relevant ? ("relevant" as const) : ("skipped" as const)) : ("pending" as const),
             triageReason: verdicts[index]?.reason ?? null,
           })),
         )
         .onConflictDoNothing();
       return resolved.companyId;
     });
-    followUps.push(
-      { kind: "scan_job_board", entityId: companyId },
-      { kind: "enrich_company", entityId: companyId },
-    );
+    followUps.push({ kind: "scan_job_board", entityId: companyId }, { kind: "enrich_company", entityId: companyId });
   }
   // More boards waiting: continue shortly.
   if (boards.length > BOARDS_PER_EVALUATION)
@@ -890,31 +638,16 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
   const company = await loadCompany(actor, job.entityId);
   if (!company) return { followUps: [], skipped: true };
 
-  if (
-    company.companyNumber &&
-    (await sourceRunnable(actor.workspaceId, "companies_house"))
-  ) {
+  if (company.companyNumber && (await sourceRunnable(actor.workspaceId, "companies_house"))) {
     const officers = await companiesHouse.findPeople!({
       identifiers: company.identifiers,
     });
     if (officers) {
       const added = await db.transaction(async (tx) => {
-        await saveSourceRecord(
-          tx,
-          actor.workspaceId,
-          officers.record,
-          company.id,
-        );
-        return addFoundPeople(
-          tx,
-          actor,
-          company.id,
-          officers.people,
-          "companies_house",
-        );
+        await saveSourceRecord(tx, actor.workspaceId, officers.record, company.id);
+        return addFoundPeople(tx, actor, company.id, officers.people, "companies_house");
       });
-      if (added > 0)
-        await rescoreAfterCompanyChange(actor.workspaceId, company.id);
+      if (added > 0) await rescoreAfterCompanyChange(actor.workspaceId, company.id);
     }
   }
 
@@ -935,17 +668,11 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
       site = found
         ? {
             ...found,
-            matchedBy:
-              found.confidence >= 95
-                ? "company_number"
-                : found.confidence >= 85
-                  ? "registered_address"
-                  : "name",
+            matchedBy: found.confidence >= 95 ? "company_number" : found.confidence >= 85 ? "registered_address" : "name",
           }
         : null;
     }
-    if (site && (await confirmWebsite(actor, company, site)))
-      domain = site.domain;
+    if (site && (await confirmWebsite(actor, company, site))) domain = site.domain;
   }
 
   return {
@@ -956,33 +683,18 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
 type WebsiteEvidence = {
   domain: string;
   confidence: number;
-  matchedBy:
-    | "company_number"
-    | "registered_address"
-    | "name"
-    | "job_board_link"
-    | "job_post_links"
-    | "regulator_listing";
+  matchedBy: "company_number" | "registered_address" | "name" | "job_board_link" | "job_post_links" | "regulator_listing";
 };
 
 /** The provider's own site, from the websites its CQC locations list (see `providerWebsite`). */
-async function websiteFromRegister(
-  companyId: string,
-): Promise<WebsiteEvidence | null> {
+async function websiteFromRegister(companyId: string): Promise<WebsiteEvidence | null> {
   const sites = await db
     .select({ website: companyLocations.website })
     .from(companyLocations)
-    .where(
-      and(
-        eq(companyLocations.companyId, companyId),
-        eq(companyLocations.sourceSlug, "cqc"),
-      ),
-    );
+    .where(and(eq(companyLocations.companyId, companyId), eq(companyLocations.sourceSlug, "cqc")));
   const domain = providerWebsite(sites.map((s) => s.website));
   // Given to the regulator by the provider for its own practices.
-  return domain
-    ? { domain, confidence: 90, matchedBy: "regulator_listing" }
-    : null;
+  return domain ? { domain, confidence: 90, matchedBy: "regulator_listing" } : null;
 }
 
 /**
@@ -990,27 +702,16 @@ async function websiteFromRegister(
  * verified: its website is now confirmed, though no registry number is known. Returns false when
  * another company in the workspace already has that website.
  */
-async function confirmWebsite(
-  actor: Actor,
-  company: { id: string; identity: string },
-  site: WebsiteEvidence,
-): Promise<boolean> {
+async function confirmWebsite(actor: Actor, company: { id: string; identity: string }, site: WebsiteEvidence): Promise<boolean> {
   try {
     await db.transaction(async (tx) => {
       await tx
         .update(companies)
         .set({
           domain: site.domain,
-          ...(company.identity === "provisional"
-            ? { identityStatus: "partial" as const }
-            : {}),
+          ...(company.identity === "provisional" ? { identityStatus: "partial" as const } : {}),
         })
-        .where(
-          and(
-            eq(companies.id, company.id),
-            eq(companies.workspaceId, actor.workspaceId),
-          ),
-        );
+        .where(and(eq(companies.id, company.id), eq(companies.workspaceId, actor.workspaceId)));
       await saveSourceRecord(
         tx,
         actor.workspaceId,
@@ -1041,10 +742,7 @@ async function confirmWebsite(
  * The website a job board points to (e.g. the careers page its Greenhouse jobs link to), confirmed
  * only when that site in turn links to the same board. Never taken from the job board's own address.
  */
-async function candidateFromBoard(
-  actor: Actor,
-  company: { id: string; name: string },
-): Promise<WebsiteEvidence | null> {
+async function candidateFromBoard(actor: Actor, company: { id: string; name: string }): Promise<WebsiteEvidence | null> {
   const [[record], posts, boards] = await Promise.all([
     db
       .select({ data: sourceRecords.data })
@@ -1057,11 +755,7 @@ async function candidateFromBoard(
         ),
       )
       .limit(1),
-    db
-      .select({ description: jobPostings.description })
-      .from(jobPostings)
-      .where(eq(jobPostings.companyId, company.id))
-      .limit(50),
+    db.select({ description: jobPostings.description }).from(jobPostings).where(eq(jobPostings.companyId, company.id)).limit(50),
     db
       .select({
         provider: companyJobBoards.provider,
@@ -1074,12 +768,7 @@ async function candidateFromBoard(
   const linksBack = (site: Awaited<ReturnType<typeof readWebsite>>) =>
     Boolean(
       site?.jobBoard &&
-      boards.some(
-        (b) =>
-          b.provider === site.jobBoard!.provider &&
-          b.boardToken.toLowerCase() ===
-            site.jobBoard!.boardToken.toLowerCase(),
-      ),
+      boards.some((b) => b.provider === site.jobBoard!.provider && b.boardToken.toLowerCase() === site.jobBoard!.boardToken.toLowerCase()),
     );
 
   // Where the board's jobs link to (a careers page on the company's own site).
@@ -1100,9 +789,7 @@ async function candidateFromBoard(
     .split(/[^a-z0-9]+/)
     .filter((w) => w.length >= 3 && !GENERIC_NAME_WORDS.has(w));
   const enoughPosts = Math.min(2, posts.filter((p) => p.description).length);
-  for (const { site: candidate, posts: mentions } of sitesInJobPosts(
-    posts.map((p) => p.description),
-  ).slice(0, 2)) {
+  for (const { site: candidate, posts: mentions } of sitesInJobPosts(posts.map((p) => p.description)).slice(0, 2)) {
     const site = await readWebsite(candidate);
     if (!site) continue;
     if (linksBack(site))
@@ -1141,11 +828,7 @@ const GENERIC_NAME_WORDS = new Set([
 
 async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
   const company = await loadCompany(actor, job.entityId);
-  if (
-    !company?.domain ||
-    !(await sourceRunnable(actor.workspaceId, "company_website"))
-  )
-    return { followUps: [], skipped: true };
+  if (!company?.domain || !(await sourceRunnable(actor.workspaceId, "company_website"))) return { followUps: [], skipped: true };
   const recheck: FollowUp = {
     kind: "scan_website",
     entityId: company.id,
@@ -1157,18 +840,8 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
   // What the site publishes now, from its pages and its structured data. It replaces what an
   // earlier read found, so an address the site dropped (or a placeholder) doesn't linger.
   const structured = site.structured;
-  const emails = usableEmails(
-    [...site.emails, ...(structured.email ? [structured.email] : [])],
-    site.domain,
-  );
-  const phones = [
-    ...new Set([
-      ...site.phones,
-      ...(structured.telephone
-        ? [structured.telephone.replace(/[^\d+]/g, "")]
-        : []),
-    ]),
-  ];
+  const emails = usableEmails([...site.emails, ...(structured.email ? [structured.email] : [])], site.domain);
+  const phones = [...new Set([...site.phones, ...(structured.telephone ? [structured.telephone.replace(/[^\d+]/g, "")] : [])])];
 
   const saved = await db.transaction(async (tx) => {
     const records = [];
@@ -1195,9 +868,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
       { emails, phones },
       {
         slug: "company_website",
-        url:
-          site.pages.find((p) => p.kind === "contact")?.url ??
-          site.pages[0].url,
+        url: site.pages.find((p) => p.kind === "contact")?.url ?? site.pages[0].url,
       },
     );
     return records;
@@ -1211,36 +882,21 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     .where(eq(companyJobBoards.companyId, company.id))
     .limit(1);
   if (!board && (await sourceRunnable(actor.workspaceId, "job_board"))) {
-    const detected =
-      site.jobBoard ??
-      (await detectBoard({ name: company.name, domain: company.domain }));
-    if (detected && (await connectDetectedBoard(actor, company.id, detected)))
-      followUps.push({ kind: "scan_job_board", entityId: company.id });
+    const detected = site.jobBoard ?? (await detectBoard({ name: company.name, domain: company.domain }));
+    if (detected && (await connectDetectedBoard(actor, company.id, detected))) followUps.push({ kind: "scan_job_board", entityId: company.id });
   }
 
   // Who works there, and what the company does: only when those pages changed since last time.
   let peopleAdded = 0;
-  const profilePages = saved.filter((p) =>
-    ["home", "about", "team", "contact"].includes(p.kind),
-  );
+  const profilePages = saved.filter((p) => ["home", "about", "team", "contact"].includes(p.kind));
   if (profilePages.some((p) => p.changed)) {
-    const facts = await ai(() =>
-      extractWebsiteFacts(
-        { name: company.name, domain: site.domain },
-        profilePages,
-      ),
-    );
+    const facts = await ai(() => extractWebsiteFacts({ name: company.name, domain: site.domain }, profilePages));
     peopleAdded = await db.transaction(async (tx) => {
       if (facts.description) {
         await tx
           .update(companies)
           .set({ description: facts.description })
-          .where(
-            and(
-              eq(companies.id, company.id),
-              sql`${companies.description} is null`,
-            ),
-          );
+          .where(and(eq(companies.id, company.id), sql`${companies.description} is null`));
       }
       return addFoundPeople(
         tx,
@@ -1267,12 +923,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
         await tx
           .update(companies)
           .set({ employeeCount: structured.employees })
-          .where(
-            and(
-              eq(companies.id, company.id),
-              sql`${companies.employeeCount} is null`,
-            ),
-          );
+          .where(and(eq(companies.id, company.id), sql`${companies.employeeCount} is null`));
       }
       return addFoundPeople(
         tx,
@@ -1296,15 +947,11 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
 
   // Possible website problems, by fixed rules: recorded only for workspaces selling a fix.
   let signalsCreated = 0;
-  const sold = new Set(
-    (await loadServices(actor.workspaceId)).flatMap((s) => s.categories),
-  );
+  const sold = new Set((await loadServices(actor.workspaceId)).flatMap((s) => s.categories));
   const findings = websiteFindings(company.name, site.checks, company.industry);
   // A finding this read no longer makes (e.g. booking now found) is withdrawn: an automatic
   // check's claim must stay true. Only the check's own signals go; nothing a person entered.
-  const gone = (
-    ["outdated_website", "insecure_website", "no_online_booking"] as const
-  ).filter((t) => !findings.some((f) => f.signalType === t));
+  const gone = (["outdated_website", "insecure_website", "no_online_booking"] as const).filter((t) => !findings.some((f) => f.signalType === t));
   const withdrawn =
     gone.length === 0
       ? []
@@ -1352,20 +999,10 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
 
   // News and careers pages can carry signals (expansion, launch, hiring, a request for help).
   const ref = await getReferenceData();
-  const industry =
-    ref.industries.find((i) => i.slug === company.industry)?.name ?? null;
-  for (const page of saved.filter(
-    (p) =>
-      (p.kind === "news" || p.kind === "careers") &&
-      p.changed &&
-      p.text.length >= 200,
-  )) {
+  const industry = ref.industries.find((i) => i.slug === company.industry)?.name ?? null;
+  for (const page of saved.filter((p) => (p.kind === "news" || p.kind === "careers") && p.changed && p.text.length >= 200)) {
     const analysis = await ai(() =>
-      analyzeSignal(
-        { companyId: company.id, text: page.text, sourceUrl: page.url },
-        { name: company.name, domain: site.domain, industry },
-        ref,
-      ),
+      analyzeSignal({ companyId: company.id, text: page.text, sourceUrl: page.url }, { name: company.name, domain: site.domain, industry }, ref),
     );
     const values = signalFromAnalysis(analysis, {
       url: page.url,
@@ -1373,14 +1010,11 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
       evidenceText: page.text,
     });
     if (!values) continue;
-    const signal = await db.transaction((tx) =>
-      insertDetectedSignal(tx, actor, company.id, values, page.id),
-    );
+    const signal = await db.transaction((tx) => insertDetectedSignal(tx, actor, company.id, values, page.id));
     if (signal.created) signalsCreated++;
   }
 
-  if (peopleAdded > 0 || signalsCreated > 0)
-    await rescoreAfterCompanyChange(actor.workspaceId, company.id);
+  if (peopleAdded > 0 || signalsCreated > 0) await rescoreAfterCompanyChange(actor.workspaceId, company.id);
   return { followUps };
 }
 
@@ -1396,22 +1030,12 @@ export const INFERRED_EMAIL = "pattern_inferred";
  *   domain takes mail, not that the mailbox exists, so inferred addresses stay unverified.
  * Nobody's existing address is replaced.
  */
-async function attachEmails(
-  actor: Actor,
-  companyId: string,
-  domain: string,
-  published: string[],
-): Promise<void> {
+async function attachEmails(actor: Actor, companyId: string, domain: string, published: string[]): Promise<void> {
   const team = await db
     .select({ personId: companyPeople.personId, name: people.name })
     .from(companyPeople)
     .innerJoin(people, eq(people.id, companyPeople.personId))
-    .where(
-      and(
-        eq(companyPeople.companyId, companyId),
-        eq(companyPeople.workspaceId, actor.workspaceId),
-      ),
-    );
+    .where(and(eq(companyPeople.companyId, companyId), eq(companyPeople.workspaceId, actor.workspaceId)));
   if (team.length === 0) return;
   const withEmail = new Set(
     (
@@ -1469,20 +1093,17 @@ async function attachEmails(
         });
     }
   }
-  if (rows.length > 0)
-    await db.insert(contactPoints).values(rows).onConflictDoNothing();
+  if (rows.length > 0) await db.insert(contactPoints).values(rows).onConflictDoNothing();
 }
 
 // --- scan_job_board: the existing job-board sync, run on a schedule ---------------------------
 
 async function scanJobBoard({ job, actor }: JobContext): Promise<JobResult> {
   const company = await loadCompany(actor, job.entityId);
-  if (!company || !(await sourceRunnable(actor.workspaceId, "job_board")))
-    return { followUps: [], skipped: true };
+  if (!company || !(await sourceRunnable(actor.workspaceId, "job_board"))) return { followUps: [], skipped: true };
   const result = await syncCompanyJobs(actor, company.id);
   await saveHiringEmails(company);
-  if (result.signalsCreated > 0)
-    await rescoreAfterCompanyChange(actor.workspaceId, company.id);
+  if (result.signalsCreated > 0) await rescoreAfterCompanyChange(actor.workspaceId, company.id);
   // Jobs still waiting for the AI are picked up a few minutes later; otherwise check weekly.
   const followUps: FollowUp[] = [
     {
@@ -1492,8 +1113,7 @@ async function scanJobBoard({ job, actor }: JobContext): Promise<JobResult> {
     },
   ];
   // A company known only from its board: its new posts may now point to its own website.
-  if (!company.domain && result.pending === 0)
-    followUps.push({ kind: "enrich_company", entityId: company.id });
+  if (!company.domain && result.pending === 0) followUps.push({ kind: "enrich_company", entityId: company.id });
   return { followUps };
 }
 
@@ -1502,11 +1122,7 @@ async function scanJobBoard({ job, actor }: JobContext): Promise<JobResult> {
  * posts themselves. Only at the company's own site: its known website, or else the site its posts
  * point to most that carries its name. Accessibility, privacy and similar inboxes are never kept.
  */
-async function saveHiringEmails(company: {
-  id: string;
-  name: string;
-  domain: string | null;
-}): Promise<void> {
+async function saveHiringEmails(company: { id: string; name: string; domain: string | null }): Promise<void> {
   const posts = await db
     .select({ url: jobPostings.url, description: jobPostings.description })
     .from(jobPostings)
@@ -1519,23 +1135,12 @@ async function saveHiringEmails(company: {
     .filter((w) => w.length >= 3 && !GENERIC_NAME_WORDS.has(w));
   const site = company.domain
     ? siteOf(company.domain)
-    : sitesInJobPosts(descriptions).find((s) =>
-        nameWords.some((w) => s.site.split(".")[0].includes(w)),
-      )?.site;
+    : sitesInJobPosts(descriptions).find((s) => nameWords.some((w) => s.site.split(".")[0].includes(w)))?.site;
   if (!site) return;
   const emails = hiringEmails(descriptions, site);
   if (emails.length === 0) return;
-  const shownIn = posts.find((p) =>
-    emails.some((e) => p.description?.toLowerCase().includes(e)),
-  );
-  await db.transaction((tx) =>
-    replaceCompanyContacts(
-      tx,
-      company.id,
-      { emails, phones: [] },
-      { slug: "job_board", url: shownIn?.url ?? null },
-    ),
-  );
+  const shownIn = posts.find((p) => emails.some((e) => p.description?.toLowerCase().includes(e)));
+  await db.transaction((tx) => replaceCompanyContacts(tx, company.id, { emails, phones: [] }, { slug: "job_board", url: shownIn?.url ?? null }));
 }
 
 // --- scan_tenders: public contracts matching the workspace's services ------------------------
@@ -1549,29 +1154,17 @@ const NOT_A_PERSON =
 /** The buyer's own domain from the notice's web address, unless it's a portal or shared host. */
 function tenderBuyerDomain(contact: TenderContact | null): string | null {
   const domain = contact?.website ? normalizeDomain(contact.website) : "";
-  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) && !PORTAL_HOSTS.test(domain)
-    ? domain
-    : null;
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) && !PORTAL_HOSTS.test(domain) ? domain : null;
 }
 
 /**
  * Saves the buyer contact a notice publishes: a named person becomes the company's contact (with
  * their email and phone); a team name or none keeps the email and phone on the company itself.
  */
-async function saveTenderContact(
-  tx: Tx,
-  actor: Actor,
-  companyId: string,
-  contact: TenderContact,
-  url: string,
-): Promise<void> {
+async function saveTenderContact(tx: Tx, actor: Actor, companyId: string, contact: TenderContact, url: string): Promise<void> {
   const name = contact.name?.replace(/\s+/g, " ").trim() ?? "";
   const words = name.split(" ");
-  const isPerson =
-    words.length >= 2 &&
-    words.length <= 4 &&
-    /^[\p{L}' .-]+$/u.test(name) &&
-    !NOT_A_PERSON.test(name);
+  const isPerson = words.length >= 2 && words.length <= 4 && /^[\p{L}' .-]+$/u.test(name) && !NOT_A_PERSON.test(name);
   if (isPerson) {
     await addFoundPeople(
       tx,
@@ -1624,35 +1217,22 @@ async function backfillTenderContacts(actor: Actor): Promise<void> {
     )
     .limit(TENDER_ANALYSES_PER_JOB * 2);
   for (const row of rows) {
-    const contact = await fetchTenderContact(
-      row.externalId.replace(/^notice:/, ""),
-    );
+    const contact = await fetchTenderContact(row.externalId.replace(/^notice:/, ""));
     await db.transaction(async (tx) => {
-      if (contact)
-        await saveTenderContact(
-          tx,
-          actor,
-          row.companyId!,
-          contact,
-          row.url ?? "",
-        );
+      if (contact) await saveTenderContact(tx, actor, row.companyId!, contact, row.url ?? "");
       await tx
         .update(sourceRecords)
         .set({ data: { ...row.data, contactRead: true } })
         .where(eq(sourceRecords.id, row.id));
     });
-    if (contact)
-      await rescoreAfterCompanyChange(actor.workspaceId, row.companyId!);
+    if (contact) await rescoreAfterCompanyChange(actor.workspaceId, row.companyId!);
   }
 }
 
 async function scanTenders({ job, actor, ai }: JobContext): Promise<JobResult> {
-  if (!(await sourceRunnable(actor.workspaceId, "uk_tenders")))
-    return { followUps: [], skipped: true };
+  if (!(await sourceRunnable(actor.workspaceId, "uk_tenders"))) return { followUps: [], skipped: true };
   const { categories } = await icpOf(actor);
-  const cpvCodes = [
-    ...new Set(categories.flatMap((c) => CATEGORY_CPV_CODES[c] ?? [])),
-  ];
+  const cpvCodes = [...new Set(categories.flatMap((c) => CATEGORY_CPV_CODES[c] ?? []))];
   // No services, or none that public bodies buy: nothing to look for.
   if (cpvCodes.length === 0) return { followUps: [], skipped: true };
   await backfillTenderContacts(actor);
@@ -1683,11 +1263,7 @@ async function scanTenders({ job, actor, ai }: JobContext): Promise<JobResult> {
   for (const tender of waiting.slice(0, TENDER_ANALYSES_PER_JOB)) {
     const text = tenderSourceText(tender);
     const analysis = await ai(() =>
-      analyzeSignal(
-        { companyId: job.entityId, text, sourceUrl: tender.url },
-        { name: tender.buyer, domain: null, industry: null },
-        ref,
-      ),
+      analyzeSignal({ companyId: job.entityId, text, sourceUrl: tender.url }, { name: tender.buyer, domain: null, industry: null }, ref),
     );
     const found = signalFromAnalysis(analysis, {
       url: tender.url,
@@ -1695,10 +1271,7 @@ async function scanTenders({ job, actor, ai }: JobContext): Promise<JobResult> {
       evidenceText: tender.description,
     });
     // Procurement codes are broad: keep a tender only if the AI ties it to something the workspace sells.
-    const values =
-      found && found.serviceCategories.some((c) => categories.includes(c))
-        ? found
-        : null;
+    const values = found && found.serviceCategories.some((c) => categories.includes(c)) ? found : null;
     // Only a kept tender's buyer contact is read (the search hits don't carry it).
     const contact = values ? await fetchTenderContact(tender.id) : null;
     const scoredCompany = await db.transaction(async (tx) => {
@@ -1720,33 +1293,17 @@ async function scanTenders({ job, actor, ai }: JobContext): Promise<JobResult> {
         name: tender.buyer,
         domain: tenderBuyerDomain(contact),
         industry: "government",
-        hq: tender.region
-          ? { city: null, region: tender.region, country: "GB" }
-          : { city: null, region: null, country: "GB" },
+        hq: tender.region ? { city: null, region: tender.region, country: "GB" } : { city: null, region: null, country: "GB" },
         identifiers: [],
         foundedOn: null,
         record,
       });
-      if (contact)
-        await saveTenderContact(
-          tx,
-          actor,
-          resolved.companyId,
-          contact,
-          tender.url,
-        );
-      const signal = await insertDetectedSignal(
-        tx,
-        actor,
-        resolved.companyId,
-        values,
-        resolved.recordId,
-      );
+      if (contact) await saveTenderContact(tx, actor, resolved.companyId, contact, tender.url);
+      const signal = await insertDetectedSignal(tx, actor, resolved.companyId, values, resolved.recordId);
       return signal.created ? resolved.companyId : null;
     });
     // Scored after the commit, so the new signal counts.
-    if (scoredCompany)
-      await rescoreAfterCompanyChange(actor.workspaceId, scoredCompany);
+    if (scoredCompany) await rescoreAfterCompanyChange(actor.workspaceId, scoredCompany);
   }
   // More waiting than one job may analyse: continue in a few minutes.
   return {
@@ -1767,19 +1324,160 @@ async function scanTenders({ job, actor, ai }: JobContext): Promise<JobResult> {
 
 async function matchOsm({ actor }: JobContext): Promise<JobResult> {
   // Nothing to match against until the weekly import has run (`npm run osm:import`).
-  if (
-    !(await sourceRunnable(actor.workspaceId, "openstreetmap")) ||
-    !(await osmImported())
-  )
-    return { followUps: [], skipped: true };
+  if (!(await sourceRunnable(actor.workspaceId, "openstreetmap")) || !(await osmImported())) return { followUps: [], skipped: true };
   await matchWorkspace(actor.workspaceId);
   return { followUps: [] };
 }
 
-export const HANDLERS: Record<
-  IngestionJobKind,
-  (context: JobContext) => Promise<JobResult>
-> = {
+// --- discover_theirstack: recent job posts (Indeed, LinkedIn, career sites) via TheirStack -------
+
+/** Jobs analysed per run; the rest wait a few minutes (the free AI checks only a few a minute). */
+const THEIRSTACK_ANALYSES_PER_JOB = 3;
+
+type StoredTheirStackJob = TheirStackJob & { analysed?: boolean; relevant?: boolean };
+
+/**
+ * Once a day: fetches the newest job posts for the roles the workspace's services fill, in its
+ * target countries, skipping companies already in its opportunities and jobs already seen (so no
+ * credit is spent twice). Each job is stored before the AI sees it, so a busy AI never wastes a
+ * credit; it's analysed like any job post, and only a relevant one becomes a company and signal.
+ */
+async function discoverTheirStack({ actor, ai }: JobContext): Promise<JobResult> {
+  if (!(await sourceRunnable(actor.workspaceId, "theirstack"))) return { followUps: [], skipped: true };
+  const services = await loadServices(actor.workspaceId);
+  const categories = [...new Set(services.flatMap((s) => s.categories))];
+  const titles = titlesFor(categories);
+  if (titles.length === 0) return { followUps: [], skipped: true };
+
+  const stored = (extra: SQL) =>
+    db
+      .select({ id: sourceRecords.id, externalId: sourceRecords.externalId, data: sourceRecords.data })
+      .from(sourceRecords)
+      .where(and(eq(sourceRecords.workspaceId, actor.workspaceId), eq(sourceRecords.sourceSlug, "theirstack"), extra));
+
+  // Jobs bought earlier but not analysed yet come first.
+  let waiting = await stored(sql`${sourceRecords.data}->>'analysed' is null`).limit(THEIRSTACK_ANALYSES_PER_JOB + 1);
+  if (waiting.length === 0) {
+    // One key and one allowance for the whole platform: the daily cap is shared by all workspaces.
+    const today = new Date().toISOString().slice(0, 10);
+    const [{ fetchedToday }] = await db
+      .select({ fetchedToday: sql<number>`count(*)::int` })
+      .from(sourceRecords)
+      .where(and(eq(sourceRecords.sourceSlug, "theirstack"), sql`${sourceRecords.data}->>'fetchedOn' = ${today}`));
+    const limit = Math.min(theirStackJobsPerRun() - fetchedToday, await creditsLeft());
+    if (limit <= 0) return { followUps: [] };
+    const size = employeeRange(services);
+    const seen = await stored(sql`true`)
+      .orderBy(desc(sourceRecords.observedAt))
+      .limit(500);
+    const opportunityDomains = await db
+      .selectDistinct({ domain: companies.domain })
+      .from(opportunities)
+      .innerJoin(companies, eq(companies.id, opportunities.companyId))
+      .where(and(eq(opportunities.workspaceId, actor.workspaceId), isNotNull(companies.domain)));
+    // The countries the services name (a service without countries doesn't widen it to the world:
+    // a credit spent on a market the workspace doesn't sell to is wasted). Worldwide only when none do.
+    const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
+    const jobs = await searchJobs({
+      titles,
+      countries,
+      maxAgeDays: 7,
+      limit,
+      seenJobIds: seen.map((r) => Number(r.externalId.replace(/^job:/, ""))).filter(Number.isFinite),
+      skipDomains: opportunityDomains.map((d) => d.domain!),
+      minEmployees: size.min,
+      maxEmployees: size.max,
+    });
+    await db.transaction(async (tx) => {
+      for (const j of jobs) {
+        await saveSourceRecord(
+          tx,
+          actor.workspaceId,
+          {
+            sourceSlug: "theirstack",
+            externalId: `job:${j.id}`,
+            url: j.url,
+            recordType: "job_post",
+            publishedAt: new Date(`${j.postedOn}T00:00:00Z`),
+            data: { ...j, description: j.description.slice(0, 6000), fetchedOn: today },
+          },
+          null,
+        );
+      }
+    });
+    waiting = await stored(sql`${sourceRecords.data}->>'analysed' is null`).limit(THEIRSTACK_ANALYSES_PER_JOB + 1);
+  }
+
+  const ref = await getReferenceData();
+  for (const row of waiting.slice(0, THEIRSTACK_ANALYSES_PER_JOB)) {
+    const j = row.data as StoredTheirStackJob;
+    const industry = ref.industries.find((i) => i.slug === j.company.industry)?.name ?? null;
+    const analysis = await ai(() =>
+      analyzeSignal(
+        { companyId: actor.workspaceId, text: theirStackJobText(j), sourceUrl: j.url },
+        { name: j.company.name, domain: j.company.domain, industry },
+        ref,
+      ),
+    );
+    const found = signalFromAnalysis(analysis, { url: j.url, occurredOn: j.postedOn, evidenceText: j.description });
+    // Kept only when the AI ties the job to something the workspace sells.
+    const values = found && found.serviceCategories.some((c) => categories.includes(c)) ? found : null;
+    const scoredCompany = await db.transaction(async (tx) => {
+      const record = {
+        sourceSlug: "theirstack" as const,
+        externalId: row.externalId,
+        url: j.url,
+        recordType: "job_post",
+        publishedAt: new Date(`${j.postedOn}T00:00:00Z`),
+        data: { ...j, analysed: true, relevant: values !== null },
+      };
+      if (!values) {
+        await saveSourceRecord(tx, actor.workspaceId, record, null);
+        return null;
+      }
+      // Only a company with a relevant job joins the workspace, matched by its website.
+      const resolved = await resolveCompany(tx, actor, {
+        name: j.company.name,
+        domain: j.company.domain,
+        industry: j.company.industry,
+        hq: { city: j.company.city, region: null, country: j.company.country },
+        identifiers: [],
+        identity: j.company.domain ? "partial" : "provisional",
+        foundedOn: null,
+        record,
+      });
+      if (j.company.employeeCount) {
+        await tx
+          .update(companies)
+          .set({ employeeCount: j.company.employeeCount })
+          .where(and(eq(companies.id, resolved.companyId), sql`${companies.employeeCount} is null`));
+      }
+      if (j.hiringTeam.length > 0) await addFoundPeople(tx, actor, resolved.companyId, j.hiringTeam, "theirstack");
+      const signal = await insertDetectedSignal(tx, actor, resolved.companyId, values, resolved.recordId);
+      return signal.created ? resolved.companyId : null;
+    });
+    if (scoredCompany) await rescoreAfterCompanyChange(actor.workspaceId, scoredCompany);
+  }
+  const followUps: FollowUp[] = [];
+  // New companies: their website for contacts and team.
+  const added = await db
+    .select({ companyId: sourceRecords.companyId })
+    .from(sourceRecords)
+    .where(
+      and(
+        eq(sourceRecords.workspaceId, actor.workspaceId),
+        eq(sourceRecords.sourceSlug, "theirstack"),
+        isNotNull(sourceRecords.companyId),
+        sql`${sourceRecords.observedAt} > now() - interval '10 minutes'`,
+      ),
+    );
+  for (const { companyId } of added) followUps.push({ kind: "enrich_company", entityId: companyId! });
+  if (waiting.length > THEIRSTACK_ANALYSES_PER_JOB)
+    followUps.push({ kind: "discover_theirstack", entityId: actor.workspaceId, runAfter: later(3 * 60_000) });
+  return { followUps };
+}
+
+export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise<JobResult>> = {
   discover_companies: discoverCompanies,
   discover_cqc: discoverCqc,
   evaluate_boards: evaluateBoards,
@@ -1789,12 +1487,11 @@ export const HANDLERS: Record<
   scan_tenders: scanTenders,
   match_osm: matchOsm,
   discover_npi: discoverNpi,
+  discover_theirstack: discoverTheirStack,
 };
 
 /** The AI wrapper for a job: counts calls and draws from the workspace's daily AI budget. */
-export function jobContext(
-  job: JobRow,
-): JobContext & { aiCalls: () => number } {
+export function jobContext(job: JobRow): JobContext & { aiCalls: () => number } {
   let calls = 0;
   const actor = systemActor(job.workspaceId);
   return {

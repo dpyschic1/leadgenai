@@ -21,6 +21,7 @@ import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation a
 import { npiSteps } from "@/server/ingestion/handlers";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender, toTenderContact } from "./uk-tenders";
+import { employeeRange, industryOf, theirStackJobText, titlesFor, toJob as toTheirStackJob } from "./theirstack";
 import {
   bookingEvidence,
   frameSources,
@@ -912,5 +913,58 @@ describe("company site from its job posts", () => {
     expect(hiringEmails(toast, "toasttab.com")).toEqual([]);
     const posts = ["Send your CV to Careers@Acme.co.uk or recruitment@jobs.acme.co.uk", "privacy@acme.co.uk, accommodations@acme.co.uk, careers@gmail.com, jobs@other.com"];
     expect(hiringEmails(posts, "acme.co.uk")).toEqual(["careers@acme.co.uk", "recruitment@jobs.acme.co.uk"]);
+  });
+});
+
+describe("theirstack", () => {
+  const hit = {
+    id: 98765,
+    job_title: "Senior DevOps Engineer ",
+    url: "https://www.linkedin.com/jobs/view/98765",
+    final_url: "https://acme.com/careers/devops",
+    source_url: "https://www.linkedin.com/jobs/view/98765",
+    date_posted: "2026-11-03",
+    description: "We are moving to AWS and need help with Kubernetes.",
+    short_location: "London",
+    remote: true,
+    company_object: { name: "Acme Ltd", domain: "www.Acme.com", industry: "Software Development", employee_count: 240, country_code: "gb", city: "London" },
+    hiring_team: [{ full_name: "Jane Smith", role: "Head of Platform" }, { full_name: "Bob" }],
+  };
+
+  it("reads a job with its company, keeping the career-page link and where it was found", () => {
+    const job = toTheirStackJob(hit)!;
+    expect(job).toMatchObject({
+      id: 98765,
+      title: "Senior DevOps Engineer",
+      url: "https://acme.com/careers/devops",
+      foundOn: "linkedin.com",
+      postedOn: "2026-11-03",
+      location: "London; Remote",
+      company: { name: "Acme Ltd", domain: "acme.com", industry: "saas", employeeCount: 240, country: "GB" },
+    });
+    // Only full names become people.
+    expect(job.hiringTeam.map((p) => [p.name, p.title])).toEqual([["Jane Smith", "Head of Platform"]]);
+    expect(theirStackJobText(job)).toContain("Found on: linkedin.com");
+  });
+
+  it("drops recruiting agencies' posts and unusable links", () => {
+    expect(toTheirStackJob({ ...hit, company_object: { ...hit.company_object, is_recruiting_agency: true } })).toBeNull();
+    expect(toTheirStackJob({ ...hit, final_url: "javascript:x", url: "nope" })).toBeNull();
+    expect(toTheirStackJob({ id: 1 })).toBeNull();
+  });
+
+  it("searches only the roles the workspace's services fill", () => {
+    expect(titlesFor(["cloud_devops"])).toEqual(["devops engineer", "site reliability engineer", "platform engineer", "cloud engineer"]);
+    expect(titlesFor(["unknown_category"])).toEqual([]);
+    expect(industryOf("Hospitals and Health Care")).toBe("healthcare");
+    expect(industryOf(null)).toBeNull();
+  });
+});
+
+describe("theirstack company size", () => {
+  it("searches the widest size the services cover, never the giants by default", () => {
+    expect(employeeRange([{ companySizeMin: 10, companySizeMax: 200 }, { companySizeMin: 50, companySizeMax: null }])).toEqual({ min: 10, max: 2000 });
+    expect(employeeRange([{ companySizeMin: 5, companySizeMax: 100 }, { companySizeMin: 20, companySizeMax: 500 }])).toEqual({ min: 5, max: 500 });
+    expect(employeeRange([{ companySizeMin: null, companySizeMax: null }])).toEqual({ min: null, max: 2000 });
   });
 });

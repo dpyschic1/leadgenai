@@ -6,6 +6,7 @@ import { companiesHouse } from "./companies-house";
 import { companyWebsite } from "./company-website";
 import { cqc } from "./cqc";
 import { nppes } from "./nppes";
+import { theirStack } from "./theirstack";
 import { openStreetMap } from "./osm";
 import { ukTenders } from "./uk-tenders";
 
@@ -110,5 +111,6 @@ export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   uk_tenders: ukTenders,
   openstreetmap: openStreetMap,
   us_npi: nppes,
+  theirstack: theirStack,
   fca_register: fcaRegister,
 };

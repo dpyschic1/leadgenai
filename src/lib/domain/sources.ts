@@ -12,6 +12,7 @@ export const SOURCE_SLUGS = [
   "uk_tenders",
   "openstreetmap",
   "us_npi",
+  "theirstack",
   "fca_register",
 ] as const;
 export type SourceSlug = (typeof SOURCE_SLUGS)[number];
@@ -25,6 +26,7 @@ export const SOURCE_LABELS: Record<SourceSlug, string> = {
   uk_tenders: "UK public tenders",
   openstreetmap: "OpenStreetMap",
   us_npi: "NPI Registry (US)",
+  theirstack: "TheirStack job posts",
   fca_register: "FCA register",
 };
 
@@ -40,6 +42,8 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
     "Every US healthcare organization registered with CMS (dental practices, clinics, therapy, optometry): each practice's address and phone, and its authorized official. Public data, no key.",
   openstreetmap:
     "Phone, website and email that businesses have on OpenStreetMap, matched carefully to your companies and their practices. Shown as published there, not verified. © OpenStreetMap contributors, ODbL.",
+  theirstack:
+    "Recent job posts from Indeed, LinkedIn, company career sites and ATS boards, through TheirStack (paid API, free monthly allowance). Searches only the roles your services fill, in your target countries, and skips companies already in your opportunities, so each credit buys a new lead. Needs THEIRSTACK_API_KEY.",
   fca_register: "Financial firms and approved people. Not used: the FCA's terms need written permission to store or redistribute register data.",
 };
 
@@ -58,6 +62,7 @@ export const INGESTION_JOB_KINDS = [
   "scan_tenders",
   "match_osm",
   "discover_npi",
+  "discover_theirstack",
 ] as const;
 export type IngestionJobKind = (typeof INGESTION_JOB_KINDS)[number];
 
@@ -72,6 +77,7 @@ export const JOB_KIND_SOURCE: Record<IngestionJobKind, SourceSlug> = {
   scan_tenders: "uk_tenders",
   match_osm: "openstreetmap",
   discover_npi: "us_npi",
+  discover_theirstack: "theirstack",
 };
 
 /** The credit ODbL requires wherever OpenStreetMap data is shown or exported. */

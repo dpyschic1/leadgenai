@@ -19,7 +19,7 @@ export type TickResult = { processed: number; failed: number; postponed: number 
 const DEFAULT_BUDGET_MS = 40_000;
 
 /** Workspace-wide checks that run once a day for every workspace with services. */
-const DAILY_KINDS = ["discover_companies", "discover_cqc", "evaluate_boards", "scan_tenders", "match_osm", "discover_npi"] as const;
+const DAILY_KINDS = ["discover_companies", "discover_cqc", "evaluate_boards", "scan_tenders", "match_osm", "discover_npi", "discover_theirstack"] as const;
 
 /**
  * Queues today's discovery and tender checks for workspaces that have services, each a day after
