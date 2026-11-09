@@ -38,6 +38,7 @@ vi.mock("@/server/ai/signal-analysis", () => ({ analyzeSignal: vi.fn() }));
 vi.mock("@/server/sources/http", async (original) => ({
   ...(await original<typeof import("@/server/sources/http")>()),
   politeGet: vi.fn(async (url: string) => ({ url, status: 404, contentType: "text/html", body: "", bytes: Buffer.alloc(0) })),
+  hostResolves: vi.fn(async () => false),
 }));
 vi.mock("@/server/sources/company-website", async (original) => ({
   ...(await original<typeof import("@/server/sources/company-website")>()),

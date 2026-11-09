@@ -1,0 +1,36 @@
+# Daily Overture Maps lookup: phones, emails and candidate websites for the companies we already
+# have. Reads only the places matching our companies from Overture's public bucket (DuckDB); the
+# full dataset is never downloaded. Needs the DATABASE_URL secret (the production database).
+# Data © Overture Maps Foundation, CDLA Permissive 2.0: see src/server/sources/overture.ts.
+name: Overture Maps lookup
+
+on:
+  schedule:
+    - cron: "41 4 * * *" # daily 04:41 UTC
+  workflow_dispatch:
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install DuckDB
+        run: |
+          curl -fsSL --retry 3 -o duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.3.2/duckdb_cli-linux-amd64.zip
+          unzip -o duckdb.zip
+      - name: List our companies' websites and postcodes
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run -s overture -- targets targets.csv
+      - name: Look them up in the newest Overture release
+        run: ./duckdb -c "$(npm run -s overture -- sql targets.csv places.json)"
+      - name: Match and save
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run overture -- load places.json

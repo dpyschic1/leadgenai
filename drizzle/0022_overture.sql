@@ -1,0 +1,4 @@
+-- Hand-added: Overture Maps places as a contact source (CDLA Permissive 2.0; Apache 2.0 for Foursquare).
+INSERT INTO "sources" ("slug", "name", "type", "authorization_status", "terms_url", "notes") VALUES
+  ('overture', 'Overture Maps places', 'open_map_data', 'approved', 'https://docs.overturemaps.org/attribution/', 'Monthly open map data of businesses from Meta, Microsoft, Foursquare and others. Looked up offline for our own companies only (scripts/overture.ts, GitHub Actions): a place on the company''s own website domain gives its phone and email; a place at its postcode with clearly the same name gives a candidate website, accepted only after the usual on-site evidence check. Attribution: © Overture Maps Foundation, CDLA Permissive 2.0; includes data from Meta, Microsoft, Foursquare (© 2024 Foursquare Labs, Inc.).')
+ON CONFLICT ("slug") DO NOTHING;

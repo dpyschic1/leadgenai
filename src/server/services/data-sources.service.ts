@@ -23,6 +23,7 @@ import { queueChecksNow, runTick } from "@/server/ingestion/worker";
 import { SOURCE_ADAPTERS } from "@/server/sources";
 import { CQC_ATTRIBUTION } from "@/server/sources/cqc";
 import { osmPlacesFor } from "@/server/sources/osm";
+import { OVERTURE_ATTRIBUTION } from "@/server/sources/overture";
 
 /** Settings → Data sources (FR-SIG-005, PRD §8.12), "Run now", and each company's provenance. */
 
@@ -139,7 +140,10 @@ export async function getCompanySources(auth: AuthContext, companyId: string): P
     sites: sites.map((s) => ({ name: s.name ?? "Location", website: s.website, phone: s.phone, postalCode: s.postalCode, source: (s.sourceSlug as SourceSlug | null) ?? null })),
     openStreetMap,
     // The OpenStreetMap credit is shown with its own section (`openStreetMap`), linked.
-    attributions: usesCqc ? [CQC_ATTRIBUTION] : [],
+    attributions: [
+      ...(usesCqc ? [CQC_ATTRIBUTION] : []),
+      ...(records.some((r) => r.sourceSlug === "overture") || contacts.some((c) => c.sourceSlug === "overture") ? [OVERTURE_ATTRIBUTION] : []),
+    ],
     pendingJobs: pending,
   };
 }

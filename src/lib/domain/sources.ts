@@ -13,6 +13,7 @@ export const SOURCE_SLUGS = [
   "openstreetmap",
   "us_npi",
   "theirstack",
+  "overture",
   "fca_register",
 ] as const;
 export type SourceSlug = (typeof SOURCE_SLUGS)[number];
@@ -27,6 +28,7 @@ export const SOURCE_LABELS: Record<SourceSlug, string> = {
   openstreetmap: "OpenStreetMap",
   us_npi: "NPI Registry (US)",
   theirstack: "TheirStack job posts",
+  overture: "Overture Maps",
   fca_register: "FCA register",
 };
 
@@ -44,6 +46,8 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
     "Phone, website and email that businesses have on OpenStreetMap, matched carefully to your companies and their practices. Shown as published there, not verified. © OpenStreetMap contributors, ODbL.",
   theirstack:
     "Recent job posts from Indeed, LinkedIn, company career sites and ATS boards, through TheirStack (paid API, free monthly allowance). Searches only the roles your services fill, in your target countries, and skips companies already in your opportunities, so each credit buys a new lead. Needs THEIRSTACK_API_KEY.",
+  overture:
+    "Phone, email and website from Overture Maps places (Meta, Microsoft, Foursquare and others), matched to your companies by their own website, or a candidate website by postcode and name that is then checked on the site. © Overture Maps Foundation, CDLA Permissive 2.0.",
   fca_register: "Financial firms and approved people. Not used: the FCA's terms need written permission to store or redistribute register data.",
 };
 
@@ -83,6 +87,9 @@ export const JOB_KIND_SOURCE: Record<IngestionJobKind, SourceSlug> = {
 /** The credit ODbL requires wherever OpenStreetMap data is shown or exported. */
 export const OSM_ATTRIBUTION = "© OpenStreetMap contributors, available under the Open Database License (ODbL)";
 export const OSM_COPYRIGHT_URL = "https://www.openstreetmap.org/copyright";
+
+/** The credit Overture Maps asks for wherever its place data is shown (CDLA Permissive 2.0). */
+export const OVERTURE_ATTRIBUTION_URL = "https://docs.overturemaps.org/attribution/";
 
 export const INGESTION_JOB_STATUSES = ["queued", "running", "done", "failed", "skipped"] as const;
 export type IngestionJobStatus = (typeof INGESTION_JOB_STATUSES)[number];

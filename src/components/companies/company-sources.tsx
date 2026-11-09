@@ -18,6 +18,8 @@ const RECORD_LABELS: Record<string, string> = {
   job_board: "Job board",
   officer_list: "Directors",
   tender: "Public tender",
+  place: "Overture Maps place",
+  place_candidate: "Overture Maps: suggested website",
   "web_page:home": "Website: home page",
   "web_page:about": "Website: about",
   "web_page:team": "Website: team",
@@ -33,6 +35,7 @@ const WEBSITE_MATCH: Record<string, string> = {
   name: "Shows the company name and town",
   job_board_link: "Links to the company's job board",
   job_post_links: "Its job posts link to this site, which carries its name",
+  name_links_board: "The site for its name links to its job board",
   regulator_listing: "Listed for its practices on the CQC register",
 };
 

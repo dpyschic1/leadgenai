@@ -82,10 +82,12 @@ export async function findWebsite(company: {
   companyNumber: string | null;
   city: string | null;
   postcode?: string | null;
+  /** Sites another source suggests (e.g. a map listing at its address), checked first, the same way. */
+  suggested?: string[];
 }): Promise<{ domain: string; confidence: number } | null> {
   // Most guesses don't exist: a parallel DNS check rules them out at once, then only real sites
   // are fetched, a few at most, with a short timeout.
-  const candidates = candidateDomains(company.name);
+  const candidates = [...new Set([...(company.suggested ?? []), ...candidateDomains(company.name)])];
   const exists = await Promise.all(candidates.map(hostResolves));
   let checked = 0;
   for (const domain of candidates.filter((_, i) => exists[i])) {

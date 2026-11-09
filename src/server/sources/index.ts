@@ -8,6 +8,7 @@ import { cqc } from "./cqc";
 import { nppes } from "./nppes";
 import { theirStack } from "./theirstack";
 import { openStreetMap } from "./osm";
+import { overture } from "./overture";
 import { ukTenders } from "./uk-tenders";
 
 /**
@@ -112,5 +113,6 @@ export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   openstreetmap: openStreetMap,
   us_npi: nppes,
   theirstack: theirStack,
+  overture,
   fca_register: fcaRegister,
 };

@@ -42,7 +42,7 @@ import {
   toFoundCompany as toCqcCompany,
   type CqcLocation,
 } from "@/server/sources/cqc";
-import { domainReceivesEmail } from "@/server/sources/http";
+import { domainReceivesEmail, hostResolves } from "@/server/sources/http";
 import {
   emailFromPattern,
   emailPatternOf,
@@ -107,6 +107,7 @@ async function loadCompany(actor: Actor, companyId: string) {
       identity: companies.identityStatus,
       city: companyLocations.city,
       postcode: companyLocations.postalCode,
+      country: companyLocations.country,
     })
     .from(companies)
     .leftJoin(companyLocations, and(eq(companyLocations.companyId, companies.id), eq(companyLocations.type, "headquarters")))
@@ -665,6 +666,7 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
         companyNumber: company.companyNumber,
         city: company.city,
         postcode: company.postcode,
+        suggested: await suggestedWebsites(actor, company.id),
       });
       site = found
         ? {
@@ -684,8 +686,23 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
 type WebsiteEvidence = {
   domain: string;
   confidence: number;
-  matchedBy: "company_number" | "registered_address" | "name" | "job_board_link" | "job_post_links" | "regulator_listing";
+  matchedBy: "company_number" | "registered_address" | "name" | "job_board_link" | "job_post_links" | "name_links_board" | "regulator_listing";
 };
+
+/**
+ * Websites other sources suggest for the company, e.g. an Overture Maps place at its postcode with
+ * the same name (`scripts/overture.ts`). Only suggestions: `findWebsite` still needs evidence on the site.
+ */
+async function suggestedWebsites(actor: Actor, companyId: string): Promise<string[]> {
+  const rows = await db
+    .select({ data: sourceRecords.data })
+    .from(sourceRecords)
+    .where(and(eq(sourceRecords.workspaceId, actor.workspaceId), eq(sourceRecords.companyId, companyId), eq(sourceRecords.sourceSlug, "overture")));
+  return rows.flatMap((r) => {
+    const site = (r.data as { candidateWebsite?: unknown }).candidateWebsite;
+    return typeof site === "string" && site ? [site] : [];
+  });
+}
 
 /** The provider's own site, from the websites its CQC locations list (see `providerWebsite`). */
 async function websiteFromRegister(companyId: string): Promise<WebsiteEvidence | null> {
@@ -804,7 +821,37 @@ async function candidateFromBoard(actor: Actor, company: { id: string; name: str
     if (mentions >= enoughPosts && nameWords.some((w) => label.includes(w)))
       return { domain: candidate, confidence: 80, matchedBy: "job_post_links" };
   }
+  // The obvious domains for its name or board (Tripadvisor → tripadvisor.com), accepted only when
+  // that site links to this same board: a name alone never decides it.
+  const guesses = boardDomainGuesses(company.name, boards.map((b) => b.boardToken));
+  const resolving = guesses.slice(0, 12);
+  const exists = await Promise.all(resolving.map(hostResolves));
+  for (const candidate of resolving.filter((_, i) => exists[i]).slice(0, MAX_BOARD_GUESSES)) {
+    const site = await readWebsite(candidate);
+    if (site && linksBack(site)) return { domain: site.domain, confidence: 85, matchedBy: "name_links_board" };
+  }
   return null;
+}
+
+/** Guessed sites read per company before giving up (each is a full site read). */
+const MAX_BOARD_GUESSES = 2;
+
+/**
+ * The domains a company is most likely to use, from its name and its board's name: "Trade
+ * Republic" with board "traderepublicbank" → traderepublic.com, traderepublicbank.com, … Pure.
+ */
+export function boardDomainGuesses(name: string, boardTokens: string[]): string[] {
+  const words = name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/&/g, " and ")
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w && !GENERIC_NAME_WORDS.has(w));
+  const stems = [words.join(""), words.join("-"), ...boardTokens.map((t) => t.toLowerCase().replace(/[^a-z0-9-]/g, ""))].filter(
+    (s) => s.length >= 3 && s.length <= 40,
+  );
+  return [...new Set(stems.flatMap((s) => [`${s}.com`, `${s}.io`, `${s}.ai`, `${s}.co.uk`, `${s}.co`]))];
 }
 
 const GENERIC_NAME_WORDS = new Set([
@@ -944,7 +991,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     });
   }
 
-  await attachEmails(actor, company.id, site.domain, emails);
+  await attachEmails(actor, company.id, site.domain, emails, company.country);
 
   // Possible website problems, by fixed rules: recorded only for workspaces selling a fix.
   let signalsCreated = 0;
@@ -1024,6 +1071,14 @@ export const PUBLISHED_EMAIL = "company_website";
 export const INFERRED_EMAIL = "pattern_inferred";
 
 /**
+ * Where a person's work email may be inferred from the company's pattern. Elsewhere (the EU, or a
+ * company whose country we don't know) only published addresses are kept: EU regulators treat a
+ * guessed named address as personal data needing a lawful basis, and Germany needs prior consent
+ * for any marketing email. The UK needs a documented legitimate-interest assessment.
+ */
+export const INFERRED_EMAIL_COUNTRIES = new Set(["GB", "US"]);
+
+/**
  * Gives the company's people their email addresses, keeping how each was obtained separate:
  * - **published**: an address on the company's own site that is clearly that person's;
  * - **inferred**: built from the company's address pattern, only when at least two people's
@@ -1031,7 +1086,7 @@ export const INFERRED_EMAIL = "pattern_inferred";
  *   domain takes mail, not that the mailbox exists, so inferred addresses stay unverified.
  * Nobody's existing address is replaced.
  */
-async function attachEmails(actor: Actor, companyId: string, domain: string, published: string[]): Promise<void> {
+async function attachEmails(actor: Actor, companyId: string, domain: string, published: string[], country: string | null): Promise<void> {
   const team = await db
     .select({ personId: companyPeople.personId, name: people.name })
     .from(companyPeople)
@@ -1079,7 +1134,7 @@ async function attachEmails(actor: Actor, companyId: string, domain: string, pub
   }
 
   const pattern = inferEmailPattern(examples);
-  if (pattern && (await domainReceivesEmail(domain))) {
+  if (pattern && country && INFERRED_EMAIL_COUNTRIES.has(country) && (await domainReceivesEmail(domain))) {
     for (const member of team) {
       if (withEmail.has(member.personId)) continue;
       const email = emailFromPattern(pattern, member.name, domain);

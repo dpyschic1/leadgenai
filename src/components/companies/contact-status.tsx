@@ -12,7 +12,7 @@ import {
   type ContactVerification,
   type IdentityLevel,
 } from "@/lib/domain/people";
-import { OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
+import { OSM_COPYRIGHT_URL, OVERTURE_ATTRIBUTION_URL } from "@/lib/domain/sources";
 import { cn } from "@/lib/utils";
 
 /**
@@ -119,6 +119,19 @@ export function OsmCredit({ className }: { className?: string }) {
       <a href={OSM_COPYRIGHT_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">
         © OpenStreetMap contributors
       </a>
+    </p>
+  );
+}
+
+/** The attribution Overture Maps asks for, shown wherever a contact from its places appears. */
+export function OvertureCredit({ className }: { className?: string }) {
+  return (
+    <p className={cn("text-xs text-muted-foreground", className)}>
+      Map data:{" "}
+      <a href={OVERTURE_ATTRIBUTION_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">
+        © Overture Maps Foundation
+      </a>
+      , including Meta, Microsoft and Foursquare
     </p>
   );
 }

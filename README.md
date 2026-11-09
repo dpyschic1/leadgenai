@@ -130,6 +130,10 @@ company's **Sources** card. Adapters live in `src/server/sources/`, the job queu
   addresses agree on it and the domain has mail servers (MX). MX shows the domain takes email,
   not that the mailbox exists.
 - Inferred addresses are never shown as verified; only a person can verify one.
+- Inference runs only for UK and US companies (`INFERRED_EMAIL_COUNTRIES` in
+  `src/server/ingestion/handlers.ts`). EU regulators treat a guessed named address as personal data
+  that needs a lawful basis, and Germany needs prior consent for any marketing email. For the UK,
+  keep a documented legitimate-interest assessment.
 
 **OpenStreetMap** (contacts only: it never creates, merges or renames a company)
 - *Import, weekly and offline:* `.github/workflows/osm-import.yml` downloads Geofabrik's Great
@@ -154,6 +158,26 @@ company's **Sources** card. Adapters live in `src/server/sources/`, the job queu
   `osm.ts` are the method of making it, which ODbL 4.6 asks us to offer. Have the design reviewed
   before relying on it commercially. A sole trader's number or email is personal data (UK GDPR,
   PECR): email them only with consent.
+
+**Overture Maps** (contacts and candidate websites for companies we already have)
+- *Lookup, daily and offline* (`.github/workflows/overture-match.yml`):
+  1. `npm run overture -- targets targets.csv` lists our companies' websites and, for those
+     without one, their headquarters' postcode.
+  2. DuckDB reads only the matching places from Overture's public bucket (newest release,
+     confidence of at least 0.7). The full dataset (about 88 million places) is never copied.
+  3. `npm run overture -- load places.json` matches and saves (`--dry-run` shows what it would
+     save without writing).
+- *Matching* (`proposeOvertureMatches` in `src/server/sources/overture.ts`):
+  - a place on the company's own website domain gives its phone and own-domain email, stored as
+    company contacts with source "Overture Maps";
+  - for a company without a website, exactly one place at its postcode with clearly the same name
+    gives a *candidate* website. `enrich_company` accepts it only after the usual evidence on the
+    site itself (company number, or name with postcode or town);
+  - anything ambiguous matches nothing.
+- *Licence:* CDLA Permissive 2.0 (Apache 2.0 for Foursquare, CC0 for some sources). Storing and
+  showing the data is allowed with attribution: "© Overture Maps Foundation; includes data from
+  Meta, Microsoft, Foursquare and others" (`OVERTURE_ATTRIBUTION`).
+- To run it by hand, install the DuckDB CLI and run the three steps with `DATABASE_URL` set.
 
 **Sources not used**
 - **FCA register:** its terms require written permission to store or redistribute register data.
@@ -200,6 +224,7 @@ Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (form
 | `npm run db:studio` | Browse the database with Drizzle Studio |
 | `npm run db:seed:demo` | Create (or reset) the demo workspace |
 | `npm run osm:import -- <file.geojsonseq>` | Load OpenStreetMap businesses from an `osmium export` file (see OpenStreetMap above) |
+| `npm run overture -- targets / sql / load …` | Look our companies up in Overture Maps (see Overture Maps above) |
 
 ## Architecture
 

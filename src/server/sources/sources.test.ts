@@ -18,9 +18,10 @@ import {
 } from "./names";
 import { isAllowed, parseRobots } from "./http";
 import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
-import { npiSteps } from "@/server/ingestion/handlers";
+import { boardDomainGuesses, npiSteps } from "@/server/ingestion/handlers";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender, toTenderContact } from "./uk-tenders";
+import { cleanPhone, comparablePostcode, overtureLookupSql, placeDomains, proposeOvertureMatches, type OverturePlace, type OvertureTarget } from "./overture";
 import { employeeRange, industryOf, theirStackJobText, titlesFor, toJob as toTheirStackJob } from "./theirstack";
 import {
   bookingEvidence,
@@ -966,5 +967,97 @@ describe("theirstack company size", () => {
     expect(employeeRange([{ companySizeMin: 10, companySizeMax: 200 }, { companySizeMin: 50, companySizeMax: null }])).toEqual({ min: 10, max: 2000 });
     expect(employeeRange([{ companySizeMin: 5, companySizeMax: 100 }, { companySizeMin: 20, companySizeMax: 500 }])).toEqual({ min: 5, max: 500 });
     expect(employeeRange([{ companySizeMin: null, companySizeMax: null }])).toEqual({ min: null, max: 2000 });
+  });
+});
+
+describe("boardDomainGuesses", () => {
+  it("guesses the name's and the board's domains, without generic words", () => {
+    const guesses = boardDomainGuesses("Trade Republic GmbH", ["traderepublicbank"]);
+    expect(guesses).toContain("traderepublic.com");
+    expect(guesses).toContain("trade-republic.com");
+    expect(guesses).toContain("traderepublicbank.com");
+    expect(guesses.some((g) => g.includes("gmbh"))).toBe(false);
+  });
+  it("gives nothing for a name of only generic words", () => {
+    expect(boardDomainGuesses("The Group Ltd", [])).toEqual([]);
+  });
+});
+
+describe("Overture matching", () => {
+  const place = (over: Partial<OverturePlace>): OverturePlace => ({
+    id: "p1",
+    name: "Smiles Dental Leeds",
+    category: "dental_clinic",
+    confidence: 0.9,
+    websites: null,
+    phones: null,
+    emails: null,
+    postcode: "LS1 4AP",
+    country: "GB",
+    city: "Leeds",
+    datasets: ["meta"],
+    ...over,
+  });
+  const target = (over: Partial<OvertureTarget>): OvertureTarget => ({
+    companyId: "c1",
+    workspaceId: "w1",
+    name: "Smiles Dental Leeds Ltd",
+    domain: null,
+    postcode: "LS1 4AP",
+    country: "GB",
+    ...over,
+  });
+
+  it("normalises postcodes per country", () => {
+    expect(comparablePostcode("ls1 4ap", "GB")).toBe("LS14AP");
+    expect(comparablePostcode("02139-4307", "US")).toBe("02139");
+    expect(comparablePostcode("not a postcode", "GB")).toBeNull();
+    expect(comparablePostcode("LS1 4AP", null)).toBeNull();
+  });
+
+  it("reads registrable domains from a place's websites", () => {
+    expect(placeDomains({ websites: ["https://www.smiles.co.uk/book", "shop.smiles.co.uk", "not a url"] })).toEqual(["smiles.co.uk"]);
+    expect(cleanPhone("+44 113 496 0000")).toBe("+441134960000");
+    expect(cleanPhone("123")).toBeNull();
+  });
+
+  it("takes the phone and own-domain email of a place on the company's website", () => {
+    const [m] = proposeOvertureMatches(
+      [target({ domain: "smiles.co.uk" })],
+      [place({ websites: ["https://smiles.co.uk/"], phones: ["+44 113 496 0000"], emails: ["hello@smiles.co.uk", "agency@marketing.com"] })],
+    );
+    expect(m).toMatchObject({ method: "website", confidence: 95, phones: ["+441134960000"], emails: ["hello@smiles.co.uk"] });
+  });
+
+  it("prefers the branch at the company's own postcode", () => {
+    const [m] = proposeOvertureMatches(
+      [target({ domain: "chain.com", postcode: "M1 1AE" })],
+      [
+        place({ id: "a", websites: ["chain.com"], phones: ["+441110000000"], postcode: "LS1 4AP", confidence: 0.99 }),
+        place({ id: "b", websites: ["chain.com"], phones: ["+442220000000"], postcode: "M1 1AE", confidence: 0.8 }),
+      ],
+    );
+    expect(m.place.id).toBe("b");
+  });
+
+  it("suggests a website by postcode and name only when exactly one place agrees", () => {
+    const [m] = proposeOvertureMatches([target({})], [place({ websites: ["https://smilesleeds.co.uk"] })]);
+    expect(m).toMatchObject({ method: "postcode_name", candidateDomain: "smilesleeds.co.uk", phones: [] });
+    // A different business at the same address: no match.
+    expect(proposeOvertureMatches([target({})], [place({ name: "Leeds Accountancy", websites: ["acc.co.uk"] })])).toEqual([]);
+    // Two agreeing places: ambiguous.
+    expect(proposeOvertureMatches([target({})], [place({ id: "a", websites: ["a.co.uk"] }), place({ id: "b", websites: ["b.co.uk"] })])).toEqual([]);
+  });
+
+  it("ignores low-confidence places and places claimed by two companies", () => {
+    expect(proposeOvertureMatches([target({})], [place({ confidence: 0.5, websites: ["x.co.uk"] })])).toEqual([]);
+    const both = [target({ companyId: "c1" }), target({ companyId: "c2", name: "Smiles Dental Leeds Group" })];
+    expect(proposeOvertureMatches(both, [place({ websites: ["x.co.uk"] })])).toEqual([]);
+  });
+
+  it("builds a lookup query for one release", () => {
+    const query = overtureLookupSql("2026-10-21.0", "t.csv", "o'ut.json");
+    expect(query).toContain("release/2026-10-21.0/theme=places");
+    expect(query).toContain("'o''ut.json'");
   });
 });

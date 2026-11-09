@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeftIcon, Building2Icon, GlobeIcon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
-import { IdentityBadge, OsmCredit, VerificationMark } from "@/components/companies/contact-status";
+import { IdentityBadge, OsmCredit, OvertureCredit, VerificationMark } from "@/components/companies/contact-status";
 import { SaveToListMenu } from "@/components/lists/save-to-list-menu";
 import { SignalTimeline } from "@/components/signals/signal-timeline";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
@@ -294,6 +294,7 @@ function CompanyContacts({ contacts }: { contacts: CompanyContact[] }) {
         })}
       </ul>
       {contacts.some((c) => c.source === "openstreetmap") && <OsmCredit className="mt-2 pl-2" />}
+      {contacts.some((c) => c.source === "overture") && <OvertureCredit className="mt-2 pl-2" />}
     </div>
   );
 }
