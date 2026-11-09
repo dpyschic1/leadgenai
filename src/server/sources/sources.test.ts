@@ -1059,5 +1059,14 @@ describe("Overture matching", () => {
     const query = overtureLookupSql("2026-10-21.0", "t.csv", "o'ut.json");
     expect(query).toContain("release/2026-10-21.0/theme=places");
     expect(query).toContain("'o''ut.json'");
+    expect(query).not.toContain("bbox");
+  });
+
+  it("limits the lookup to our countries' map areas", () => {
+    const query = overtureLookupSql("2026-10-21.0", "t.csv", "o.json", ["GB", "GB"]);
+    expect(query.match(/bbox\.xmin BETWEEN/g)).toHaveLength(1);
+    expect(overtureLookupSql("r", "t.csv", "o.json", ["GB", "US"]).match(/bbox\.xmin BETWEEN/g)).toHaveLength(2);
+    // A country without a known box: scan everything rather than miss it.
+    expect(overtureLookupSql("r", "t.csv", "o.json", ["GB", "FR"])).not.toContain("bbox");
   });
 });

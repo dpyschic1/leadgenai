@@ -176,7 +176,27 @@ export async function latestOvertureRelease(): Promise<string> {
  * domains, or whose postcode is one of our postcodes (country-checked), above the confidence floor.
  * `targets` is a CSV with columns kind (domain | postcode), value, country.
  */
-export function overtureLookupSql(release: string, targetsCsv: string, outJson: string): string {
+/**
+ * Map boxes (west, south, east, north) of the countries we look up. Overture's files are sorted by
+ * area and carry each block's box, so DuckDB skips everything outside these without reading it; a
+ * worldwide scan took over an hour on GitHub Actions. The US box covers Alaska and Hawaii too.
+ */
+export const COUNTRY_BBOX: Record<string, [number, number, number, number]> = {
+  GB: [-8.7, 49.8, 1.8, 60.9],
+  US: [-179.2, 18.9, -66.9, 71.4],
+};
+
+/** The map-area filter for these countries, or none when one has no known box (scan everything). */
+export function bboxFilter(countries: string[]): string {
+  const boxes = [...new Set(countries)].map((c) => COUNTRY_BBOX[c]);
+  if (!boxes.length || boxes.some((b) => !b)) return "";
+  const each = boxes.map(
+    ([w, s, e, n]) => `(bbox.xmin BETWEEN ${w} AND ${e} AND bbox.ymin BETWEEN ${s} AND ${n})`,
+  );
+  return ` AND (${each.join(" OR ")})`;
+}
+
+export function overtureLookupSql(release: string, targetsCsv: string, outJson: string, countries: string[] = []): string {
   const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
   return `
 INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';
@@ -196,7 +216,7 @@ COPY (
         WHEN addresses[1].country = 'US' THEN left(addresses[1].postcode, 5)
         ELSE upper(replace(addresses[1].postcode, ' ', '')) END AS pc
     FROM read_parquet('s3://${OVERTURE_BUCKET}/release/${release}/theme=places/type=place/*')
-    WHERE confidence >= ${MIN_PLACE_CONFIDENCE} AND (websites IS NOT NULL OR phones IS NOT NULL)
+    WHERE confidence >= ${MIN_PLACE_CONFIDENCE} AND (websites IS NOT NULL OR phones IS NOT NULL)${bboxFilter(countries)}
   )
   WHERE list_has_any(list_concat(hosts, [regexp_replace(h, '^[^.]+\\.', '') FOR h IN hosts]), getvariable('domains'))
      OR list_contains(getvariable('postcodes'), pc)

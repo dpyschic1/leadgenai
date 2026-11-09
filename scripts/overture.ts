@@ -11,7 +11,7 @@
  * in Overture's public bucket. Scheduled in `.github/workflows/overture-match.yml`. Matching rules:
  * `proposeOvertureMatches` in `src/server/sources/overture.ts`.
  */
-import { createReadStream, writeFileSync } from "node:fs";
+import { createReadStream, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
@@ -47,7 +47,7 @@ async function writeTargets(file: string) {
   const targets = await loadTargets();
   const rows = new Set<string>();
   for (const t of targets) {
-    if (t.domain) rows.add(`domain,${t.domain},`);
+    if (t.domain) rows.add(`domain,${t.domain},${t.country ?? ""}`);
     else {
       const postcode = comparablePostcode(t.postcode, t.country);
       if (postcode && t.country) rows.add(`postcode,${postcode},${t.country}`);
@@ -55,6 +55,19 @@ async function writeTargets(file: string) {
   }
   writeFileSync(file, ["kind,value,country", ...rows].join("\n") + "\n");
   console.log(`[overture] ${rows.size} targets from ${targets.length} companies → ${file}`);
+}
+
+/**
+ * The countries in a targets file. Websites of companies with no known country are looked up only
+ * within these countries; with no country at all, the scan is worldwide.
+ */
+function targetCountries(file: string): string[] {
+  const countries = readFileSync(file, "utf8")
+    .split("\n")
+    .slice(1)
+    .map((line) => line.split(",")[2]?.trim() ?? "")
+    .filter(Boolean);
+  return [...new Set(countries)];
 }
 
 async function readPlaces(file: string): Promise<OverturePlace[]> {
@@ -133,7 +146,7 @@ async function load(file: string, dryRun: boolean) {
 async function main() {
   const [command, a, b] = process.argv.slice(2);
   if (command === "targets" && a) return writeTargets(a);
-  if (command === "sql" && a && b) return console.log(overtureLookupSql(await latestOvertureRelease(), a, b));
+  if (command === "sql" && a && b) return console.log(overtureLookupSql(await latestOvertureRelease(), a, b, targetCountries(a)));
   if (command === "load" && a) return load(a, b === "--dry-run");
   throw new Error("Usage: overture targets <targets.csv> | sql <targets.csv> <places.json> | load <places.json>");
 }

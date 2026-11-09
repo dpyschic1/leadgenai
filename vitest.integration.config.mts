@@ -8,7 +8,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
-    env: loadEnv({ quiet: true }).parsed,
+    env: {
+      ...loadEnv({ quiet: true }).parsed,
+      // Paid APIs stay off in tests, whatever .env holds: a test tick must never spend real credits.
+      THEIRSTACK_API_KEY: "",
+    },
     testTimeout: 30_000,
     hookTimeout: 60_000,
   },
