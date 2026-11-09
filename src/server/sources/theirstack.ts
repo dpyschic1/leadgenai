@@ -32,8 +32,10 @@ export function employeeRange(services: { companySizeMin: number | null; company
 
 /** Jobs fetched per day across the whole platform (one API key, one allowance). */
 export const theirStackJobsPerRun = () => {
-  const n = Number(process.env.THEIRSTACK_JOBS_PER_DAY);
-  return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 100) : 6;
+  const raw = process.env.THEIRSTACK_JOBS_PER_DAY;
+  const n = Number(raw);
+  // 0 turns it off (e.g. on a local copy sharing production's key); unset means the default.
+  return raw !== undefined && raw !== "" && Number.isFinite(n) && n >= 0 ? Math.min(Math.floor(n), 100) : 6;
 };
 
 /**

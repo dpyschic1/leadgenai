@@ -13,9 +13,9 @@ export async function register() {
   if (state.__localTicker) return;
   state.__localTicker = true;
 
-  const { randomUUID } = await import("node:crypto");
   // The endpoint needs a secret; without one set, a throwaway one for this dev server is enough.
-  process.env.CRON_SECRET ||= randomUUID();
+  // Global Web Crypto, not `node:crypto`: Next also compiles this file for the Edge runtime.
+  process.env.CRON_SECRET ||= crypto.randomUUID();
   const url = `http://localhost:${process.env.PORT ?? "3000"}/api/v1/internal/tick`;
 
   let running = false;
