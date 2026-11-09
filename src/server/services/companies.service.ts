@@ -14,7 +14,7 @@ import { deleteOrphanedPeople, listCompanyPeople } from "./people.service";
 const headquartersOf = (companyId: string | typeof companies.id) =>
   and(eq(companyLocations.companyId, companyId), eq(companyLocations.type, "headquarters"));
 
-/** One page of the workspace's companies, A to Z, optionally narrowed by name or domain. */
+/** One page of the workspace's companies, A to Z (code-like names last), optionally narrowed by name or domain. */
 export async function listCompanies(auth: AuthContext, search?: string, page: Pagination = FIRST_PAGE): Promise<Page<CompanySummary>> {
   const pattern = search ? `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : undefined;
   const matches = and(
@@ -34,8 +34,14 @@ export async function listCompanies(auth: AuthContext, search?: string, page: Pa
       .from(companies)
       .leftJoin(companyLocations, headquartersOf(companies.id))
       .where(matches)
-      // The id breaks ties between same-named companies, so pages never repeat or skip a row.
-      .orderBy(asc(companies.canonicalName), asc(companies.id))
+      // Real names first: a first word of letters ("Smile Dental", "O'Neill & Co") before code-like
+      // names ("00567 LTD", "A134 LTD"); each group A to Z. The id breaks ties between same-named
+      // companies, so pages never repeat or skip a row.
+      .orderBy(
+        sql`${companies.canonicalName} !~ '^[[:alpha:]][[:alpha:]''&.-]*([[:space:]]|$)'`,
+        sql`lower(${companies.canonicalName})`,
+        asc(companies.id),
+      )
       .limit(page.pageSize)
       .offset(offsetOf(page)),
     db.select({ total: sql<number>`count(*)::int` }).from(companies).where(matches),
