@@ -13,6 +13,8 @@ import { jobFunctionFromTitle, seniorityFromTitle } from "./names";
 
 const API = "https://api.theirstack.com";
 const TIMEOUT_MS = 30_000;
+/** Most results one search page may return on the free plan. */
+const THEIRSTACK_PAGE_SIZE = 25;
 
 /** The key from the environment. */
 export const theirStackKey = () => process.env.THEIRSTACK_API_KEY ?? "";
@@ -239,7 +241,7 @@ export async function searchJobs(query: {
   maxEmployees: number | null;
 }): Promise<TheirStackJob[]> {
   if (query.titles.length === 0 || query.limit <= 0) return [];
-  const body = {
+  const filters = {
     job_title_or: query.titles,
     ...(query.countries.length > 0 && { job_country_code_or: query.countries }),
     posted_at_max_age_days: query.maxAgeDays,
@@ -251,14 +253,24 @@ export async function searchJobs(query: {
     ...(query.seenJobIds.length > 0 && { job_id_not: query.seenJobIds.slice(-500) }),
     ...(query.skipDomains.length > 0 && { company_domain_not: query.skipDomains.slice(0, 500) }),
     order_by: [{ field: "date_posted", desc: true }],
-    limit: query.limit,
-    page: 0,
   };
-  const result = await call("/v1/jobs/search", { method: "POST", body: JSON.stringify(body) });
-  if (result.status === 402) throw new Error("TheirStack credits are used up for this period.");
-  if (!result.ok) throw new Error(`TheirStack answered ${result.status}.`);
-  const data = z.object({ data: z.array(z.unknown()) }).safeParse(await result.json()).data?.data ?? [];
-  return data.map(toJob).filter((j): j is TheirStackJob => j !== null);
+  // The free plan returns at most 25 results per page (403 E-020 above that), so read page by page.
+  // Every page the same size (the offset is page × size), split evenly: 50 → 2 × 25, 30 → 2 × 15.
+  const pageSize = Math.ceil(query.limit / Math.ceil(query.limit / THEIRSTACK_PAGE_SIZE));
+  const found: unknown[] = [];
+  for (let page = 0; found.length < query.limit; page++) {
+    const result = await call("/v1/jobs/search", { method: "POST", body: JSON.stringify({ ...filters, limit: pageSize, page }) });
+    if (result.status === 402) throw new Error("TheirStack credits are used up for this period.");
+    if (!result.ok) {
+      // Keep what earlier pages bought (their credits are spent) rather than losing them.
+      if (found.length > 0) break;
+      throw new Error(`TheirStack answered ${result.status}.`);
+    }
+    const data = z.object({ data: z.array(z.unknown()) }).safeParse(await result.json()).data?.data ?? [];
+    found.push(...data);
+    if (data.length < pageSize) break; // no more matches
+  }
+  return found.map(toJob).filter((j): j is TheirStackJob => j !== null);
 }
 
 /** The text the AI analyses for a job: the facts, then the description. */

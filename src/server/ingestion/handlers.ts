@@ -22,7 +22,8 @@ import { TRIAGE_BATCH_SIZE, triageJobs } from "@/server/ai/job-triage";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
 import { extractWebsiteFacts } from "@/server/ai/website-extract";
 import { systemActor, type Actor } from "@/server/auth/actor";
-import { rateLimit } from "@/server/http/rate-limit";
+import { AppError } from "@/server/http/errors";
+import { rateLimit, refundRateLimit } from "@/server/http/rate-limit";
 import { detectBoard } from "@/server/jobs/detect";
 import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
@@ -1499,8 +1500,16 @@ export function jobContext(job: JobRow): JobContext & { aiCalls: () => number } 
     actor,
     ai: async (call) => {
       await rateLimit("aiWorkspace", job.workspaceId);
-      calls++;
-      return call();
+      try {
+        const result = await call();
+        calls++;
+        return result;
+      } catch (error) {
+        // The provider refused before doing any work: don't spend the workspace's daily budget on it.
+        if (error instanceof AppError && error.code === "AI_BUSY") await refundRateLimit("aiWorkspace", job.workspaceId);
+        else calls++;
+        throw error;
+      }
     },
     aiCalls: () => calls,
   };

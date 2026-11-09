@@ -23,8 +23,11 @@ export const RATE_LIMITS = {
   aiAnalysis: { limit: 30, windowSeconds: 60 * 60 },
   /** Per user: AI search (short requests, so cheaper than analysis). */
   aiSearch: { limit: 60, windowSeconds: 60 * 60 },
-  /** Per workspace, across every AI feature: the AI provider's daily quota is shared by everyone. */
-  aiWorkspace: { limit: 300, windowSeconds: 24 * 60 * 60 },
+  /**
+   * Per workspace, across every AI feature: the AI provider's daily quota is shared by everyone.
+   * Only calls the provider answered count (a "busy" refusal is given back, see `refundRateLimit`).
+   */
+  aiWorkspace: { limit: 1000, windowSeconds: 24 * 60 * 60 },
   /** Per user. */
   export: { limit: 30, windowSeconds: 60 * 60 },
   /** Per user: "Run now" on the data sources (finds companies and runs ~30 s of background work). */
@@ -71,6 +74,14 @@ export async function rateLimit(rule: RateLimitRule, subject: string): Promise<v
       retryAfter,
     });
   }
+}
+
+/** Gives back one counted request, e.g. an AI call the provider refused as busy (nothing was used). */
+export async function refundRateLimit(rule: RateLimitRule, subject: string): Promise<void> {
+  await db
+    .update(rateLimits)
+    .set({ count: sql`greatest(${rateLimits.count} - 1, 0)` })
+    .where(sql`${rateLimits.key} = ${rateLimitKey(rule, subject)}`);
 }
 
 /** Forgets `subject`'s count, e.g. failed sign-ins once the right password is given. */

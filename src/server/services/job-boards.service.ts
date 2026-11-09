@@ -8,7 +8,7 @@ import { triageJobs, TRIAGE_BATCH_SIZE } from "@/server/ai/job-triage";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
 import type { Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
-import { rateLimit } from "@/server/http/rate-limit";
+import { rateLimit, refundRateLimit } from "@/server/http/rate-limit";
 import { MAX_JOBS_PER_BOARD } from "@/server/jobs/fetch-jobs";
 import { BOARD_FRESH_MS, boardJobsFor, jobInCountries, type CachedJob } from "@/server/sources/board-directory";
 import {
@@ -137,6 +137,8 @@ export async function syncCompanyJobs(
       return true;
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
+      // Refused as busy before doing any work: don't spend the daily budget on it.
+      if (error.code === "AI_BUSY") await refundRateLimit("aiWorkspace", auth.workspaceId);
       const reasons: Partial<Record<AppError["code"], string>> = {
         AI_BUSY: "The free AI checks only a few jobs a minute. Fetch again in a minute to continue.",
         RATE_LIMITED: "Your workspace's daily AI limit is used up. The remaining jobs will be checked on a later fetch.",
