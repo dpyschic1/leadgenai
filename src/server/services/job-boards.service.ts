@@ -4,17 +4,14 @@ import { db, type Tx } from "@/db";
 import { auditLogs, companies, companyJobBoards, jobPostings } from "@/db/schema";
 import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import { MAX_SOURCE_TEXT } from "@/lib/validation/signals";
-import { triageJobs, TRIAGE_BATCH_SIZE } from "@/server/ai/job-triage";
-import { analyzeSignal } from "@/server/ai/signal-analysis";
 import type { Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
-import { rateLimit, refundRateLimit } from "@/server/http/rate-limit";
 import { MAX_JOBS_PER_BOARD } from "@/server/jobs/fetch-jobs";
 import { BOARD_FRESH_MS, boardJobsFor, jobInCountries, type CachedJob } from "@/server/sources/board-directory";
+import { matchReason, jobCategories, sharedAnalyses } from "@/server/ingestion/shared-jobs";
+import { categorizeJob, ruleJobSignal } from "@/server/jobs/job-categories";
 import {
   jobSignalValues,
-  jobSourceText,
-  MAX_JOB_TEXT,
   rejectionReason,
   roleKey,
   SIGNAL_DELETED_REASON,
@@ -28,9 +25,10 @@ import { insertDetectedSignal } from "./signals.service";
  * with AI against the workspace's services, and record the relevant ones as signals with the job
  * link as evidence.
  *
- * AI runs in two stages to stay inside the free quota: a cheap title check for every new job,
- * then a full signal analysis only for the relevant ones, a few per run. Whatever is left waits
- * for the next run (a few minutes later). The caller re-scores the company afterwards.
+ * No AI runs here: a job is relevant when its shared service categories (`board_job_categories`,
+ * from the title rules or the AI's one reading of it) include one the workspace sells, and each
+ * relevant role becomes a signal at once: the shared AI analysis when there is one, else a
+ * rule-based signal that `analyzeSharedJobs` upgrades in the background. The caller re-scores.
  */
 
 /** Why a job was skipped without the AI: it is outside every country the workspace sells to. */
@@ -52,16 +50,8 @@ export type JobFetchResult = {
   stoppedReason: string | null;
 };
 
-/*
- * Per-fetch AI budget. The free Groq plan allows ~8,000 tokens a minute: about two title checks
- * plus two or three full analyses. More waits for the next fetch (one a minute per company).
- */
-/** New jobs screened per fetch (two title-check calls). */
-const MAX_TRIAGE_PER_FETCH = TRIAGE_BATCH_SIZE * 2;
-/** Roles given the full analysis per fetch. */
-const MAX_ANALYSES_PER_FETCH = 3;
-/** Stop starting AI calls after this long, so the request finishes inside the hosting time limit. */
-const AI_TIME_BUDGET_MS = 30_000;
+/** New signals recorded per fetch: a company's strongest roles first, the rest on the next fetch. */
+const MAX_NEW_SIGNALS_PER_FETCH = 5;
 /** Rows per upsert statement. */
 const UPSERT_CHUNK = 100;
 
@@ -118,41 +108,13 @@ export async function syncCompanyJobs(
 
   const { added, closed } = await storeJobs(auth, companyId, board, fetched);
 
-  const startedAt = Date.now();
-  const outOfTime = () => Date.now() - startedAt > AI_TIME_BUDGET_MS;
   const ref = await getReferenceData();
-  let stoppedReason: string | null = null;
+  const names = new Map(ref.serviceCategories.map((c) => [c.slug, c.name]));
+  const sold = [...new Set(services.flatMap((s) => s.categories))];
   let skipped = 0;
   let signalsCreated = 0;
 
-  /** Runs one AI step; returns false (and records why) when the AI can't continue this fetch. */
-  const aiStep = async (step: () => Promise<void>): Promise<boolean> => {
-    if (outOfTime()) {
-      stoppedReason = "Stopped to stay within the time limit; the rest continues on the next run.";
-      return false;
-    }
-    try {
-      await rateLimit("aiWorkspace", auth.workspaceId);
-      await step();
-      return true;
-    } catch (error) {
-      if (!(error instanceof AppError)) throw error;
-      // Refused as busy before doing any work: don't spend the daily budget on it.
-      if (error.code === "AI_BUSY") await refundRateLimit("aiWorkspace", auth.workspaceId);
-      const reasons: Partial<Record<AppError["code"], string>> = {
-        AI_BUSY: "The free AI checks only a few jobs a minute. Fetch again in a minute to continue.",
-        RATE_LIMITED: "Your workspace's daily AI limit is used up. The remaining jobs will be checked on a later fetch.",
-        AI_FAILED: "The AI couldn't check some jobs. Fetch again to retry them.",
-        AI_UNAVAILABLE: error.message,
-      };
-      const reason = reasons[error.code];
-      if (!reason) throw error;
-      stoppedReason = reason;
-      return false;
-    }
-  };
-
-  // Jobs outside the countries the workspace sells to are skipped without asking the AI.
+  // Jobs outside the countries the workspace sells to are skipped.
   const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
   const pendingNow = await openJobs(auth, companyId, eq(jobPostings.triage, "pending"), MAX_JOBS_PER_BOARD);
   const outside = pendingNow.filter((job) => !jobInCountries(job.location, countries)).map((job) => job.id);
@@ -161,73 +123,58 @@ export async function syncCompanyJobs(
     await db.update(jobPostings).set({ triage: "skipped", triageReason: OUTSIDE_REGIONS }).where(inArray(jobPostings.id, outside));
   }
 
-  // Stage 1: title check for jobs the AI hasn't seen yet.
-  const untriaged = await openJobs(auth, companyId, eq(jobPostings.triage, "pending"), MAX_TRIAGE_PER_FETCH);
-  for (let start = 0; start < untriaged.length; start += TRIAGE_BATCH_SIZE) {
-    const batch = untriaged.slice(start, start + TRIAGE_BATCH_SIZE);
-    const ok = await aiStep(async () => {
-      const verdicts = await triageJobs(batch, services, ref);
-      await db.transaction(async (tx) => {
-        for (const [index, verdict] of verdicts.entries()) {
-          if (!verdict) continue;
-          if (!verdict.relevant) skipped++;
-          await tx
-            .update(jobPostings)
-            .set({ triage: verdict.relevant ? "relevant" : "skipped", triageReason: verdict.reason })
-            .where(eq(jobPostings.id, batch[index].id));
-        }
-      });
-    });
-    if (!ok) break;
-  }
-
-  // Stage 2: one full analysis per role (the same role posted for several places counts once).
-  // A role already decided earlier (recorded, or its signal deleted by the team) needs no AI.
-  if (!stoppedReason) {
-    const groups = await relevantRoles(auth, companyId);
-    const industryName = ref.industries.find((i) => i.slug === company.industry)?.name ?? null;
-    let analysed = 0;
-    // The free AI analyses only so many jobs a day, so every company gets its first signal before
-    // any gets more: a company that already has one adds a single role per fetch, and a new one
-    // stops once its first role becomes a signal.
-    const [{ withSignal }] = await db
-      .select({ withSignal: count() })
-      .from(jobPostings)
-      .where(and(eq(jobPostings.companyId, companyId), eq(jobPostings.workspaceId, auth.workspaceId), isNotNull(jobPostings.signalId)));
-    const maxAnalyses = withSignal > 0 ? 1 : MAX_ANALYSES_PER_FETCH;
-
-    for (const group of groups) {
-      if (group.decided) {
-        await db
-          .update(jobPostings)
-          .set(group.decided.signalId ? { signalId: group.decided.signalId } : { triage: "skipped", triageReason: group.decided.reason })
-          .where(inArray(jobPostings.id, group.jobs.map((j) => j.id)));
-        if (!group.decided.signalId) skipped += group.jobs.length;
-        continue;
-      }
-      if (analysed >= maxAnalyses || (withSignal === 0 && signalsCreated > 0)) continue;
-      analysed++;
-
-      const [lead] = group.jobs;
-      const ok = await aiStep(async () => {
-        const openings = group.jobs.map((j) => j.location ?? j.title);
-        const text = jobSourceText(lead, { openings, maxDescription: MAX_JOB_TEXT });
-        const analysis = await analyzeSignal({ companyId, text, sourceUrl: lead.url }, { ...company, industry: industryName }, ref);
-        const values = jobSignalValues(analysis, lead);
-        const ids = group.jobs.map((j) => j.id);
-        await db.transaction(async (tx) => {
-          if (!values) {
-            skipped += ids.length;
-            await tx.update(jobPostings).set({ triage: "skipped", triageReason: rejectionReason(analysis) }).where(inArray(jobPostings.id, ids));
-            return;
-          }
-          const signal = await insertDetectedSignal(tx, auth, companyId, values);
-          if (signal.created) signalsCreated++;
-          await tx.update(jobPostings).set({ signalId: signal.id }).where(inArray(jobPostings.id, ids));
-        });
-      });
-      if (!ok) break;
+  // Stage 1, no AI: a job is relevant when its service categories (shared, from the title rules or
+  // the AI's reading) include one the workspace sells, and the AI hasn't ruled it out.
+  const untriaged = pendingNow.filter((job) => !outside.includes(job.id));
+  const boardJobIds = untriaged.flatMap((job) => (job.boardJobId ? [job.boardJobId] : []));
+  const [categoriesByJob, analyses] = await Promise.all([jobCategories(boardJobIds), sharedAnalyses(boardJobIds)]);
+  await db.transaction(async (tx) => {
+    for (const job of untriaged) {
+      const found = job.boardJobId ? (categoriesByJob.get(job.boardJobId) ?? []) : categorizeJob(job);
+      const ruledOut = job.boardJobId ? analyses.get(job.boardJobId)?.isSignal === false : false;
+      const relevant = !ruledOut && found.some((c) => sold.includes(c));
+      if (!relevant) skipped++;
+      await tx
+        .update(jobPostings)
+        .set({ triage: relevant ? "relevant" : "skipped", triageReason: ruledOut ? "Not a buying signal on a closer read" : matchReason(found, sold, names) })
+        .where(eq(jobPostings.id, job.id));
     }
+  });
+
+  // Stage 2, no AI: one signal per role (the same role posted for several places counts once): the
+  // shared AI analysis when the job has one, else a rule-based signal the shared analysis upgrades
+  // later. A role already decided earlier (recorded, or its signal deleted by the team) is reused.
+  const groups = await relevantRoles(auth, companyId);
+  const leadAnalyses = await sharedAnalyses(groups.flatMap((g) => (g.jobs[0]?.boardJobId ? [g.jobs[0].boardJobId] : [])));
+  let recorded = 0;
+  for (const group of groups) {
+    if (group.decided) {
+      await db
+        .update(jobPostings)
+        .set(group.decided.signalId ? { signalId: group.decided.signalId } : { triage: "skipped", triageReason: group.decided.reason })
+        .where(inArray(jobPostings.id, group.jobs.map((j) => j.id)));
+      if (!group.decided.signalId) skipped += group.jobs.length;
+      continue;
+    }
+    if (recorded >= MAX_NEW_SIGNALS_PER_FETCH) continue;
+    recorded++;
+    const [lead] = group.jobs;
+    const analysis = lead.boardJobId ? leadAnalyses.get(lead.boardJobId) : undefined;
+    const leadCategories = lead.boardJobId ? (categoriesByJob.get(lead.boardJobId) ?? (await jobCategories([lead.boardJobId])).get(lead.boardJobId) ?? []) : categorizeJob(lead);
+    const values = analysis
+      ? jobSignalValues(analysis, lead)
+      : ruleJobSignal(company.name, lead, group.jobs.length, leadCategories.filter((c) => sold.includes(c)));
+    const ids = group.jobs.map((j) => j.id);
+    await db.transaction(async (tx) => {
+      if (!values) {
+        skipped += ids.length;
+        await tx.update(jobPostings).set({ triage: "skipped", triageReason: rejectionReason(analysis!) }).where(inArray(jobPostings.id, ids));
+        return;
+      }
+      const signal = await insertDetectedSignal(tx, auth, companyId, values);
+      if (signal.created) signalsCreated++;
+      await tx.update(jobPostings).set({ signalId: signal.id }).where(inArray(jobPostings.id, ids));
+    });
   }
 
   await db.transaction(async (tx) => {
@@ -248,7 +195,7 @@ export async function syncCompanyJobs(
       ),
     );
 
-  return { open: fetched.length, added, closed, signalsCreated, skipped, pending, stoppedReason };
+  return { open: fetched.length, added, closed, signalsCreated, skipped, pending, stoppedReason: null };
 }
 
 /**

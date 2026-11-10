@@ -5,6 +5,7 @@ import { sources } from "@/db/schema";
 import { AppError } from "@/server/http/errors";
 import { collectFromArchive, validateDueBoards } from "@/server/sources/board-directory";
 import { HANDLERS, jobContext } from "./handlers";
+import { analyzeSharedJobs, categorizeBoardJobs } from "./shared-jobs";
 import { claimNext, enqueue, markDone, markFailed, postpone, type JobRow } from "./queue";
 
 /**
@@ -72,6 +73,14 @@ async function runSharedStep(deadline: number): Promise<void> {
   } catch (error) {
     console.error("[ingestion] shared job-board step failed", error);
   }
+  // Shared job intelligence: sort new jobs into service categories (free), then let the AI read the
+  // matched ones once for every workspace.
+  try {
+    if (Date.now() < deadline) await categorizeBoardJobs();
+    if (Date.now() < deadline) await analyzeSharedJobs({ deadline });
+  } catch (error) {
+    console.error("[ingestion] shared job analysis failed", error);
+  }
 }
 
 export async function runTick({ workspaceId, budgetMs = DEFAULT_BUDGET_MS }: { workspaceId?: string; budgetMs?: number } = {}): Promise<TickResult> {
@@ -109,5 +118,18 @@ async function runJob(job: JobRow): Promise<keyof TickResult> {
     console.error(`[ingestion] ${job.kind} ${job.entityId} failed (attempt ${job.attempts})`, error);
     await markFailed(job, message, context.aiCalls());
     return "failed";
+  }
+}
+
+/**
+ * Right after a service is saved: this workspace's queued jobs, matching first (it goes before
+ * other kinds and needs no AI), within a short budget. Errors are logged, never thrown: the
+ * regular tick picks up whatever is left.
+ */
+export async function matchNow(workspaceId: string): Promise<void> {
+  try {
+    await runTick({ workspaceId, budgetMs: 25_000 });
+  } catch (error) {
+    console.error("[ingestion] matching after a service change failed", error);
   }
 }

@@ -15,23 +15,20 @@ import {
   signals,
   sourceRecords,
 } from "@/db/schema";
-import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import type { IngestionJobKind } from "@/lib/domain/sources";
 import { CATEGORY_CPV_CODES, INDUSTRY_CQC_SERVICE_TYPES, INDUSTRY_SIC_CODES } from "@/lib/domain/uk-codes";
-import { TRIAGE_BATCH_SIZE, triageJobs } from "@/server/ai/job-triage";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
 import { extractWebsiteFacts } from "@/server/ai/website-extract";
 import { systemActor, type Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
 import { rateLimit, refundRateLimit } from "@/server/http/rate-limit";
 import { detectBoard } from "@/server/jobs/detect";
-import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
 import { getReferenceData } from "@/server/services/reference-data.service";
 import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal } from "@/server/services/signals.service";
-import { boardJobsFor, cleanBoardName, hiringEmails, jobInCountries, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
+import { hiringEmails, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
 import { companiesHouse, findCompanyNumber } from "@/server/sources/companies-house";
 import { findWebsite, readWebsite, usableEmails, websiteFindings } from "@/server/sources/company-website";
 import {
@@ -70,6 +67,7 @@ import { fetchTenderContact, searchTenders, tenderSourceText, type TenderContact
 import { normalizeDomain } from "@/lib/validation/companies";
 import { formationSignal, NEW_COMPANY_DAYS, newLocationSignal, signalFromAnalysis } from "./found-signal";
 import { sourceRunnable, type JobRow } from "./queue";
+import { matchWorkspaceJobs } from "./shared-jobs";
 import { addFoundPeople, knownIdentifiers, replaceCompanyContacts, resolveCompany, saveSourceLocations, saveSourceRecord } from "./resolve";
 
 /**
@@ -486,181 +484,24 @@ async function discoverYc({ actor }: JobContext): Promise<JobResult> {
   return { followUps };
 }
 
-// --- evaluate_boards: shared job boards judged against this workspace's ICP and services --------
-
-/** Boards judged per run; more wait for the next run a few minutes later. */
-const BOARDS_PER_EVALUATION = 10;
-const ATS_HOSTS = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|personio\.(de|com)|breezy\.hr)$/i;
-
-/** The site a board's job links point to when it isn't the board itself (Greenhouse lets companies host jobs on their own careers page). */
-function candidateWebsite(jobs: { url: string }[]): string | null {
-  const counts = new Map<string, number>();
-  for (const job of jobs) {
-    try {
-      const host = new URL(job.url).hostname.toLowerCase().replace(/^www\./, "");
-      if (!ATS_HOSTS.test(host)) counts.set(host, (counts.get(host) ?? 0) + 1);
-    } catch {
-      // Not a URL.
-    }
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-}
-
-const titleFromToken = (token: string) => token.replace(/[-_.]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+// --- evaluate_boards: the shared jobs matched to this workspace's services, no AI ---------------
 
 /**
- * Judges validated public boards for this workspace: only open jobs in its target countries, then a
- * cheap AI title check against its services. A board with relevant jobs becomes a company (matched
- * by evidence, or created as provisional under the board's own name) with the board connected and
- * the verdicts stored; the job-board sync then analyses the relevant jobs into signals. Company
- * matching is never required: a relevant job always lands on a company. Irrelevant boards create
- * nothing; each board's outcome is remembered per workspace, so it is judged again only when its
- * jobs change.
+ * Matches the shared, already categorised jobs to the workspace's services and countries
+ * (`matchWorkspaceJobs`): each matching company is created or found, its jobs and signals recorded
+ * at once, and scored. New companies' websites are looked up next. More matches continue a minute
+ * later, so a new workspace fills up in a few minutes without waiting for the AI.
  */
-async function evaluateBoards({ actor, ai }: JobContext): Promise<JobResult> {
+async function evaluateBoards({ actor }: JobContext): Promise<JobResult> {
   if (!(await sourceRunnable(actor.workspaceId, "board_directory"))) return { followUps: [], skipped: true };
-  const services = await loadServices(actor.workspaceId);
-  if (services.length === 0) return { followUps: [], skipped: true };
-  const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
-  const ref = await getReferenceData();
-
-  const boards = await db.execute<{
-    provider: JobBoardProvider;
-    board_token: string;
-    board_name: string | null;
-    stated_website: string | null;
-    last_fetched_at: string;
-  }>(sql`
-    select d.provider, d.board_token, d.board_name, d.stated_website, d.last_fetched_at
-    from job_board_directory d
-    where d.validation_status = 'valid' and d.last_fetched_at is not null
-      and exists (select 1 from board_jobs j where j.provider = d.provider and j.board_token = d.board_token and j.closed_at is null)
-      and not exists (
-        select 1 from source_records r
-        where r.workspace_id = ${actor.workspaceId} and r.source_slug = 'board_directory'
-          and r.external_id = 'board:' || d.provider || ':' || d.board_token
-          and (r.data->>'evaluatedAt')::timestamptz >= d.last_fetched_at)
-    order by d.last_fetched_at desc
-    limit ${BOARDS_PER_EVALUATION + 1}`);
-
-  const followUps: FollowUp[] = [];
-  for (const board of boards.slice(0, BOARDS_PER_EVALUATION)) {
-    const provider = board.provider;
-    const token = board.board_token;
-    const externalId = `board:${provider}:${token}`;
-    const outcome = (data: Record<string, unknown>) => ({
-      sourceSlug: "board_directory" as const,
-      externalId,
-      url: JOB_BOARD_ADAPTERS[provider].boardUrl(token),
-      recordType: "job_board",
-      publishedAt: null,
-      data: {
-        provider,
-        boardToken: token,
-        evaluatedAt: board.last_fetched_at,
-        ...data,
-      },
-    });
-
-    // A board this workspace already follows is synced by its company's own job.
-    const [connected] = await db
-      .select({ companyId: companyJobBoards.companyId })
-      .from(companyJobBoards)
-      .where(
-        and(eq(companyJobBoards.workspaceId, actor.workspaceId), eq(companyJobBoards.provider, provider), eq(companyJobBoards.boardToken, token)),
-      )
-      .limit(1);
-    if (connected) {
-      await db.transaction((tx) => saveSourceRecord(tx, actor.workspaceId, outcome({ relevant: true }), connected.companyId));
-      followUps.push({ kind: "scan_job_board", entityId: connected.companyId });
-      continue;
-    }
-
-    const jobs = (await boardJobsFor(provider, token, Number.MAX_SAFE_INTEGER))
-      .filter((j) => jobInCountries(j.location, countries))
-      .slice(0, TRIAGE_BATCH_SIZE);
-    if (jobs.length === 0) {
-      await db.transaction((tx) =>
-        saveSourceRecord(
-          tx,
-          actor.workspaceId,
-          outcome({
-            relevant: false,
-            reason: "No open jobs in your target countries",
-          }),
-          null,
-        ),
-      );
-      continue;
-    }
-    const verdicts = await ai(() => triageJobs(jobs, services, ref));
-    if (!verdicts.some((v) => v?.relevant)) {
-      await db.transaction((tx) =>
-        saveSourceRecord(tx, actor.workspaceId, outcome({ relevant: false, reason: "No job matches your services" }), null),
-      );
-      continue;
-    }
-
-    // The board's own name for the company ("TPG Careers Page" → "TPG"); only the board address
-    // when the provider gives none.
-    const boardName = cleanBoardName(board.board_name);
-    const companyId = await db.transaction(async (tx) => {
-      const resolved = await resolveCompany(tx, actor, {
-        name: boardName ?? titleFromToken(token),
-        domain: null,
-        industry: null,
-        hq: null,
-        identifiers: [],
-        identity: "provisional",
-        foundedOn: null,
-        record: outcome({
-          relevant: true,
-          nameFrom: boardName ? "board" : "board_address",
-          candidateWebsite: board.stated_website ?? candidateWebsite(jobs),
-        }),
-      });
-      await tx
-        .insert(companyJobBoards)
-        .values({
-          companyId: resolved.companyId,
-          workspaceId: actor.workspaceId,
-          provider,
-          boardToken: token,
-          autoDetected: true,
-        })
-        .onConflictDoNothing();
-      // The title check is stored, so the sync analyses the relevant jobs without asking again.
-      await tx
-        .insert(jobPostings)
-        .values(
-          jobs.map((job, index) => ({
-            workspaceId: actor.workspaceId,
-            companyId: resolved.companyId,
-            provider,
-            externalId: job.externalId,
-            title: job.title,
-            department: job.department,
-            location: job.location,
-            url: job.url,
-            description: job.description,
-            postedAt: job.postedAt,
-            boardJobId: job.boardJobId,
-            triage: verdicts[index] ? (verdicts[index]!.relevant ? ("relevant" as const) : ("skipped" as const)) : ("pending" as const),
-            triageReason: verdicts[index]?.reason ?? null,
-          })),
-        )
-        .onConflictDoNothing();
-      return resolved.companyId;
-    });
-    followUps.push({ kind: "scan_job_board", entityId: companyId }, { kind: "enrich_company", entityId: companyId });
-  }
-  // More boards waiting: continue shortly.
-  if (boards.length > BOARDS_PER_EVALUATION)
-    followUps.push({
-      kind: "evaluate_boards",
-      entityId: actor.workspaceId,
-      runAfter: later(5 * 60_000),
-    });
+  const result = await matchWorkspaceJobs(actor);
+  for (const companyId of result.companies) await rescoreAfterCompanyChange(actor.workspaceId, companyId);
+  const followUps: FollowUp[] = result.newCompanies.flatMap((entityId) => [
+    { kind: "enrich_company" as const, entityId },
+    // The board's other jobs, sorted against the services the same way (no AI), a little later.
+    { kind: "scan_job_board" as const, entityId, runAfter: later(10 * 60_000) },
+  ]);
+  if (result.more) followUps.push({ kind: "evaluate_boards", entityId: actor.workspaceId, runAfter: later(60_000) });
   return { followUps };
 }
 

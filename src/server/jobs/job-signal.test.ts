@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SignalAnalysis } from "@/lib/api/types";
-import { finalizeTriage } from "@/server/ai/job-triage";
 import { candidateTokens } from "./detect";
+import { categorizeJob, ruleJobSignal } from "./job-categories";
 import { jobSignalValues, jobSourceText, MIN_AUTO_CONFIDENCE, openDays, rejectionReason, roleKey } from "./job-signal";
 
 const now = new Date("2026-11-03T12:00:00Z");
@@ -103,23 +103,6 @@ describe("roleKey", () => {
   });
 });
 
-describe("finalizeTriage", () => {
-  it("maps verdicts by index, ignoring unknown and repeated indexes", () => {
-    const verdicts = finalizeTriage(
-      {
-        jobs: [
-          { index: 1, relevant: true, reason: " Engineering role " },
-          { index: 1, relevant: false, reason: "repeat" },
-          { index: 7, relevant: true, reason: "out of range" },
-          { index: 0, relevant: false, reason: "Legal role" },
-        ],
-      },
-      3,
-    );
-    expect(verdicts).toEqual([{ relevant: false, reason: "Legal role" }, { relevant: true, reason: "Engineering role" }, null]);
-  });
-});
-
 describe("board names", () => {
   it("guesses candidates from the domain and the name", () => {
     expect(candidateTokens({ name: "Stripe, Inc.", domain: "www.stripe.com" })).toEqual(["stripe"]);
@@ -129,5 +112,60 @@ describe("board names", () => {
       "harbourside",
     ]);
     expect(candidateTokens({ name: "Calder & Co", domain: null })).toEqual(["calder"]);
+  });
+});
+
+describe("categorizeJob", () => {
+  const cats = (title: string, department: string | null = null) => categorizeJob({ title, department }).sort();
+
+  it("reads AI, software and data roles, with staff augmentation for tech roles", () => {
+    expect(cats("Senior Machine Learning Engineer")).toEqual(["ai_ml", "staff_augmentation"]);
+    expect(cats("AI Engineer, Agents")).toEqual(["ai_ml", "staff_augmentation"]);
+    expect(cats("Full-Stack Developer (React/Node)")).toEqual(["software_development", "staff_augmentation"]);
+    expect(cats("Data Scientist")).toEqual(["ai_ml", "data_analytics", "staff_augmentation"]);
+    expect(cats("iOS Engineer")).toEqual(["mobile_development", "staff_augmentation"]);
+    expect(cats("Site Reliability Engineer")).toEqual(["cloud_devops", "staff_augmentation"]);
+  });
+
+  it("reads design, marketing and support roles without staff augmentation", () => {
+    expect(cats("Senior Product Designer")).toEqual(["ui_ux_design"]);
+    expect(cats("Performance Marketing Manager")).toEqual(["digital_marketing", "paid_media"]);
+    expect(cats("Customer Support Specialist")).toEqual(["customer_support_outsourcing"]);
+  });
+
+  it("uses the department for a plain engineer title, and ignores unrelated roles", () => {
+    expect(cats("Senior Engineer", "Engineering")).toEqual(["software_development", "staff_augmentation"]);
+    expect(cats("Senior Engineer", "Facilities")).toEqual([]);
+    expect(cats("Registered Nurse")).toEqual([]);
+    expect(cats("Real Estate Agent")).toEqual([]);
+    expect(cats("Security Guard")).toEqual([]);
+    expect(cats("Vice President of AI & Infrastructure Sales")).toEqual([]);
+    expect(cats("Account Executive, Cloud Platform")).toEqual([]);
+  });
+});
+
+describe("ruleJobSignal", () => {
+  const lead = { title: "ML Engineer", department: null, location: "San Francisco, CA", url: "https://jobs.ashbyhq.com/acme/1", postedAt: new Date("2026-11-01T00:00:00Z"), firstSeenAt: now };
+
+  it("states only the facts, as a provider signal with modest confidence", () => {
+    const values = ruleJobSignal("Acme", lead, 1, ["ai_ml"], now);
+    expect(values).toMatchObject({
+      signalType: "engineering_hiring",
+      intentLevel: "medium",
+      serviceCategories: ["ai_ml"],
+      occurredOn: "2026-11-01",
+      sourceUrl: lead.url,
+      evidenceLabel: "observed",
+      source: "provider",
+      confidence: 60,
+    });
+    expect(values.summary).toBe("Acme is hiring a ML Engineer (San Francisco, CA). Posted 2026-11-01.");
+  });
+
+  it("picks the type from what the posting shows", () => {
+    expect(ruleJobSignal("Acme", { ...lead, title: "ML Engineer (6 month contract)" }, 1, ["ai_ml"], now).signalType).toBe("contractor_hiring");
+    expect(ruleJobSignal("Acme", lead, 4, ["ai_ml"], now).signalType).toBe("multiple_same_role_openings");
+    expect(ruleJobSignal("Acme", { ...lead, postedAt: new Date("2026-08-01T00:00:00Z") }, 1, ["ai_ml"], now).signalType).toBe("long_running_vacancy");
+    expect(ruleJobSignal("Acme", { ...lead, title: "Content Writer" }, 1, ["content_marketing"], now)).toMatchObject({ signalType: "recruiting_pressure", intentLevel: "low" });
   });
 });

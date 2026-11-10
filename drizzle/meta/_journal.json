@@ -176,6 +176,13 @@
       "when": 1794326284028,
       "tag": "0024_disable_uk_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794328509710,
+      "tag": "0025_shared_job_intelligence",
+      "breakpoints": true
     }
   ]
 }

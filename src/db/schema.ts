@@ -680,9 +680,12 @@ export const boardJobs = pgTable(
     firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp({ withTimezone: true }),
+    /** When the title rules sorted it into service categories (`board_job_categories`); null = not yet. */
+    categorizedAt: timestamp({ withTimezone: true }),
   },
   (t) => [
     uniqueIndex("board_jobs_external_idx").on(t.provider, t.boardToken, t.externalId),
+    index("board_jobs_uncategorized_idx").on(t.firstSeenAt).where(sql`${t.categorizedAt} is null`),
     index("board_jobs_seen_idx").on(t.firstSeenAt),
     foreignKey({
       name: "board_jobs_board_fk",
@@ -691,6 +694,50 @@ export const boardJobs = pgTable(
     }).onDelete("cascade"),
   ],
 );
+
+/**
+ * The service categories a shared job points to (what a company hiring for it may buy), so every
+ * workspace finds its jobs with one query and no AI. First from the title rules
+ * (`categorizeJob`, method "rule"); replaced by the AI's own categories once the job is analysed
+ * (method "ai").
+ */
+export const boardJobCategories = pgTable(
+  "board_job_categories",
+  {
+    boardJobId: uuid()
+      .notNull()
+      .references(() => boardJobs.id, { onDelete: "cascade" }),
+    categorySlug: text()
+      .notNull()
+      .references(() => serviceCategories.slug),
+    /** rule or ai. */
+    method: text().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.boardJobId, t.categorySlug] }), index("board_job_categories_category_idx").on(t.categorySlug)],
+);
+
+/**
+ * The AI's reading of one shared job, made once for every workspace (the analysis depends only on
+ * the job and the company, never on who is looking). Workspaces' signals from the job are upgraded
+ * from it; its service categories replace the rule ones in `board_job_categories`.
+ */
+export const jobAnalyses = pgTable("job_analyses", {
+  boardJobId: uuid()
+    .primaryKey()
+    .references(() => boardJobs.id, { onDelete: "cascade" }),
+  isSignal: boolean().notNull(),
+  signalType: text().references(() => signalTypes.slug),
+  intentLevel: intentLevel().notNull(),
+  urgency: urgencyLevel().notNull(),
+  summary: text().notNull(),
+  excerpt: text(),
+  evidenceLabel: evidenceLabel().notNull(),
+  confidence: integer().notNull(),
+  /** YYYY-MM-DD, when the text states one. */
+  occurredOn: text(),
+  model: text().notNull(),
+  analyzedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
 
 /** How far the archive has been read per provider and crawl, so slow index queries can resume. */
 export const directoryCrawls = pgTable(

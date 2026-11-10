@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, like } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { companies, companyIdentifiers, companyJobBoards, companyLocations, contactPoints, ingestionJobs, jobBoardDirectory, osmMatches, osmPlaces, signals, users, workspaces } from "@/db/schema";
+import { companies, companyIdentifiers, companyJobBoards, companyLocations, contactPoints, ingestionJobs, jobBoardDirectory, osmMatches, osmPlaces, signals, sources, users, workspaces } from "@/db/schema";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { personSchema } from "@/lib/validation/companies";
 import { opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
@@ -49,6 +49,12 @@ vi.mock("@/server/sources/board-directory", async (original) => ({
   collectFromArchive: vi.fn(async () => 0),
   validateDueBoards: vi.fn(async () => 0),
 }));
+// Likewise the shared job intelligence (sorting and reading the shared jobs).
+vi.mock("@/server/ingestion/shared-jobs", async (original) => ({
+  ...(await original<typeof import("@/server/ingestion/shared-jobs")>()),
+  categorizeBoardJobs: vi.fn(async () => 0),
+  analyzeSharedJobs: vi.fn(async () => 0),
+}));
 vi.mock("@/server/sources/cqc", async (original) => ({
   ...(await original<typeof import("@/server/sources/cqc")>()),
   loadDirectory: vi.fn(async () => []),
@@ -77,6 +83,8 @@ const run = randomUUID().slice(0, 8);
 const number = (n: number) => `T${run.slice(0, 5)}${n}`.slice(0, 8);
 let owner: AuthContext;
 let other: AuthContext;
+const UK_SOURCES = ["companies_house", "cqc", "uk_tenders", "openstreetmap"];
+let switchedOn: string[] = [];
 
 const registerCompany = (n: number, name: string, foundedOn: string): FoundCompany => ({
   name,
@@ -169,7 +177,20 @@ beforeAll(async () => {
   );
   // Shared job-board discovery is tested in job-boards.integration.test.ts, which runs alongside
   // and fills the shared board tables; this workspace leaves it out so the two don't interfere.
-  for (const auth of [owner, other]) await setDataSourceEnabled(auth, "board_directory", false);
+  // The same for the YC companies source (the global YC table), tested in sources.test.ts.
+  for (const auth of [owner, other]) {
+    await setDataSourceEnabled(auth, "board_directory", false);
+    await setDataSourceEnabled(auth, "yc_directory", false);
+  }
+  // The UK sources are switched off platform-wide (product focus on the US, migration 0024); their
+  // code still runs when switched back on, so these tests switch them on for their own run.
+  switchedOn = (
+    await db
+      .update(sources)
+      .set({ authorizationStatus: "approved" })
+      .where(and(inArray(sources.slug, UK_SOURCES), eq(sources.authorizationStatus, "disabled")))
+      .returning({ slug: sources.slug })
+  ).map((r) => r.slug);
 });
 
 beforeEach(() => {
@@ -197,6 +218,7 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
+  if (switchedOn.length > 0) await db.update(sources).set({ authorizationStatus: "disabled" }).where(inArray(sources.slug, switchedOn));
   await db.delete(workspaces).where(inArray(workspaces.id, [owner, other].filter(Boolean).map((c) => c.workspaceId)));
   await db.delete(users).where(inArray(users.id, [owner, other].filter(Boolean).map((c) => c.userId)));
   // The shared board directory isn't workspace data: remove this run's boards too.

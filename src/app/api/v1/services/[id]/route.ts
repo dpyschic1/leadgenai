@@ -2,7 +2,8 @@ import { CONFIG_ROLES } from "@/lib/permissions";
 import { serviceSchema } from "@/lib/validation/services";
 import { authedRoute, parseJsonBody } from "@/server/http/handler";
 import { uuidParam } from "@/server/http/params";
-import { queueChecksNow } from "@/server/ingestion/worker";
+import { after } from "next/server";
+import { matchNow, queueChecksNow } from "@/server/ingestion/worker";
 import { rescoreAfterWorkspaceChange } from "@/server/scoring/rescore";
 import { deleteService, updateService } from "@/server/services/services.service";
 
@@ -16,8 +17,10 @@ export const PATCH = authedRoute<Context>(
     const input = await parseJsonBody(request, serviceSchema);
     const service = await updateService(auth, id, input);
     await rescoreAfterWorkspaceChange(auth.workspaceId);
-    // New or changed targets: look for matching companies on the next background tick.
+    // New or changed targets: queue the checks, then match the shared jobs right after the response
+    // (no AI, seconds), so opportunities appear without waiting for the next background tick.
     await queueChecksNow(auth.workspaceId);
+    after(() => matchNow(auth.workspaceId));
     return Response.json(service);
   },
   { roles: CONFIG_ROLES },

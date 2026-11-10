@@ -114,12 +114,24 @@ Nothing to set up: from **Services & ICP** (target industries and countries) the
    - Candidate Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Personio and Breezy HR boards come from the **Common Crawl** archive index
      (plus boards found on websites). Each is **validated** against the provider's public API, and
      its jobs are cached once for all workspaces (`job_board_directory`, `board_jobs`).
-   - Each workspace then judges the jobs in its own target countries with a cheap AI title check.
-     A board with relevant jobs becomes a company (matched by evidence, or created **provisional**
-     under the board's own name) with an opportunity, even when no register matches. A board with
-     none creates nothing.
-   - Relevant roles get the full signal analysis (the same role in several places counts once),
-     a few per run within Groq's free limits. A deleted signal stays deleted.
+   - **Shared job intelligence** (`src/server/ingestion/shared-jobs.ts`): *discover once, analyse
+     once, match many times.*
+     1. *Categorise (shared, free):* every cached job gets the service categories its title points
+        to (`categorizeJob` rules, `board_job_categories`), a few thousand per tick.
+     2. *Match (per workspace, no AI, seconds):* `evaluate_boards` takes the open jobs in the
+        workspace's service categories and target countries (last 90 days), 40 companies per run.
+        Each board becomes a company (matched by evidence, or created **provisional** under the
+        board's own name) with its jobs and an opportunity at once: a job already read by the AI
+        gives the AI's signal, any other a rule-based one stating only the facts (source
+        "provider", `ruleJobSignal`). It runs straight after a service is saved (`after()`), so a
+        new workspace fills up in minutes.
+     3. *Analyse (shared, AI, background):* the jobs behind rule-based signals are read in full by
+        the AI **once** (`job_analyses`), newest first; every workspace's signal from that job is
+        upgraded, or removed (job marked skipped) when the AI finds no buying signal. Its
+        categories replace the title rules'.
+   - The job-board sync (`syncCompanyJobs`) uses no AI either: categories decide relevance, the
+     shared analysis or a rule signal records it. The same role in several places counts once; a
+     deleted signal stays deleted.
    - Coverage is broad, not complete: only boards the archive has crawled. The archive index is
      often slow (504s); progress resumes where it stopped.
 4. checks **UK public tenders** (Contracts Finder) for its services;

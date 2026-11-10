@@ -47,11 +47,11 @@ export async function claimNext(workspaceId?: string): Promise<JobRow | null> {
           or (status = 'running' and started_at < now() - make_interval(secs => ${STALE_RUNNING_MS / 1000})))
         ${scope}
       -- The once-a-day discovery jobs go before routine per-company checks, so "Run now" isn't stuck
-      -- behind a backlog of slow website reads. Board evaluation repeats every few minutes while
-      -- boards wait, so it takes its turn by time instead of starving the website reads.
+      -- behind a backlog of slow website reads. Matching the shared jobs (evaluate_boards) needs no
+      -- AI and takes seconds, so it goes first too: it is what fills a new workspace.
       -- Workspaces take turns: the one that started the fewest jobs in the last 10 minutes goes
       -- next, so a new workspace isn't stuck behind another's backlog (the AI allows ~1 job a minute).
-      order by (kind in ('discover_companies', 'discover_cqc', 'discover_npi', 'discover_theirstack', 'discover_yc', 'scan_tenders')) desc,
+      order by (kind in ('discover_companies', 'discover_cqc', 'discover_npi', 'discover_theirstack', 'discover_yc', 'scan_tenders', 'evaluate_boards')) desc,
         (select count(*) from ingestion_jobs r
           where r.workspace_id = j.workspace_id and r.started_at > now() - interval '10 minutes'),
         run_after

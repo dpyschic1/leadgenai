@@ -97,6 +97,23 @@ export async function insertDetectedSignal(
   return { id: row.id, created: true };
 }
 
+/**
+ * Background ingestion: replaces a found signal's content (e.g. a job's rule-based signal upgraded
+ * with the shared AI analysis). Its links (opportunities, jobs) stay. The caller re-scores.
+ */
+export async function replaceDetectedSignal(tx: Tx, actor: Actor, signalId: string, input: DetectedSignalValues): Promise<void> {
+  const [row] = await tx
+    .update(signals)
+    .set(signalColumns(input))
+    .where(and(eq(signals.id, signalId), eq(signals.workspaceId, actor.workspaceId)))
+    .returning({ companyId: signals.companyId });
+  if (!row) return;
+  await tx.delete(signalServiceCategories).where(eq(signalServiceCategories.signalId, signalId));
+  await tx.delete(signalEvidence).where(eq(signalEvidence.signalId, signalId));
+  await writeDetails(tx, signalId, input);
+  await audit(tx, actor, "signal.updated", signalId, row.companyId);
+}
+
 async function insertSignal(
   tx: Tx,
   auth: Actor,
