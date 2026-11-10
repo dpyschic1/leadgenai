@@ -13,9 +13,9 @@
  */
 import { createReadStream, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { companies, companyLocations } from "@/db/schema";
+import { companies, companyContactPoints, companyLocations } from "@/db/schema";
 import { enqueue } from "@/server/ingestion/queue";
 import { replaceCompanyContacts, saveSourceRecord } from "@/server/ingestion/resolve";
 import { rescoreCompany } from "@/server/scoring/rescore";
@@ -123,6 +123,16 @@ async function load(file: string, dryRun: boolean) {
     if (m.method === "website") {
       await db.transaction(async (tx) => {
         await saveSourceRecord(tx, m.workspaceId, record, m.companyId);
+        // This release's contacts replace the earlier ones entirely (an email gone stays gone).
+        await tx
+          .delete(companyContactPoints)
+          .where(
+            and(
+              eq(companyContactPoints.companyId, m.companyId),
+              eq(companyContactPoints.sourceSlug, "overture"),
+              notInArray(companyContactPoints.value, [...m.emails, ...m.phones]),
+            ),
+          );
         await replaceCompanyContacts(tx, m.companyId, { emails: m.emails, phones: m.phones }, { slug: "overture", url: null });
       });
       // Reachability feeds the opportunity's contact; its score stays as it was otherwise.
@@ -139,8 +149,31 @@ async function load(file: string, dryRun: boolean) {
       candidates++;
     }
   }
+  const removed = places.length > 0 ? await removeUnmatchedContacts(new Set(matches.filter((m) => m.method === "website").map((m) => m.companyId))) : 0;
   const [{ total }] = await db.select({ total: sql<number>`count(*)::int` }).from(companies);
-  console.log(`[overture] ${places.length} places read; ${contacts} companies got contacts, ${candidates} got a website to check (of ${total} companies).`);
+  console.log(
+    `[overture] ${places.length} places read; ${contacts} companies got contacts, ${candidates} got a website to check, ${removed} lost contacts that no longer match (of ${total} companies).`,
+  );
+}
+
+/**
+ * Overture contacts of companies this run no longer matches (stricter rules, or the place left the
+ * map) are removed, and those companies rescored. Skipped when the lookup found nothing at all: an
+ * empty file means a failed lookup, not a world without places.
+ */
+async function removeUnmatchedContacts(matched: Set<string>): Promise<number> {
+  const stale = await db
+    .selectDistinct({ companyId: companies.id, workspaceId: companies.workspaceId })
+    .from(companyContactPoints)
+    .innerJoin(companies, eq(companies.id, companyContactPoints.companyId))
+    .where(eq(companyContactPoints.sourceSlug, "overture"));
+  let removed = 0;
+  for (const s of stale.filter((s) => !matched.has(s.companyId))) {
+    await db.delete(companyContactPoints).where(and(eq(companyContactPoints.companyId, s.companyId), eq(companyContactPoints.sourceSlug, "overture")));
+    await rescoreCompany(s.workspaceId, s.companyId);
+    removed++;
+  }
+  return removed;
 }
 
 async function main() {

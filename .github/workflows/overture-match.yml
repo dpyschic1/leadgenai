@@ -1,4 +1,4 @@
-# Daily Overture Maps lookup: phones, emails and candidate websites for the companies we already
+# Weekly Overture Maps lookup: phones, emails and candidate websites for the companies we already
 # have. Reads only the places matching our companies from Overture's public bucket (DuckDB); the
 # full dataset is never downloaded. Needs the DATABASE_URL secret (the production database).
 # Data © Overture Maps Foundation, CDLA Permissive 2.0: see src/server/sources/overture.ts.
@@ -6,13 +6,14 @@ name: Overture Maps lookup
 
 on:
   schedule:
-    - cron: "41 4 * * *" # daily 04:41 UTC
+    # Weekly: Overture publishes a new release once a month, so daily runs would mostly re-read the same data.
+    - cron: "41 4 * * 1" # Mondays 04:41 UTC
   workflow_dispatch:
 
 jobs:
   match:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120 # the lookup alone takes about 40–60 minutes
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

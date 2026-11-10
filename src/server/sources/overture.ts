@@ -89,10 +89,16 @@ export function placeDomains(place: Pick<OverturePlace, "websites">): string[] {
   return [...new Set(domains)];
 }
 
-/** A phone in international form, or null: "+44 20 7946 0000" → "+442079460000". */
+/**
+ * A phone in international form, or null: "+44 20 7946 0000" → "+442079460000". UK and US numbers
+ * must have their exact length (Overture has some UK numbers missing a digit, which never connect).
+ */
 export function cleanPhone(raw: string): string | null {
   const digits = raw.replace(/[^\d+]/g, "").replace(/^00/, "+");
-  return /^(\+\d{10,14}|0\d{9,10})$/.test(digits) ? digits : null;
+  if (digits.startsWith("+44")) return /^\+44[1-9]\d{9}$/.test(digits) ? digits : null;
+  if (digits.startsWith("+1")) return /^\+1[2-9]\d{9}$/.test(digits) ? digits : null;
+  if (digits.startsWith("0")) return /^0[1-9]\d{9}$/.test(digits) ? digits : null; // UK national form
+  return /^\+\d{10,14}$/.test(digits) ? digits : null;
 }
 
 const cleanEmail = (raw: string, domain: string): string | null => {
@@ -112,8 +118,10 @@ const MAX_CONTACTS = 2;
 
 /**
  * The matches to make, from the companies looked up and the places found. Conservative by design:
- * - a company with a website takes the place(s) on that same domain: the one at its own postcode
- *   if there is one, else the most confident; its phones and own-domain emails are kept;
+ * - a company with a website takes the place on that same domain at its own postcode or, when
+ *   every place on the domain is at one address, that place. A domain with branches at several
+ *   addresses (a group or franchise site) and none at ours gives nothing: another branch's phone
+ *   and inbox are not this company's. Its phones and own-domain emails are kept;
  * - a company without a website takes a candidate site only from exactly one place at its
  *   postcode with clearly the same name, and only when no other company in the workspace claims
  *   that place.
@@ -136,6 +144,8 @@ export function proposeOvertureMatches(targets: OvertureTarget[], places: Overtu
       const same = byDomain.get(target.domain) ?? [];
       if (same.length === 0) continue;
       const local = same.filter((p) => ourPostcode && comparablePostcode(p.postcode, p.country) === ourPostcode);
+      const addresses = new Set(same.map((p) => comparablePostcode(p.postcode, p.country) ?? p.id));
+      if (local.length === 0 && addresses.size > 1) continue;
       const best = [...(local.length > 0 ? local : same)].sort((a, b) => b.confidence - a.confidence)[0];
       const phones = [...new Set((best.phones ?? []).map(cleanPhone).filter((p): p is string => p !== null))].slice(0, MAX_CONTACTS);
       const emails = [...new Set((best.emails ?? []).map((e) => cleanEmail(e, target.domain!)).filter((e): e is string => e !== null))].slice(0, MAX_CONTACTS);

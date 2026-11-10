@@ -1021,6 +1021,27 @@ describe("Overture matching", () => {
     expect(cleanPhone("123")).toBeNull();
   });
 
+  it("drops phones of the wrong length", () => {
+    expect(cleanPhone("+44125459261")).toBeNull(); // a UK number missing a digit
+    expect(cleanPhone("+441254592610")).toBe("+441254592610");
+    expect(cleanPhone("08455195733")).toBe("08455195733");
+    expect(cleanPhone("0845519573")).toBeNull();
+    expect(cleanPhone("+1 949 753 1020")).toBe("+19497531020");
+    expect(cleanPhone("+1 949 753 102")).toBeNull();
+    expect(cleanPhone("+33 1 42 68 53 00")).toBe("+33142685300");
+  });
+
+  it("takes no contacts from a group site whose branches are all elsewhere", () => {
+    const branches = [
+      place({ id: "a", websites: ["chain.com"], phones: ["+441110000000"], postcode: "CV1 2AA", confidence: 0.99 }),
+      place({ id: "b", websites: ["chain.com"], phones: ["+442220000000"], postcode: "M1 1AE", confidence: 0.8 }),
+    ];
+    expect(proposeOvertureMatches([target({ domain: "chain.com", postcode: "L1 8JQ" })], branches)).toEqual([]);
+    // One business listed twice at one address (two datasets): still that business.
+    const twice = [place({ id: "a", websites: ["solo.co.uk"], phones: ["+441110000000"] }), place({ id: "b", websites: ["solo.co.uk"], postcode: "LS1 4AP" })];
+    expect(proposeOvertureMatches([target({ domain: "solo.co.uk", postcode: "M1 1AE" })], twice)).toHaveLength(1);
+  });
+
   it("takes the phone and own-domain email of a place on the company's website", () => {
     const [m] = proposeOvertureMatches(
       [target({ domain: "smiles.co.uk" })],

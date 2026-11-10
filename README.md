@@ -160,7 +160,7 @@ company's **Sources** card. Adapters live in `src/server/sources/`, the job queu
   PECR): email them only with consent.
 
 **Overture Maps** (contacts and candidate websites for companies we already have)
-- *Lookup, daily and offline* (`.github/workflows/overture-match.yml`):
+- *Lookup, weekly (Mondays) and offline* (`.github/workflows/overture-match.yml`):
   1. `npm run overture -- targets targets.csv` lists our companies' websites and, for those
      without one, their headquarters' postcode.
   2. DuckDB reads only the matching places from Overture's public bucket (newest release,
