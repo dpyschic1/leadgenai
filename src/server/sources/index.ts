@@ -10,6 +10,7 @@ import { theirStack } from "./theirstack";
 import { openStreetMap } from "./osm";
 import { overture } from "./overture";
 import { ukTenders } from "./uk-tenders";
+import { ycDirectory } from "./yc";
 
 /**
  * The contract every data source implements (PRD §14 SourceAdapter, SRS §11.1). Capabilities are
@@ -114,5 +115,6 @@ export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   us_npi: nppes,
   theirstack: theirStack,
   overture,
+  yc_directory: ycDirectory,
   fca_register: fcaRegister,
 };

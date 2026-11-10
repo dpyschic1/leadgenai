@@ -81,7 +81,22 @@ leaves every other workspace alone.
 
 Nothing to set up: from **Services & ICP** (target industries and countries) the system, every day:
 
-1. **finds UK companies**
+> **Focus on US companies (2026-11-10):** the UK-only sources (Companies House, CQC, UK tenders,
+> OpenStreetMap) are switched off for every workspace (migration `0024`, `authorization_status =
+> 'disabled'`); their code and the data they already found stay. New companies come from
+> **Y Combinator companies**, TheirStack, job-board discovery and the US NPI Registry. To switch a
+> UK source back on, set its `sources.authorization_status` to `'approved'`.
+
+0. **takes Y Combinator startups** (`discover_yc`, `src/server/sources/yc.ts`): every YC company
+   (~6,400; ~4,800 in the US) is kept in the global `yc_companies` table, loaded from the
+   third-party [`yc-oss/api`](https://github.com/yc-oss/api) dataset (`npm run yc -- import`, then
+   refreshed by the job when a week old). Each run takes 15 active companies in the workspace's
+   target countries (and industries, when set), hiring ones first, newest batch first, with their
+   YC website (identity "partly verified"); their website and job board are read next. The dataset
+   is unofficial with no stated licence, and YC's site terms restrict reuse of directory content:
+   using it was the product owner's decision, recorded on its `sources` row. No people or contact
+   details are taken from it.
+1. **finds UK companies** *(switched off, see above)*
    - on **Companies House**, by the industries' SIC codes, newly formed ones first (a new business
      is itself a "new startup" signal), with their **directors**;
    - for dental and healthcare ICPs, on the **CQC register** (England only): each provider becomes a
@@ -225,6 +240,7 @@ Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (form
 | `npm run db:seed:demo` | Create (or reset) the demo workspace |
 | `npm run osm:import -- <file.geojsonseq>` | Load OpenStreetMap businesses from an `osmium export` file (see OpenStreetMap above) |
 | `npm run overture -- targets / sql / load …` | Look our companies up in Overture Maps (see Overture Maps above) |
+| `npm run yc -- import` | Load (or refresh) every Y Combinator company into `yc_companies` |
 
 ## Architecture
 

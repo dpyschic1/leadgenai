@@ -42,14 +42,19 @@ export async function claimNext(workspaceId?: string): Promise<JobRow | null> {
   const rows = await db.execute<{ id: string }>(sql`
     update ingestion_jobs set status = 'running', started_at = now(), attempts = attempts + 1
     where id = (
-      select id from ingestion_jobs
+      select id from ingestion_jobs j
       where ((status = 'queued' and run_after <= now())
           or (status = 'running' and started_at < now() - make_interval(secs => ${STALE_RUNNING_MS / 1000})))
         ${scope}
       -- The once-a-day discovery jobs go before routine per-company checks, so "Run now" isn't stuck
       -- behind a backlog of slow website reads. Board evaluation repeats every few minutes while
       -- boards wait, so it takes its turn by time instead of starving the website reads.
-      order by (kind in ('discover_companies', 'discover_cqc', 'discover_npi', 'discover_theirstack', 'scan_tenders')) desc, run_after
+      -- Workspaces take turns: the one that started the fewest jobs in the last 10 minutes goes
+      -- next, so a new workspace isn't stuck behind another's backlog (the AI allows ~1 job a minute).
+      order by (kind in ('discover_companies', 'discover_cqc', 'discover_npi', 'discover_theirstack', 'discover_yc', 'scan_tenders')) desc,
+        (select count(*) from ingestion_jobs r
+          where r.workspace_id = j.workspace_id and r.started_at > now() - interval '10 minutes'),
+        run_after
       limit 1
       for update skip locked
     )

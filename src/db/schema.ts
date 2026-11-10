@@ -1257,3 +1257,52 @@ export const osmMatches = pgTable(
     }).onDelete("cascade"),
   ],
 );
+
+/**
+ * The Y Combinator startup directory (every YC company), imported whole from the third-party
+ * `yc-oss/api` dataset (`npm run yc -- import`, refreshed by `discover_yc` when a week old). Global:
+ * no workspace data. Each workspace's `discover_yc` takes the companies matching its services into
+ * `companies` (identifier `yc_company`), and the usual website and job-board reading follows.
+ * Country and industry are matched on (derived columns); `regions` and `tags` are display-only.
+ */
+export const ycCompanies = pgTable(
+  "yc_companies",
+  {
+    /** YC's own company id. */
+    id: integer().primaryKey(),
+    slug: text().notNull(),
+    name: text().notNull(),
+    website: text(),
+    /** Registrable domain of the website ("https://www.acme.ai/" → "acme.ai"). */
+    domain: text(),
+    oneLiner: text(),
+    longDescription: text(),
+    /** As YC lists them: "San Francisco, CA, USA; New York, NY, USA". */
+    locations: text(),
+    /** Main country (ISO code) from YC's regions: US, GB, … null when not one we know. */
+    country: text(),
+    /** Our industry slug, mapped from YC's industry and subindustry. */
+    industry: text(),
+    ycIndustry: text(),
+    ycSubindustry: text(),
+    /** Display-only. */
+    regions: text().array().notNull().default(sql`'{}'::text[]`),
+    /** Display-only. */
+    tags: text().array().notNull().default(sql`'{}'::text[]`),
+    teamSize: integer(),
+    batch: text(),
+    /** Active, Acquired, Inactive or Public. */
+    status: text().notNull(),
+    isHiring: boolean().notNull().default(false),
+    topCompany: boolean().notNull().default(false),
+    stage: text(),
+    launchedAt: timestamp({ withTimezone: true }),
+    /** The company's YC directory page. */
+    url: text(),
+    importedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("yc_companies_slug_idx").on(t.slug),
+    index("yc_companies_pick_idx").on(t.country, t.status, t.isHiring),
+  ],
+);

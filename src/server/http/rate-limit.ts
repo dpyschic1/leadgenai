@@ -24,10 +24,11 @@ export const RATE_LIMITS = {
   /** Per user: AI search (short requests, so cheaper than analysis). */
   aiSearch: { limit: 60, windowSeconds: 60 * 60 },
   /**
-   * Per workspace, across every AI feature: the AI provider's daily quota is shared by everyone.
-   * Only calls the provider answered count (a "busy" refusal is given back, see `refundRateLimit`).
+   * Per workspace, across every AI feature. No app cap (product decision, 2026-11-10): the AI
+   * provider's own limits are what slow work down ("busy" refusals postpone the job), so this
+   * only counts calls. Lower it again to protect a shared quota.
    */
-  aiWorkspace: { limit: 1000, windowSeconds: 24 * 60 * 60 },
+  aiWorkspace: { limit: 1_000_000, windowSeconds: 24 * 60 * 60 },
   /** Per user. */
   export: { limit: 30, windowSeconds: 60 * 60 },
   /** Per user: "Run now" on the data sources (finds companies and runs ~30 s of background work). */

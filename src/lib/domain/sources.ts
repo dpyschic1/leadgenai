@@ -14,6 +14,7 @@ export const SOURCE_SLUGS = [
   "us_npi",
   "theirstack",
   "overture",
+  "yc_directory",
   "fca_register",
 ] as const;
 export type SourceSlug = (typeof SOURCE_SLUGS)[number];
@@ -29,6 +30,7 @@ export const SOURCE_LABELS: Record<SourceSlug, string> = {
   us_npi: "NPI Registry (US)",
   theirstack: "TheirStack job posts",
   overture: "Overture Maps",
+  yc_directory: "Y Combinator companies",
   fca_register: "FCA register",
 };
 
@@ -48,6 +50,8 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
     "Recent job posts from Indeed, LinkedIn, company career sites and ATS boards, through TheirStack (paid API, free monthly allowance). Searches only the roles your services fill, in your target countries, and skips companies already in your opportunities, so each credit buys a new lead. Needs THEIRSTACK_API_KEY.",
   overture:
     "Phone, email and website from Overture Maps places (Meta, Microsoft, Foursquare and others), matched to your companies by their own website, or a candidate website by postcode and name that is then checked on the site. © Overture Maps Foundation, CDLA Permissive 2.0.",
+  yc_directory:
+    "Every Y Combinator startup (about 6,400, from the third-party yc-oss dataset of YC's public directory): website, location, industry, team size and whether it is hiring. Takes the active companies in your target countries and industries, hiring ones first; their own sites and job boards are then read as usual.",
   fca_register: "Financial firms and approved people. Not used: the FCA's terms need written permission to store or redistribute register data.",
 };
 
@@ -67,6 +71,7 @@ export const INGESTION_JOB_KINDS = [
   "match_osm",
   "discover_npi",
   "discover_theirstack",
+  "discover_yc",
 ] as const;
 export type IngestionJobKind = (typeof INGESTION_JOB_KINDS)[number];
 
@@ -82,6 +87,7 @@ export const JOB_KIND_SOURCE: Record<IngestionJobKind, SourceSlug> = {
   match_osm: "openstreetmap",
   discover_npi: "us_npi",
   discover_theirstack: "theirstack",
+  discover_yc: "yc_directory",
 };
 
 /** The credit ODbL requires wherever OpenStreetMap data is shown or exported. */
@@ -95,7 +101,7 @@ export const INGESTION_JOB_STATUSES = ["queued", "running", "done", "failed", "s
 export type IngestionJobStatus = (typeof INGESTION_JOB_STATUSES)[number];
 
 /** Identifier schemes for `company_identifiers`. */
-export const COMPANY_ID_SCHEMES = ["gb_company_number", "gb_cqc_provider", "us_npi"] as const;
+export const COMPANY_ID_SCHEMES = ["gb_company_number", "gb_cqc_provider", "us_npi", "yc_company"] as const;
 export type CompanyIdScheme = (typeof COMPANY_ID_SCHEMES)[number];
 
 /**

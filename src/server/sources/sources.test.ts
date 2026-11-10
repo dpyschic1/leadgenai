@@ -19,6 +19,7 @@ import {
 import { isAllowed, parseRobots } from "./http";
 import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
 import { boardDomainGuesses, npiSteps } from "@/server/ingestion/handlers";
+import { toYcCompany, toYcRow, ycCountry, ycIndustry } from "./yc";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender, toTenderContact } from "./uk-tenders";
 import { cleanPhone, comparablePostcode, overtureLookupSql, placeDomains, proposeOvertureMatches, type OverturePlace, type OvertureTarget } from "./overture";
@@ -1089,5 +1090,54 @@ describe("Overture matching", () => {
     expect(overtureLookupSql("r", "t.csv", "o.json", ["GB", "US"]).match(/bbox\.xmin BETWEEN/g)).toHaveLength(2);
     // A country without a known box: scan everything rather than miss it.
     expect(overtureLookupSql("r", "t.csv", "o.json", ["GB", "FR"])).not.toContain("bbox");
+  });
+});
+
+describe("Y Combinator companies", () => {
+  const record = {
+    id: 31337,
+    name: " Acme AI ",
+    slug: "acme-ai",
+    website: "https://www.acme.ai/",
+    all_locations: "San Francisco, CA, USA; London, England, United Kingdom",
+    one_liner: "Agents for accountants",
+    team_size: 12,
+    industry: "B2B",
+    subindustry: "B2B -> Finance and Accounting",
+    tags: ["AI", "SaaS"],
+    regions: ["United States of America", "United Kingdom"],
+    batch: "Summer 2026",
+    status: "Active",
+    isHiring: true,
+    launched_at: 1780000000,
+    url: "https://www.ycombinator.com/companies/acme-ai",
+  };
+
+  it("finds the main country from the first location, else a region", () => {
+    expect(ycCountry(record)).toBe("US");
+    expect(ycCountry({ all_locations: "London, England, United Kingdom", regions: [] })).toBe("GB");
+    expect(ycCountry({ all_locations: null, regions: ["Remote", "Canada"] })).toBe("CA");
+    expect(ycCountry({ all_locations: "Lagos, Nigeria", regions: ["Africa"] })).toBeNull();
+  });
+
+  it("maps YC industries to ours, subindustry first", () => {
+    expect(ycIndustry(record)).toBe("accounting");
+    expect(ycIndustry({ industry: "B2B", subindustry: "B2B -> Infrastructure" })).toBe("saas");
+    expect(ycIndustry({ industry: "Consumer", subindustry: "Consumer -> Gaming" })).toBeNull();
+  });
+
+  it("turns a record into a row and a found company", () => {
+    const row = toYcRow(record)!;
+    expect(row).toMatchObject({ id: 31337, name: "Acme AI", domain: "acme.ai", country: "US", industry: "accounting", isHiring: true });
+    expect(toYcRow({ ...record, name: " " })).toBeNull();
+    const found = toYcCompany({ ...row, importedAt: new Date() } as Parameters<typeof toYcCompany>[0]);
+    expect(found).toMatchObject({
+      name: "Acme AI",
+      domain: "acme.ai",
+      hq: { city: "San Francisco", region: "CA", country: "US" },
+      identifiers: [{ scheme: "yc_company", value: "31337" }],
+      identity: "partial",
+      record: { sourceSlug: "yc_directory", externalId: "company:31337" },
+    });
   });
 });

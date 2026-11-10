@@ -13,6 +13,7 @@
     "db:seed:demo": "tsx --conditions=react-server --env-file=.env scripts/seed-demo.ts",
     "osm:import": "tsx --conditions=react-server --env-file-if-exists=.env scripts/import-osm.ts",
     "overture": "tsx --conditions=react-server --env-file-if-exists=.env scripts/overture.ts",
+    "yc": "tsx --conditions=react-server --env-file-if-exists=.env scripts/yc.ts",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

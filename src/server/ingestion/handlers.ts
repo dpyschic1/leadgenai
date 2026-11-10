@@ -43,6 +43,7 @@ import {
   type CqcLocation,
 } from "@/server/sources/cqc";
 import { domainReceivesEmail, hostResolves } from "@/server/sources/http";
+import { importYcCompanies, pickYcCompanies, toYcCompany, ycImportedAt, YC_REFRESH_MS } from "@/server/sources/yc";
 import {
   emailFromPattern,
   emailPatternOf,
@@ -453,6 +454,35 @@ async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
       null,
     ),
   );
+  return { followUps };
+}
+
+// --- discover_yc: Y Combinator startups in the ICP's countries and industries --------------------
+
+/** Countries a service with no target country is taken to mean, for YC companies. */
+const YC_ANY_COUNTRY = ["US", "GB"];
+
+async function discoverYc({ actor }: JobContext): Promise<JobResult> {
+  if (!(await sourceRunnable(actor.workspaceId, "yc_directory"))) return { followUps: [], skipped: true };
+  const services = await loadServices(actor.workspaceId);
+  if (services.length === 0) return { followUps: [], skipped: true };
+  const countries = [...new Set(services.flatMap((s) => (s.targetCountries.length > 0 ? s.targetCountries : YC_ANY_COUNTRY)))];
+  // A service with no target industry takes any industry.
+  const industries = services.some((s) => s.targetIndustries.length === 0) ? [] : [...new Set(services.flatMap((s) => s.targetIndustries))];
+
+  // The whole dataset is shared by every workspace: whichever run finds it a week old refreshes it.
+  const importedAt = await ycImportedAt();
+  if (!importedAt || Date.now() - importedAt.getTime() > YC_REFRESH_MS) await importYcCompanies();
+
+  const known = await knownIdentifiers(db, actor.workspaceId, "yc_company");
+  const picked = await pickYcCompanies({ countries, industries, exclude: [...known], limit: COMPANIES_PER_RUN });
+
+  const followUps: FollowUp[] = [];
+  for (const row of picked) {
+    const { companyId } = await db.transaction((tx) => resolveCompany(tx, actor, toYcCompany(row)));
+    // The website is the company's own listing: read it (and its job board) straight away.
+    followUps.push({ kind: row.domain ? "scan_website" : "enrich_company", entityId: companyId });
+  }
   return { followUps };
 }
 
@@ -1544,6 +1574,7 @@ export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise
   match_osm: matchOsm,
   discover_npi: discoverNpi,
   discover_theirstack: discoverTheirStack,
+  discover_yc: discoverYc,
 };
 
 /** The AI wrapper for a job: counts calls and draws from the workspace's daily AI budget. */
