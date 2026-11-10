@@ -679,6 +679,29 @@ describe("job-board discovery", () => {
     expect(jobInCountries("Dublin, Ireland", ["GB", "IE"])).toBe(true);
     expect(jobInCountries("Anywhere", [])).toBe(true);
   });
+
+  it("counts a remote role only when its location names no other country or region", () => {
+    expect(jobInCountries("Remote", ["US"])).toBe(true);
+    expect(jobInCountries("Remote (Global)", ["US"])).toBe(true);
+    expect(jobInCountries("Remote - USA", ["US"])).toBe(true);
+    expect(jobInCountries("Atlanta, Georgia, United States; Remote", ["US"])).toBe(true);
+    expect(jobInCountries("Hyderabad, TS, India; Remote", ["US"])).toBe(false);
+    expect(jobInCountries("Bangladesh; Brazil; Colombia; Egypt; Ghana; India; Remote", ["US"])).toBe(false);
+    expect(jobInCountries("Senior AI Engineer (remote in the EU), Sofia", ["US"])).toBe(false);
+    expect(jobInCountries("Canada (Remote)", ["US"])).toBe(false);
+    expect(jobInCountries("North Macedonia; Remote", ["US"])).toBe(false);
+    expect(jobInCountries("Remote - EMEA", ["GB"])).toBe(false);
+  });
+
+  it("recognises US places written with a state, not the country", () => {
+    expect(jobInCountries("San Jose, CA", ["US"])).toBe(true);
+    expect(jobInCountries("Reading, PA; Remote", ["US"])).toBe(true);
+    expect(jobInCountries("Austin, TX 78701", ["US"])).toBe(true);
+    expect(jobInCountries("Mountain View, California", ["US"])).toBe(true);
+    expect(jobInCountries("Toronto, ON", ["US"])).toBe(false);
+    expect(jobInCountries("Hyderabad, TS, India", ["US"])).toBe(false);
+    expect(jobInCountries("San Jose, CA", ["GB"])).toBe(false);
+  });
 });
 
 describe("OpenStreetMap", () => {

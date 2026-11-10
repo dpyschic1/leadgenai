@@ -429,22 +429,37 @@ const COUNTRY_HINTS: Record<string, string[]> = {
   US: ["united states", "usa", "u.s.", "us", "new york", "san francisco", "los angeles", "seattle", "austin", "boston", "chicago", "denver", "atlanta", "miami"],
 };
 const ANYWHERE = /\b(remote|anywhere|worldwide|global)\b/i;
-const ONLY_ELSEWHERE = /\b(remote)\b.*\b(us|usa|canada|americas|apac|india|latam)\b/i;
+/** "San Jose, CA", "Austin, TX 78701": a US state code after a comma. */
+const US_STATE_CODE = /,\s*(AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b(?!\s*,\s*(canada|india|australia|mexico|brazil))/;
+const US_STATE_NAMES = ["alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming"];
+const REGION_NAMES = new Intl.DisplayNames(["en"], { type: "region" });
+/** A country's names as a location may write them: its hints and its English name. */
+const countryNames = (code: string): string[] => {
+  const name = REGION_NAMES.of(code)?.toLowerCase();
+  return [...(COUNTRY_HINTS[code] ?? []), ...(name && name !== code.toLowerCase() ? [name] : [])];
+};
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+/** Every country code the runtime knows a name for ("AA".."ZZ"), for spotting another country. */
+const ALL_COUNTRIES = [...LETTERS].flatMap((a) => [...LETTERS].map((b) => a + b)).filter((code) => REGION_NAMES.of(code) !== code);
+/** Regions a remote role can be limited to. */
+const REGIONS = ["europe", "eu", "emea", "apac", "asia", "latam", "latin america", "americas", "africa", "middle east", "oceania", "nordics", "dach", "benelux"];
 
 /**
  * Whether a job's location fits the workspace's target countries (ISO codes; empty = anywhere).
- * Named countries and their main cities count; a remote role open worldwide counts too, but not
- * one restricted to another region. Pure.
+ * Named countries and their main cities count. A remote role counts only when its location names no
+ * other country or region: "Remote" and "Remote (Global)" do, "India; Remote" or "remote in the EU"
+ * don't. Pure.
  */
 export function jobInCountries(location: string | null, countries: string[]): boolean {
   if (countries.length === 0) return true;
   const text = ` ${(location ?? "").toLowerCase().replace(/[^a-z.]+/g, " ")} `;
-  const hit = countries.some((code) => {
-    const name = new Intl.DisplayNames(["en"], { type: "region" }).of(code)?.toLowerCase();
-    return [...(COUNTRY_HINTS[code] ?? []), ...(name ? [name] : [])].some((hint) => text.includes(` ${hint} `));
-  });
-  if (hit) return true;
-  return ANYWHERE.test(location ?? "") && !ONLY_ELSEWHERE.test(location ?? "");
+  const names = (hint: string) => text.includes(` ${hint} `);
+  if (countries.some((code) => countryNames(code).some(names))) return true;
+  // US places are usually written "City, ST" or with the state's name, not the country's.
+  if (countries.includes("US") && (US_STATE_CODE.test(location ?? "") || US_STATE_NAMES.some(names))) return true;
+  if (!ANYWHERE.test(location ?? "")) return false;
+  const elsewhere = ALL_COUNTRIES.filter((code) => !countries.includes(code)).some((code) => countryNames(code).some(names)) || REGIONS.some(names);
+  return !elsewhere;
 }
 
 // Hosts job posts link to that are never the employer's own site.
