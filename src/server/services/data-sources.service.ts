@@ -10,6 +10,7 @@ import {
   companyLocations,
   ingestionJobs,
   signals,
+  siteReads,
   sourceRecords,
   sources,
   workspaceSources,
@@ -185,6 +186,10 @@ export async function refreshCompany(auth: AuthContext, companyId: string): Prom
     .set({ runAfter: new Date() })
     .where(and(eq(ingestionJobs.workspaceId, auth.workspaceId), eq(ingestionJobs.entityId, companyId), eq(ingestionJobs.status, "queued")));
   await enqueue(db, { workspaceId: auth.workspaceId, kind: "enrich_company", entityId: companyId });
-  if (company.domain) await enqueue(db, { workspaceId: auth.workspaceId, kind: "scan_website", entityId: companyId });
+  if (company.domain) {
+    // A person asked: read the site afresh, not the copy another workspace read this week.
+    await db.update(siteReads).set({ readAt: new Date(0) }).where(eq(siteReads.domain, company.domain));
+    await enqueue(db, { workspaceId: auth.workspaceId, kind: "scan_website", entityId: companyId });
+  }
   if (board) await enqueue(db, { workspaceId: auth.workspaceId, kind: "scan_job_board", entityId: companyId });
 }

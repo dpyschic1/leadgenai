@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
 import {
@@ -14,11 +14,14 @@ import {
   people,
   signals,
   sourceRecords,
+  siteReads,
+  theirstackJobs,
 } from "@/db/schema";
+import type { Service, SignalAnalysis } from "@/lib/api/types";
 import type { IngestionJobKind } from "@/lib/domain/sources";
 import { CATEGORY_CPV_CODES, INDUSTRY_CQC_SERVICE_TYPES, INDUSTRY_SIC_CODES } from "@/lib/domain/uk-codes";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
-import { extractWebsiteFacts } from "@/server/ai/website-extract";
+import { extractWebsiteFacts, type WebsiteFacts } from "@/server/ai/website-extract";
 import { systemActor, type Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
 import { rateLimit, refundRateLimit } from "@/server/http/rate-limit";
@@ -28,9 +31,10 @@ import { getReferenceData } from "@/server/services/reference-data.service";
 import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal } from "@/server/services/signals.service";
-import { hiringEmails, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
+import { hiringEmails, jobInCountries, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
+import { categorizeJob } from "@/server/jobs/job-categories";
 import { companiesHouse, findCompanyNumber } from "@/server/sources/companies-house";
-import { findWebsite, readWebsite, usableEmails, websiteFindings } from "@/server/sources/company-website";
+import { findWebsite, readWebsite, usableEmails, websiteFindings, type SiteRead } from "@/server/sources/company-website";
 import {
   fetchLocationDetail,
   loadDirectory,
@@ -745,6 +749,46 @@ const GENERIC_NAME_WORDS = new Set([
 
 // --- scan_website: facts, people, contacts, job board and signals from the company's site -------
 
+/** A site read for any workspace is reused by the others for this long. */
+const SITE_FRESH_MS = 7 * DAY;
+
+/**
+ * The company's website, read once for every workspace (`site_reads`): the shared copy while it is
+ * fresh, else a new read that replaces it. Each workspace still saves its own pages, contacts and people.
+ */
+async function sharedSiteRead(domain: string): Promise<SiteRead | null> {
+  const [cached] = await db.select({ read: siteReads.read, readAt: siteReads.readAt }).from(siteReads).where(eq(siteReads.domain, domain));
+  if (cached && Date.now() - cached.readAt.getTime() < SITE_FRESH_MS) return cached.read as unknown as SiteRead;
+  const site = await readWebsite(domain);
+  if (site) {
+    const read = site as unknown as Record<string, unknown>;
+    await db
+      .insert(siteReads)
+      .values({ domain, read })
+      .onConflictDoUpdate({ target: siteReads.domain, set: { read, readAt: sql`now()` } });
+  }
+  return site;
+}
+
+/**
+ * The AI's reading of the site's profile pages (description, team), made once per version of those
+ * pages for every workspace: reused while their content is unchanged, else asked again and stored.
+ */
+async function sharedSiteFacts(domain: string, pages: { contentHash: string | null }[], ask: () => Promise<WebsiteFacts>): Promise<WebsiteFacts> {
+  const from = pages
+    .map((p) => p.contentHash ?? "")
+    .sort()
+    .join(",");
+  const [cached] = await db.select({ facts: siteReads.facts, factsFrom: siteReads.factsFrom }).from(siteReads).where(eq(siteReads.domain, domain));
+  if (cached?.facts && cached.factsFrom === from) return cached.facts as unknown as WebsiteFacts;
+  const facts = await ask();
+  await db
+    .update(siteReads)
+    .set({ facts: facts as unknown as Record<string, unknown>, factsFrom: from, factsAt: sql`now()` })
+    .where(eq(siteReads.domain, domain));
+  return facts;
+}
+
 async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
   const company = await loadCompany(actor, job.entityId);
   if (!company?.domain || !(await sourceRunnable(actor.workspaceId, "company_website"))) return { followUps: [], skipped: true };
@@ -754,7 +798,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     runAfter: later(RECHECK.website),
   };
 
-  const site = await readWebsite(company.domain);
+  const site = await sharedSiteRead(company.domain);
   if (!site) return { followUps: [recheck] };
   // What the site publishes now, from its pages and its structured data. It replaces what an
   // earlier read found, so an address the site dropped (or a placeholder) doesn't linger.
@@ -809,7 +853,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
   let peopleAdded = 0;
   const profilePages = saved.filter((p) => ["home", "about", "team", "contact"].includes(p.kind));
   if (profilePages.some((p) => p.changed)) {
-    const facts = await ai(() => extractWebsiteFacts({ name: company.name, domain: site.domain }, profilePages));
+    const facts = await sharedSiteFacts(company.domain, profilePages, () => ai(() => extractWebsiteFacts({ name: company.name, domain: site.domain }, profilePages)));
     peopleAdded = await db.transaction(async (tx) => {
       if (facts.description) {
         await tx
@@ -1258,105 +1302,71 @@ async function matchOsm({ actor }: JobContext): Promise<JobResult> {
 
 // --- discover_theirstack: recent job posts (Indeed, LinkedIn, career sites) via TheirStack -------
 
-/** Jobs analysed per run; the rest wait a few minutes (the free AI checks only a few a minute). */
+/** New AI readings per run; the rest wait a few minutes (the free AI checks only a few a minute). */
 const THEIRSTACK_ANALYSES_PER_JOB = 3;
+/** Posts already read by the AI (for another workspace) recorded per run: no AI, no credit. */
+const THEIRSTACK_POSTS_PER_JOB = 20;
+/** Shared posts offered to a workspace only while this recent. */
+const THEIRSTACK_MAX_AGE_DAYS = 21;
 
-type StoredTheirStackJob = TheirStackJob & { analysed?: boolean; relevant?: boolean };
+type SharedPost = { id: number; title: string; country: string | null; data: TheirStackJob; analysis: SignalAnalysis | null };
 
 /**
- * Once a day: fetches the newest job posts for the roles the workspace's services fill, in its
- * target countries, skipping companies already in its opportunities and jobs already seen (so no
- * credit is spent twice). Each job is stored before the AI sees it, so a busy AI never wastes a
- * credit; it's analysed like any job post, and only a relevant one becomes a company and signal.
+ * Job posts from TheirStack, shared by the whole platform (`theirstack_jobs`): each post is bought
+ * once (one credit) and read by the AI once, whichever workspace it was bought for. A workspace first
+ * takes the shared posts it hasn't looked at that fit its services (by title) and countries; only
+ * when none are left does it buy new ones, within the platform's daily cap, for the roles its
+ * services fill. A post becomes a company and signal only when the AI ties it to something the
+ * workspace sells.
  */
 async function discoverTheirStack({ actor, ai }: JobContext): Promise<JobResult> {
   if (!(await sourceRunnable(actor.workspaceId, "theirstack"))) return { followUps: [], skipped: true };
   const services = await loadServices(actor.workspaceId);
-  const categories = [...new Set(services.flatMap((s) => s.categories))];
-  const titles = titlesFor(categories);
+  const sold = [...new Set(services.flatMap((s) => s.categories))];
+  const titles = titlesFor(sold);
   if (titles.length === 0) return { followUps: [], skipped: true };
+  // The countries the services name (a service without countries doesn't widen it to the world:
+  // a credit spent on a market the workspace doesn't sell to is wasted). Worldwide only when none do.
+  const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
 
-  const stored = (extra: SQL) =>
-    db
-      .select({ id: sourceRecords.id, externalId: sourceRecords.externalId, data: sourceRecords.data })
-      .from(sourceRecords)
-      .where(and(eq(sourceRecords.workspaceId, actor.workspaceId), eq(sourceRecords.sourceSlug, "theirstack"), extra));
-
-  // Jobs bought earlier but not analysed yet come first.
-  let waiting = await stored(sql`${sourceRecords.data}->>'analysed' is null`).limit(THEIRSTACK_ANALYSES_PER_JOB + 1);
-  if (waiting.length === 0) {
-    // One key and one allowance for the whole platform: the daily cap is shared by all workspaces.
-    const today = new Date().toISOString().slice(0, 10);
-    const [{ fetchedToday }] = await db
-      .select({ fetchedToday: sql<number>`count(*)::int` })
-      .from(sourceRecords)
-      .where(and(eq(sourceRecords.sourceSlug, "theirstack"), sql`${sourceRecords.data}->>'fetchedOn' = ${today}`));
-    const limit = Math.min(theirStackJobsPerRun() - fetchedToday, await creditsLeft());
-    if (limit <= 0) return { followUps: [] };
-    const size = employeeRange(services);
-    const seen = await stored(sql`true`)
-      .orderBy(desc(sourceRecords.observedAt))
-      .limit(500);
-    const opportunityDomains = await db
-      .selectDistinct({ domain: companies.domain })
-      .from(opportunities)
-      .innerJoin(companies, eq(companies.id, opportunities.companyId))
-      .where(and(eq(opportunities.workspaceId, actor.workspaceId), isNotNull(companies.domain)));
-    // The countries the services name (a service without countries doesn't widen it to the world:
-    // a credit spent on a market the workspace doesn't sell to is wasted). Worldwide only when none do.
-    const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
-    const jobs = await searchJobs({
-      titles,
-      countries,
-      maxAgeDays: 7,
-      limit,
-      seenJobIds: seen.map((r) => Number(r.externalId.replace(/^job:/, ""))).filter(Number.isFinite),
-      skipDomains: opportunityDomains.map((d) => d.domain!),
-      minEmployees: size.min,
-      maxEmployees: size.max,
-    });
-    await db.transaction(async (tx) => {
-      for (const j of jobs) {
-        await saveSourceRecord(
-          tx,
-          actor.workspaceId,
-          {
-            sourceSlug: "theirstack",
-            externalId: `job:${j.id}`,
-            url: j.url,
-            recordType: "job_post",
-            publishedAt: new Date(`${j.postedOn}T00:00:00Z`),
-            data: { ...j, description: j.description.slice(0, 6000), fetchedOn: today },
-          },
-          null,
-        );
-      }
-    });
-    waiting = await stored(sql`${sourceRecords.data}->>'analysed' is null`).limit(THEIRSTACK_ANALYSES_PER_JOB + 1);
+  let posts = await sharedPostsFor(actor, sold, countries);
+  if (posts.length === 0) {
+    await buyTheirStackPosts(actor, services, titles, countries);
+    posts = await sharedPostsFor(actor, sold, countries);
   }
 
   const ref = await getReferenceData();
-  for (const row of waiting.slice(0, THEIRSTACK_ANALYSES_PER_JOB)) {
-    const j = row.data as StoredTheirStackJob;
-    const industry = ref.industries.find((i) => i.slug === j.company.industry)?.name ?? null;
-    const analysis = await ai(() =>
-      analyzeSignal(
-        { companyId: actor.workspaceId, text: theirStackJobText(j), sourceUrl: j.url },
-        { name: j.company.name, domain: j.company.domain, industry },
-        ref,
-      ),
-    );
+  let aiReadings = 0;
+  let handled = 0;
+  for (const post of posts) {
+    if (handled >= THEIRSTACK_POSTS_PER_JOB || (!post.analysis && aiReadings >= THEIRSTACK_ANALYSES_PER_JOB)) continue;
+    handled++;
+    const j = post.data;
+    let analysis = post.analysis;
+    if (!analysis) {
+      aiReadings++;
+      const industry = ref.industries.find((i) => i.slug === j.company.industry)?.name ?? null;
+      analysis = await ai(() =>
+        analyzeSignal({ companyId: actor.workspaceId, text: theirStackJobText(j), sourceUrl: j.url }, { name: j.company.name, domain: j.company.domain, industry }, ref),
+      );
+      // Read once, for every workspace.
+      await db
+        .update(theirstackJobs)
+        .set({ analysis: analysis as unknown as Record<string, unknown>, analyzedAt: sql`now()` })
+        .where(eq(theirstackJobs.id, post.id));
+    }
     const found = signalFromAnalysis(analysis, { url: j.url, occurredOn: j.postedOn, evidenceText: j.description });
     // Kept only when the AI ties the job to something the workspace sells.
-    const values = found && found.serviceCategories.some((c) => categories.includes(c)) ? found : null;
+    const values = found && found.serviceCategories.some((c) => sold.includes(c)) ? found : null;
     const scoredCompany = await db.transaction(async (tx) => {
+      // The workspace's own record of the post: provenance, and "looked at" so it isn't offered again.
       const record = {
         sourceSlug: "theirstack" as const,
-        externalId: row.externalId,
+        externalId: `job:${j.id}`,
         url: j.url,
         recordType: "job_post",
         publishedAt: new Date(`${j.postedOn}T00:00:00Z`),
-        data: { ...j, analysed: true, relevant: values !== null },
+        data: { title: j.title, company: j.company.name, postedOn: j.postedOn, location: j.location, foundOn: j.foundOn, analysed: true, relevant: values !== null },
       };
       if (!values) {
         await saveSourceRecord(tx, actor.workspaceId, record, null);
@@ -1385,6 +1395,7 @@ async function discoverTheirStack({ actor, ai }: JobContext): Promise<JobResult>
     });
     if (scoredCompany) await rescoreAfterCompanyChange(actor.workspaceId, scoredCompany);
   }
+
   const followUps: FollowUp[] = [];
   // New companies: their website for contacts and team.
   const added = await db
@@ -1399,9 +1410,82 @@ async function discoverTheirStack({ actor, ai }: JobContext): Promise<JobResult>
       ),
     );
   for (const { companyId } of added) followUps.push({ kind: "enrich_company", entityId: companyId! });
-  if (waiting.length > THEIRSTACK_ANALYSES_PER_JOB)
-    followUps.push({ kind: "discover_theirstack", entityId: actor.workspaceId, runAfter: later(3 * 60_000) });
+  if (posts.length > handled) followUps.push({ kind: "discover_theirstack", entityId: actor.workspaceId, runAfter: later(3 * 60_000) });
   return { followUps };
+}
+
+/**
+ * Shared posts this workspace hasn't looked at yet, newest first, that fit its services (the AI's
+ * categories once read, else the title's) and its countries.
+ */
+async function sharedPostsFor(actor: Actor, sold: string[], countries: string[]): Promise<SharedPost[]> {
+  const rows = await db
+    .select({ id: theirstackJobs.id, title: theirstackJobs.title, country: theirstackJobs.country, data: theirstackJobs.data, analysis: theirstackJobs.analysis })
+    .from(theirstackJobs)
+    .where(
+      and(
+        sql`${theirstackJobs.postedOn} >= to_char(now() - make_interval(days => ${THEIRSTACK_MAX_AGE_DAYS}), 'YYYY-MM-DD')`,
+        sql`not exists (
+          select 1 from source_records r
+          where r.workspace_id = ${actor.workspaceId} and r.source_slug = 'theirstack'
+            and r.external_id = 'job:' || ${theirstackJobs.id} and r.data->>'analysed' is not null)`,
+      ),
+    )
+    .orderBy(desc(theirstackJobs.postedOn), theirstackJobs.id)
+    .limit(300);
+  return rows
+    .map((r) => ({ ...r, data: r.data as unknown as TheirStackJob, analysis: r.analysis as unknown as SignalAnalysis | null }))
+    .filter((post) => {
+      if (countries.length > 0 && !(post.country ? countries.includes(post.country) : jobInCountries(post.data.location, countries))) return false;
+      if (post.analysis) return post.analysis.isSignal && post.analysis.serviceCategories.some((c) => sold.includes(c));
+      return categorizeJob({ title: post.title, department: null }).some((c) => sold.includes(c));
+    });
+}
+
+/**
+ * Buys new posts for the roles the workspace's services fill, within the platform's daily cap and
+ * the credits left, skipping every post the platform already has and companies already in this
+ * workspace's opportunities, and stores them in the shared table.
+ */
+async function buyTheirStackPosts(actor: Actor, services: Service[], titles: string[], countries: string[]): Promise<void> {
+  // One key and one allowance for the whole platform: the daily cap is shared by all workspaces.
+  const [{ boughtToday }] = await db
+    .select({ boughtToday: sql<number>`count(*)::int` })
+    .from(theirstackJobs)
+    .where(sql`${theirstackJobs.fetchedAt} >= date_trunc('day', now())`);
+  const limit = Math.min(theirStackJobsPerRun() - boughtToday, await creditsLeft());
+  if (limit <= 0) return;
+  const size = employeeRange(services);
+  const owned = await db.select({ id: theirstackJobs.id }).from(theirstackJobs).orderBy(desc(theirstackJobs.fetchedAt)).limit(2000);
+  const opportunityDomains = await db
+    .selectDistinct({ domain: companies.domain })
+    .from(opportunities)
+    .innerJoin(companies, eq(companies.id, opportunities.companyId))
+    .where(and(eq(opportunities.workspaceId, actor.workspaceId), isNotNull(companies.domain)));
+  const jobs = await searchJobs({
+    titles,
+    countries,
+    maxAgeDays: 7,
+    limit,
+    seenJobIds: owned.map((r) => r.id),
+    skipDomains: opportunityDomains.map((d) => d.domain!),
+    minEmployees: size.min,
+    maxEmployees: size.max,
+  });
+  if (jobs.length === 0) return;
+  await db
+    .insert(theirstackJobs)
+    .values(
+      jobs.map((j) => ({
+        id: j.id,
+        title: j.title.slice(0, 300),
+        postedOn: j.postedOn,
+        country: j.company.country,
+        companyDomain: j.company.domain,
+        data: { ...j, description: j.description.slice(0, 6000) } as unknown as Record<string, unknown>,
+      })),
+    )
+    .onConflictDoNothing();
 }
 
 export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise<JobResult>> = {

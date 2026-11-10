@@ -96,6 +96,11 @@ Nothing to set up: from **Services & ICP** (target industries and countries) the
    is unofficial with no stated licence, and YC's site terms restrict reuse of directory content:
    using it was the product owner's decision, recorded on its `sources` row. No people or contact
    details are taken from it.
+   - *Their job boards join the shared pool* (`detectYcBoards`, one company per tick; `npm run yc --
+     boards [count]` for a first pass): the board each US YC company's own website links to, else a
+     board under its own slug or domain that states its website or whose jobs mention its domain (a
+     shared name alone proves nothing). Hiring and bigger companies first. A matched job on such a
+     board makes the company from its YC record (name, website, location), not a provisional one.
 1. **finds UK companies** *(switched off, see above)*
    - on **Companies House**, by the industries' SIC codes, newly formed ones first (a new business
      is itself a "new startup" signal), with their **directors**;
@@ -132,6 +137,16 @@ Nothing to set up: from **Services & ICP** (target industries and countries) the
    - The job-board sync (`syncCompanyJobs`) uses no AI either: categories decide relevance, the
      shared analysis or a rule signal records it. The same role in several places counts once; a
      deleted signal stays deleted.
+   - *Ranking* (`boardScore`): matched companies come strongest first: several distinct matching
+     roles, a buying signal the AI confirmed, a known (YC) company, a fresh post, several of the
+     workspace's services.
+   - *TheirStack posts are shared too* (`theirstack_jobs`): each post is bought once (one credit)
+     and read by the AI once; a workspace first takes the shared posts that fit its services and
+     countries, and buys new ones only when none are left.
+   - *Websites are read once* (`site_reads`): a site read for one workspace is reused by the others
+     for 7 days, and the AI's reading of its profile pages (description, team) while they are
+     unchanged. Each workspace saves its own contacts and people from it. "Refresh from sources"
+     always reads the site afresh.
    - Coverage is broad, not complete: only boards the archive has crawled. The archive index is
      often slow (504s); progress resumes where it stopped.
 4. checks **UK public tenders** (Contracts Finder) for its services;

@@ -15,6 +15,8 @@ import { getReferenceData } from "@/server/services/reference-data.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal, replaceDetectedSignal } from "@/server/services/signals.service";
 import { cleanBoardName, jobInCountries } from "@/server/sources/board-directory";
+import { toYcCompany, ycCompanyForBoard } from "@/server/sources/yc";
+import { sourceRunnable } from "./queue";
 import { resolveCompany } from "./resolve";
 
 /**
@@ -135,7 +137,44 @@ type Candidate = {
   board_name: string | null;
   stated_website: string | null;
   categories: string[];
+  /** The AI has read this job and found a buying signal. */
+  ai_confirmed: boolean;
+  /** The board is a known Y Combinator company's own. */
+  yc: boolean;
 };
+
+type RankedJob = Pick<Candidate, "title" | "categories" | "posted_at" | "first_seen_at" | "ai_confirmed" | "yc">;
+
+const DAY_MS = 86_400_000;
+
+/**
+ * How strong a matched company is as a lead, from its matching jobs: several distinct roles (a
+ * real need, not one post) count most, then a buying signal the AI confirmed, a known company (a YC
+ * company's own board: verified website and location), how fresh the newest post is, and how many
+ * of the workspace's services it touches. Pure.
+ */
+export function boardScore(jobs: RankedJob[], sold: string[], now = new Date()): number {
+  const roles = new Set(jobs.map((j) => roleKey(j.title))).size;
+  const newest = Math.max(...jobs.map((j) => new Date(j.posted_at ?? j.first_seen_at).getTime()));
+  const ageDays = (now.getTime() - newest) / DAY_MS;
+  const services = new Set(jobs.flatMap((j) => j.categories.filter((c) => sold.includes(c)))).size;
+  return (
+    Math.min(roles, 5) * 3 +
+    (jobs.some((j) => j.ai_confirmed) ? 6 : 0) +
+    (jobs[0]?.yc ? 4 : 0) +
+    (ageDays <= 7 ? 4 : ageDays <= 30 ? 2 : 0) +
+    Math.min(services, 3)
+  );
+}
+
+/** Matched companies (each a board's jobs), strongest first; the newest post breaks ties. Pure. */
+export function rankBoards<T extends RankedJob>(boards: T[][], sold: string[], now = new Date()): T[][] {
+  const newest = (jobs: T[]) => Math.max(...jobs.map((j) => new Date(j.posted_at ?? j.first_seen_at).getTime()));
+  return boards
+    .map((jobs) => ({ jobs, score: boardScore(jobs, sold, now), newest: newest(jobs) }))
+    .sort((a, b) => b.score - a.score || b.newest - a.newest)
+    .map((b) => b.jobs);
+}
 
 type JobFacts = {
   title: string;
@@ -193,7 +232,9 @@ export async function matchWorkspaceJobs(
 
   const candidates = await db.execute<Candidate>(sql`
     select j.id, j.provider, j.board_token, j.external_id, j.title, j.department, j.location, j.url, j.description,
-      j.posted_at, j.first_seen_at, d.board_name, d.stated_website, array_agg(c.category_slug) as categories
+      j.posted_at, j.first_seen_at, d.board_name, d.stated_website, array_agg(c.category_slug) as categories,
+      coalesce(bool_or(a.is_signal and a.model <> ${FAILED_MODEL}), false) as ai_confirmed,
+      exists (select 1 from yc_companies y where y.board_provider = j.provider and y.board_token = j.board_token) as yc
     from board_jobs j
     join job_board_directory d on d.provider = j.provider and d.board_token = j.board_token and d.validation_status = 'valid'
     join board_job_categories c on c.board_job_id = j.id and c.category_slug in (${sql.join(categories.map((c) => sql`${c}`), sql`, `)})
@@ -207,7 +248,7 @@ export async function matchWorkspaceJobs(
     order by coalesce(j.posted_at, j.first_seen_at) desc
     limit ${MATCH_CANDIDATES}`);
 
-  // Group by board, keeping only jobs in the workspace's countries; newest board first.
+  // Group by board, keeping only jobs in the workspace's countries; strongest companies first.
   const boards = new Map<string, Candidate[]>();
   for (const job of candidates) {
     if (!jobInCountries(job.location, countries)) continue;
@@ -217,7 +258,7 @@ export async function matchWorkspaceJobs(
   result.more = boards.size > MATCH_BOARDS_PER_RUN;
 
   const ref = await getReferenceData();
-  for (const jobs of [...boards.values()].slice(0, MATCH_BOARDS_PER_RUN)) {
+  for (const jobs of rankBoards([...boards.values()], categories).slice(0, MATCH_BOARDS_PER_RUN)) {
     const { companyId, created, companyName } = await companyForBoard(actor, jobs);
     if (created) result.newCompanies.push(companyId);
     result.companies.push(companyId);
@@ -235,6 +276,19 @@ async function companyForBoard(actor: Actor, jobs: Candidate[]): Promise<{ compa
     .where(and(eq(companyJobBoards.workspaceId, actor.workspaceId), eq(companyJobBoards.provider, provider), eq(companyJobBoards.boardToken, token)))
     .limit(1);
   if (connected) return { companyId: connected.companyId, created: false, companyName: connected.name };
+
+  // A YC company's own board: the company comes with its name, website and location from YC.
+  const yc = (await sourceRunnable(actor.workspaceId, "yc_directory")) ? await ycCompanyForBoard(provider, token) : null;
+  if (yc) {
+    return db.transaction(async (tx) => {
+      const resolved = await resolveCompany(tx, actor, toYcCompany(yc));
+      await tx
+        .insert(companyJobBoards)
+        .values({ companyId: resolved.companyId, workspaceId: actor.workspaceId, provider, boardToken: token, autoDetected: true })
+        .onConflictDoNothing();
+      return { companyId: resolved.companyId, created: resolved.created, companyName: yc.name };
+    });
+  }
 
   // The board's own name for the company ("TPG Careers Page" → "TPG"); the board address otherwise.
   const boardName = cleanBoardName(board_name);

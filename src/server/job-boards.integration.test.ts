@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/db";
-import { boardJobs, companies, companyJobBoards, jobBoardDirectory, jobPostings, users, workspaces } from "@/db/schema";
+import { boardJobs, companies, companyJobBoards, jobBoardDirectory, jobPostings, theirstackJobs, users, workspaces } from "@/db/schema";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { companySchema } from "@/lib/validation/companies";
 import { serviceSchema } from "@/lib/validation/services";
@@ -19,6 +19,7 @@ import { getCompany } from "@/server/services/companies.service";
 import { refreshBoard } from "@/server/sources/board-directory";
 import { readWebsite } from "@/server/sources/company-website";
 import { politeGet } from "@/server/sources/http";
+import { searchJobs, type TheirStackJob } from "@/server/sources/theirstack";
 import type { NormalizedJob } from "@/server/jobs/types";
 import { registerOwner } from "@/server/services/auth.service";
 import { createCompany } from "@/server/services/companies.service";
@@ -36,6 +37,17 @@ import { deleteSignal, listCompanySignals } from "@/server/services/signals.serv
 
 vi.mock("@/server/jobs/fetch-jobs", () => ({ fetchBoardJobs: vi.fn(), MAX_JOBS_PER_BOARD: 500 }));
 vi.mock("@/server/ai/signal-analysis", () => ({ analyzeSignal: vi.fn() }));
+// A fake TheirStack: configured, with credits, and posts from `searchJobs` (never the real API).
+vi.mock("@/server/sources/theirstack", async (original) => {
+  const real = await original<typeof import("@/server/sources/theirstack")>();
+  return {
+    ...real,
+    theirStack: { ...real.theirStack, isConfigured: () => true },
+    searchJobs: vi.fn(async () => []),
+    creditsLeft: vi.fn(async () => 10),
+    theirStackJobsPerRun: () => 10,
+  };
+});
 // No real network: board pages (names) answer 404, company websites can't be found.
 vi.mock("@/server/sources/http", async (original) => ({
   ...(await original<typeof import("@/server/sources/http")>()),
@@ -413,5 +425,69 @@ describe("matching shared jobs to workspaces", () => {
     await HANDLERS.enrich_company(context(uk, "enrich_company", company.id));
     const [after] = await db.select().from(companies).where(eq(companies.id, company.id));
     expect(after).toMatchObject({ domain: site, identityStatus: "partial" });
+  });
+});
+
+describe("TheirStack posts shared by every workspace", () => {
+  const nz: AuthContext[] = [];
+  // Ids far from TheirStack's real ones, unique to this run.
+  const base = 9_000_000_000 + Math.floor(Math.random() * 1_000_000) * 10;
+  const post = (n: number, title: string): TheirStackJob => ({
+    id: base + n,
+    title,
+    url: `https://example.com/jobs/${run}/${n}`,
+    foundOn: "linkedin.com",
+    postedOn: new Date().toISOString().slice(0, 10),
+    description: `${title}: we are growing the team in Auckland.`,
+    location: "Auckland, New Zealand",
+    company: { name: `Kiwi Labs ${run}`, domain: `kiwi-${run}.example`, industry: null, employeeCount: 40, country: "NZ", city: "Auckland", linkedinUrl: null },
+    hiringTeam: [],
+  });
+  const context = (auth: AuthContext) =>
+    jobContext({ id: randomUUID(), workspaceId: auth.workspaceId, kind: "discover_theirstack", entityId: auth.workspaceId, status: "running", attempts: 1 } as JobRow);
+  const kiwiOf = (auth: AuthContext) =>
+    db.select().from(companies).where(and(eq(companies.workspaceId, auth.workspaceId), eq(companies.domain, `kiwi-${run}.example`)));
+
+  beforeAll(async () => {
+    // New Zealand only, so real posts already in the shared table don't reach these workspaces.
+    for (const who of ["nz-a", "nz-b"]) {
+      const auth = await signUp(who);
+      await createService(auth, developers(["NZ"]));
+      nz.push(auth);
+    }
+  });
+
+  afterAll(async () => {
+    await db.delete(workspaces).where(inArray(workspaces.id, nz.map((a) => a.workspaceId)));
+    await db.delete(users).where(inArray(users.id, nz.map((a) => a.userId)));
+    await db.delete(theirstackJobs).where(inArray(theirstackJobs.id, [base + 1, base + 2]));
+  });
+
+  it("buys a post once and reads it once, for every workspace", async () => {
+    vi.mocked(searchJobs).mockResolvedValueOnce([post(1, "Senior Backend Engineer"), post(2, "Office Manager")]);
+    await HANDLERS.discover_theirstack(context(nz[0]));
+    expect(searchJobs).toHaveBeenCalledTimes(1);
+    // Only the post that fits the services by its title went to the AI.
+    expect(analyze).toHaveBeenCalledTimes(1);
+    const [first] = await kiwiOf(nz[0]);
+    expect(first).toBeDefined();
+    expect(await listCompanySignals(nz[0], first.id)).toEqual([expect.objectContaining({ source: "ai", signalType: "engineering_hiring" })]);
+    const [shared] = await db.select().from(theirstackJobs).where(eq(theirstackJobs.id, base + 1));
+    expect(shared.analysis).toMatchObject({ isSignal: true });
+
+    // The second workspace gets the same post: no purchase, no AI.
+    vi.mocked(searchJobs).mockClear();
+    analyze.mockClear();
+    await HANDLERS.discover_theirstack(context(nz[1]));
+    expect(searchJobs).not.toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+    const [second] = await kiwiOf(nz[1]);
+    expect(second.id).not.toBe(first.id);
+    expect(await listCompanySignals(nz[1], second.id)).toEqual([expect.objectContaining({ source: "ai" })]);
+
+    // Looked at once per workspace: running again offers nothing new.
+    await HANDLERS.discover_theirstack(context(nz[1]));
+    expect(analyze).not.toHaveBeenCalled();
+    expect(await kiwiOf(nz[1])).toHaveLength(1);
   });
 });

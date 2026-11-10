@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { db } from "@/db";
 import { companies, companyIdentifiers, companyJobBoards, companyLocations, contactPoints, ingestionJobs, jobBoardDirectory, osmMatches, osmPlaces, signals, sources, users, workspaces } from "@/db/schema";
 import type { SignalAnalysis } from "@/lib/api/types";
-import { personSchema } from "@/lib/validation/companies";
+import { companySchema, personSchema } from "@/lib/validation/companies";
 import { opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
 import { serviceSchema } from "@/lib/validation/services";
 import { signalSchema, todayIso } from "@/lib/validation/signals";
@@ -17,7 +17,9 @@ import { queueChecksNow, runTick } from "@/server/ingestion/worker";
 import { systemActor } from "@/server/auth/actor";
 import { rescoreCompany } from "@/server/scoring/rescore";
 import { registerOwner } from "@/server/services/auth.service";
-import { getCompany, listCompanies } from "@/server/services/companies.service";
+import { createCompany, getCompany, listCompanies } from "@/server/services/companies.service";
+import { HANDLERS, jobContext } from "@/server/ingestion/handlers";
+import type { JobRow } from "@/server/ingestion/queue";
 import { getCompanySources, refreshCompany, setDataSourceEnabled } from "@/server/services/data-sources.service";
 import { exportOpportunities } from "@/server/services/exports.service";
 import { getOpportunity, listOpportunities } from "@/server/services/opportunities.service";
@@ -277,6 +279,27 @@ describe("automatic ingestion", () => {
       .from(ingestionJobs)
       .where(and(eq(ingestionJobs.workspaceId, owner.workspaceId), isNotNull(ingestionJobs.lastError)));
     expect(errors).toEqual([]);
+  });
+
+  it("reads a website once for every workspace: another workspace gets its contacts and team without a new read or AI call", async () => {
+    const domain = `newsmile-${run}.example`;
+    const third = await signUp("site");
+    const theirs = await createCompany(
+      third,
+      companySchema.parse({ name: "Newsmile (theirs)", domain, industry: null, employeeCount: null, description: null, hqCity: null, hqRegion: null, hqCountry: null }),
+    );
+    vi.mocked(readWebsite).mockClear();
+    vi.mocked(extractWebsiteFacts).mockClear();
+    await HANDLERS.scan_website(
+      jobContext({ id: randomUUID(), workspaceId: third.workspaceId, kind: "scan_website", entityId: theirs.id, status: "running", attempts: 1 } as JobRow),
+    );
+    expect(readWebsite).not.toHaveBeenCalled();
+    expect(extractWebsiteFacts).not.toHaveBeenCalled();
+    const detail = await getCompany(third, theirs.id);
+    expect(detail.people.map((p) => p.name)).toContain("Priya Shah");
+    expect((await getCompanySources(third, theirs.id)).contacts.map((c) => c.value)).toContain(`hello@${domain}`);
+    await db.delete(workspaces).where(eq(workspaces.id, third.workspaceId));
+    await db.delete(users).where(eq(users.id, third.userId));
   });
 
   it("adds nothing twice when it runs again", async () => {

@@ -19,7 +19,8 @@ import {
 import { isAllowed, parseRobots } from "./http";
 import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
 import { boardDomainGuesses, npiSteps } from "@/server/ingestion/handlers";
-import { toYcCompany, toYcRow, ycCountry, ycIndustry } from "./yc";
+import { boardFitsCompany, toYcCompany, toYcRow, ycBoardTokens, ycCountry, ycIndustry } from "./yc";
+import { boardScore, rankBoards } from "@/server/ingestion/shared-jobs";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender, toTenderContact } from "./uk-tenders";
 import { cleanPhone, comparablePostcode, overtureLookupSql, placeDomains, proposeOvertureMatches, type OverturePlace, type OvertureTarget } from "./overture";
@@ -1139,5 +1140,48 @@ describe("Y Combinator companies", () => {
       identity: "partial",
       record: { sourceSlug: "yc_directory", externalId: "company:31337" },
     });
+  });
+
+  it("tries the YC slug first, then the company's own domain and name, for its job board", () => {
+    expect(ycBoardTokens({ slug: "acme-ai", name: "Acme AI", domain: "acme.ai" })).toEqual(["acme-ai", "acmeai", "acme"]);
+  });
+
+  it("links a guessed board only with evidence it is the company's own", () => {
+    const acme = { domain: "acme.ai" };
+    const jobs = (description: string, url = "https://jobs.ashbyhq.com/acme/1") => [{ url, description }];
+    expect(boardFitsCompany({ statedWebsite: "https://www.acme.ai/", jobs: [] }, acme)).toBe(true);
+    expect(boardFitsCompany({ statedWebsite: "https://acme-plumbing.com", jobs: jobs("See acme.ai") }, acme)).toBe(false);
+    expect(boardFitsCompany({ statedWebsite: null, jobs: jobs("Learn more at https://acme.ai/about") }, acme)).toBe(true);
+    // A shared name alone proves nothing.
+    expect(boardFitsCompany({ statedWebsite: null, jobs: jobs("Drafter for our concrete tank plant.") }, acme)).toBe(false);
+    expect(boardFitsCompany({ statedWebsite: null, jobs: jobs("See notacme.ai") }, acme)).toBe(false);
+    expect(boardFitsCompany({ statedWebsite: null, jobs: [] }, { domain: null })).toBe(false);
+  });
+});
+
+describe("ranking matched companies", () => {
+  const now = new Date("2026-11-10T12:00:00Z");
+  const job = (title: string, over: Partial<{ categories: string[]; posted_at: Date; ai_confirmed: boolean; yc: boolean }> = {}) => ({
+    title,
+    categories: ["ai_ml"],
+    posted_at: new Date("2026-11-08T00:00:00Z") as Date | null,
+    first_seen_at: new Date("2026-11-08T00:00:00Z"),
+    ai_confirmed: false,
+    yc: false,
+    ...over,
+  });
+
+  it("scores distinct roles, AI-confirmed signals, known companies, freshness and breadth", () => {
+    expect(boardScore([job("ML Engineer")], ["ai_ml"], now)).toBe(3 + 4 + 1);
+    // The same role in two places is one role.
+    expect(boardScore([job("ML Engineer - NY"), job("ML Engineer - SF")], ["ai_ml"], now)).toBe(3 + 4 + 1);
+    expect(boardScore([job("ML Engineer", { ai_confirmed: true, yc: true })], ["ai_ml"], now)).toBe(3 + 6 + 4 + 4 + 1);
+    expect(boardScore([job("ML Engineer", { posted_at: new Date("2026-08-01T00:00:00Z") })], ["ai_ml"], now)).toBe(3 + 0 + 1);
+  });
+
+  it("puts a company with several real roles before one with a single fresh post", () => {
+    const one = [job("ML Engineer")];
+    const many = ["ML Engineer", "Data Scientist", "AI Product Engineer"].map((t) => job(t, { posted_at: new Date("2026-10-20T00:00:00Z") }));
+    expect(rankBoards([one, many], ["ai_ml"], now)).toEqual([many, one]);
   });
 });

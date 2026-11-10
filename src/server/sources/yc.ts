@@ -1,7 +1,12 @@
 import "server-only";
 import { and, desc, eq, inArray, max, notInArray, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
-import { ycCompanies } from "@/db/schema";
+import { boardJobs, jobBoardDirectory, ycCompanies } from "@/db/schema";
+import type { JobBoardProvider } from "@/lib/domain/job-boards";
+import { candidateTokens } from "@/server/jobs/detect";
+import { boardExists } from "@/server/jobs/fetch-jobs";
+import { refreshBoard } from "./board-directory";
+import { readWebsite } from "./company-website";
 import { registrableDomain } from "./http";
 import type { FoundCompany, HealthStatus, SourceAdapter } from "./index";
 
@@ -242,3 +247,106 @@ export const ycDirectory: SourceAdapter = {
     }
   },
 };
+
+// --- Job boards: each YC company's own board, found once for every workspace -------------------
+
+/** The providers YC startups use; others are rare among them and cost a request each. */
+const YC_BOARD_PROVIDERS = ["ashby", "greenhouse", "lever", "workable"] as const;
+/** A company with no board found is looked at again after this long (it may start hiring). */
+const BOARD_RECHECK_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Board names to try for a YC company, strongest first: its YC slug, then its own domain and name
+ * (`candidateTokens`). Pure.
+ */
+export function ycBoardTokens(row: { slug: string; name: string; domain: string | null }): string[] {
+  return [...new Set([row.slug, row.slug.replace(/-/g, ""), ...candidateTokens({ name: row.name, domain: row.domain })])].slice(0, 4);
+}
+
+/**
+ * Whether a board found by guessing its name is the company's: the provider states the company's
+ * own website, or its jobs link to or mention the company's domain. A shared name alone proves
+ * nothing ("Preload" the AI startup is not "Preload" the tank maker). Pure.
+ */
+export function boardFitsCompany(
+  board: { statedWebsite: string | null; jobs: { url: string; description: string | null }[] },
+  company: { domain: string | null },
+): boolean {
+  if (!company.domain) return false;
+  if (board.statedWebsite) return domainOf(board.statedWebsite) === company.domain;
+  const mention = new RegExp(`(^|[^a-z0-9-])${company.domain.replace(/[.]/g, "\.")}($|[^a-z0-9-])`, "i");
+  return board.jobs.some((job) => mention.test(job.url) || mention.test(job.description ?? ""));
+}
+
+/**
+ * Finds the job boards of US YC companies not checked yet (hiring and bigger ones first): the board
+ * their own website links to, else a board under one of their own names that shows it is theirs.
+ * A found board is downloaded into the shared cache and linked. Its jobs then join the shared pool, sorted and matched like any
+ * other. Returns how many companies it checked.
+ */
+export async function detectYcBoards({ limit, deadline }: { limit: number; deadline: number }): Promise<number> {
+  const due = await db
+    .select({ id: ycCompanies.id, slug: ycCompanies.slug, name: ycCompanies.name, domain: ycCompanies.domain })
+    .from(ycCompanies)
+    .where(
+      and(
+        eq(ycCompanies.country, "US"),
+        eq(ycCompanies.status, "Active"),
+        sql`${ycCompanies.boardProvider} is null`,
+        sql`(${ycCompanies.boardCheckedAt} is null or ${ycCompanies.boardCheckedAt} < now() - make_interval(secs => ${BOARD_RECHECK_MS / 1000}))`,
+      ),
+    )
+    // Hiring ones first, bigger teams first (more open roles), then the newest.
+    .orderBy(desc(ycCompanies.isHiring), sql`${ycCompanies.teamSize} desc nulls last`, sql`${ycCompanies.launchedAt} desc nulls last`, ycCompanies.id)
+    .limit(limit);
+  let checked = 0;
+  for (const company of due) {
+    if (Date.now() > deadline) break;
+    const board = await findYcBoard(company);
+    await db
+      .update(ycCompanies)
+      .set({ boardProvider: board?.provider ?? null, boardToken: board?.boardToken ?? null, boardCheckedAt: sql`now()` })
+      .where(eq(ycCompanies.id, company.id));
+    checked++;
+  }
+  return checked;
+}
+
+async function findYcBoard(company: { slug: string; name: string; domain: string | null }) {
+  // The board the company's own website links to: proof it is theirs.
+  if (company.domain) {
+    const site = await readWebsite(company.domain).catch(() => null);
+    if (site?.jobBoard && (await refreshBoard(site.jobBoard.provider, site.jobBoard.boardToken)) === "valid") return site.jobBoard;
+  }
+  // Else a board under one of its own names, only with evidence it is theirs.
+  const attempts = ycBoardTokens(company).flatMap((boardToken) => YC_BOARD_PROVIDERS.map((provider) => ({ provider, boardToken })));
+  const exists = await Promise.all(attempts.map((a) => boardExists(a.provider, a.boardToken)));
+  for (const [index, attempt] of attempts.entries()) {
+    if (!exists[index]) continue;
+    if ((await refreshBoard(attempt.provider, attempt.boardToken)) !== "valid") continue;
+    const [[listed], jobs] = await Promise.all([
+      db
+        .select({ statedWebsite: jobBoardDirectory.statedWebsite })
+        .from(jobBoardDirectory)
+        .where(and(eq(jobBoardDirectory.provider, attempt.provider), eq(jobBoardDirectory.boardToken, attempt.boardToken))),
+      db
+        .select({ url: boardJobs.url, description: boardJobs.description })
+        .from(boardJobs)
+        .where(and(eq(boardJobs.provider, attempt.provider), eq(boardJobs.boardToken, attempt.boardToken)))
+        .limit(50),
+    ]);
+    // A guessed board with no open jobs adds nothing (and is weak evidence on its own).
+    if (listed && jobs.length > 0 && boardFitsCompany({ statedWebsite: listed.statedWebsite, jobs }, company)) return attempt;
+  }
+  return null;
+}
+
+/** The YC company a shared board belongs to, if one was linked to it. */
+export async function ycCompanyForBoard(provider: JobBoardProvider, boardToken: string) {
+  const [row] = await db
+    .select()
+    .from(ycCompanies)
+    .where(and(eq(ycCompanies.boardProvider, provider), eq(ycCompanies.boardToken, boardToken)))
+    .limit(1);
+  return row ?? null;
+}

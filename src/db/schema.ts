@@ -1347,9 +1347,66 @@ export const ycCompanies = pgTable(
     /** The company's YC directory page. */
     url: text(),
     importedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Its own job board, found once for every workspace (`detectYcBoards`), so its jobs join the
+     * shared pool; null when none was found. Checked again after a while (`boardCheckedAt`).
+     */
+    boardProvider: jobBoardProvider(),
+    boardToken: text(),
+    boardCheckedAt: timestamp({ withTimezone: true }),
   },
   (t) => [
     uniqueIndex("yc_companies_slug_idx").on(t.slug),
     index("yc_companies_pick_idx").on(t.country, t.status, t.isHiring),
+    index("yc_companies_board_idx").on(t.boardProvider, t.boardToken),
+    foreignKey({
+      name: "yc_companies_board_fk",
+      columns: [t.boardProvider, t.boardToken],
+      foreignColumns: [jobBoardDirectory.provider, jobBoardDirectory.boardToken],
+    }).onDelete("set null"),
   ],
 );
+
+/**
+ * TheirStack job posts, bought once for the whole platform (each costs an API credit) and shared by
+ * every workspace: a post one workspace's search bought is offered to the others without another
+ * credit, and the AI reads it once (`analysis`). Which workspace has looked at which post is in its
+ * own `source_records` (external id "job:<id>").
+ */
+export const theirstackJobs = pgTable(
+  "theirstack_jobs",
+  {
+    /** TheirStack's own job id. */
+    id: bigint({ mode: "number" }).primaryKey(),
+    title: text().notNull(),
+    /** YYYY-MM-DD. */
+    postedOn: text().notNull(),
+    /** The hiring company's country (ISO code), when TheirStack knows it. */
+    country: text(),
+    companyDomain: text(),
+    /** The post as `searchJobs` returns it (`TheirStackJob`). */
+    data: jsonb().$type<Record<string, unknown>>().notNull(),
+    fetchedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /** The AI's one reading of the post (`SignalAnalysis`); null until read. Display/upgrade only, never matched on. */
+    analysis: jsonb().$type<Record<string, unknown>>(),
+    analyzedAt: timestamp({ withTimezone: true }),
+  },
+  (t) => [index("theirstack_jobs_posted_idx").on(t.postedOn)],
+);
+
+/**
+ * A company website as last read, shared by every workspace (keyed by its domain): the pages,
+ * published contacts and job-board link, and the AI's reading of its profile pages (description and
+ * team) with the content they were read from. A workspace saves its own copy of what it uses
+ * (contacts, people, page records); this only spares re-downloading the site and asking the AI again.
+ */
+export const siteReads = pgTable("site_reads", {
+  domain: text().primaryKey(),
+  /** `readWebsite`'s result (`SiteRead`). */
+  read: jsonb().$type<Record<string, unknown>>().notNull(),
+  readAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** The AI's reading (`WebsiteFacts`) of the profile pages whose content hashes are `factsFrom`. */
+  facts: jsonb().$type<Record<string, unknown>>(),
+  factsFrom: text(),
+  factsAt: timestamp({ withTimezone: true }),
+});

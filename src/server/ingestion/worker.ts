@@ -5,6 +5,7 @@ import { sources } from "@/db/schema";
 import { AppError } from "@/server/http/errors";
 import { collectFromArchive, validateDueBoards } from "@/server/sources/board-directory";
 import { HANDLERS, jobContext } from "./handlers";
+import { detectYcBoards } from "@/server/sources/yc";
 import { analyzeSharedJobs, categorizeBoardJobs } from "./shared-jobs";
 import { claimNext, enqueue, markDone, markFailed, postpone, type JobRow } from "./queue";
 
@@ -54,6 +55,8 @@ export async function queueChecksNow(workspaceId: string): Promise<void> {
 const SHARED_SHARE = 0.4;
 /** Below this many boards waiting to be checked, read more candidates from the archive. */
 const MIN_UNCHECKED = 25;
+/** YC companies whose job board is looked for per tick (a website read, ~20 s each). */
+const YC_BOARDS_PER_TICK = 1;
 /** Boards checked per tick (one request each to the provider). */
 const BOARDS_PER_TICK = 10;
 
@@ -76,6 +79,9 @@ async function runSharedStep(deadline: number): Promise<void> {
   // Shared job intelligence: sort new jobs into service categories (free), then let the AI read the
   // matched ones once for every workspace.
   try {
+    // YC companies' own job boards join the shared pool (a few companies a tick, no AI).
+    const [yc] = await db.select({ status: sources.authorizationStatus }).from(sources).where(eq(sources.slug, "yc_directory"));
+    if (yc?.status === "approved" && Date.now() < deadline) await detectYcBoards({ limit: YC_BOARDS_PER_TICK, deadline });
     if (Date.now() < deadline) await categorizeBoardJobs();
     if (Date.now() < deadline) await analyzeSharedJobs({ deadline });
   } catch (error) {

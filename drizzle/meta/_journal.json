@@ -183,6 +183,27 @@
       "when": 1794328509710,
       "tag": "0025_shared_job_intelligence",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794330769175,
+      "tag": "0026_yc_job_boards",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1794331603024,
+      "tag": "0027_shared_theirstack_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1794331976340,
+      "tag": "0028_shared_site_reads",
+      "breakpoints": true
     }
   ]
 }
