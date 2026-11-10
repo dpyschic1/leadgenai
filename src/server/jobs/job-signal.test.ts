@@ -141,6 +141,9 @@ describe("categorizeJob", () => {
     expect(cats("Security Guard")).toEqual([]);
     expect(cats("Vice President of AI & Infrastructure Sales")).toEqual([]);
     expect(cats("Account Executive, Cloud Platform")).toEqual([]);
+    // A research scientist is AI work only when the title says so.
+    expect(cats("Principal Research Scientist I - Biologics Analytical Research")).toEqual([]);
+    expect(cats("Research Scientist, Machine Learning")).toEqual(["ai_ml", "staff_augmentation"]);
   });
 });
 

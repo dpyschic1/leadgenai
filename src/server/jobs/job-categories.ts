@@ -14,7 +14,7 @@ type Rule = { pattern: RegExp; categories: string[] };
 const RULES: Rule[] = [
   {
     pattern:
-      /\b(machine learning|ml|ai|a\.i\.|artificial intelligence|llms?|nlp|computer vision|deep learning|gen ?ai|generative|prompt engineer\w*|mlops|data scien\w*|applied scien\w*|research scien\w*|ai engineer\w*|ai agents?|agentic)\b/,
+      /\b(machine learning|ml|ai|a\.i\.|artificial intelligence|llms?|nlp|computer vision|deep learning|gen ?ai|generative|prompt engineer\w*|mlops|data scien\w*|ai engineer\w*|ai agents?|agentic)\b/,
     categories: ["ai_ml"],
   },
   { pattern: /\b(data scien\w*|data engineer\w*|analytics engineer\w*|data analyst|bi (developer|engineer|analyst)|business intelligence|data warehous\w*|etl)\b/, categories: ["data_analytics"] },

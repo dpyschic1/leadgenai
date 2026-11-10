@@ -701,6 +701,9 @@ describe("job-board discovery", () => {
     expect(jobInCountries("Toronto, ON", ["US"])).toBe(false);
     expect(jobInCountries("Hyderabad, TS, India", ["US"])).toBe(false);
     expect(jobInCountries("San Jose, CA", ["GB"])).toBe(false);
+    // "CT" here is Catalonia, not Connecticut.
+    expect(jobInCountries("Senior AI Engineer (remote in the EU) (Barcelona, CT, Spain; Remote)", ["US"])).toBe(false);
+    expect(jobInCountries("Barcelona, CT, Spain; Hartford, CT", ["US"])).toBe(true);
   });
 });
 

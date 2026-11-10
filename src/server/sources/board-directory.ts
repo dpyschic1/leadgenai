@@ -430,7 +430,7 @@ const COUNTRY_HINTS: Record<string, string[]> = {
 };
 const ANYWHERE = /\b(remote|anywhere|worldwide|global)\b/i;
 /** "San Jose, CA", "Austin, TX 78701": a US state code after a comma. */
-const US_STATE_CODE = /,\s*(AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b(?!\s*,\s*(canada|india|australia|mexico|brazil))/;
+const US_STATE_CODE = /,\s*(AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b/;
 const US_STATE_NAMES = ["alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming"];
 const REGION_NAMES = new Intl.DisplayNames(["en"], { type: "region" });
 /** A country's names as a location may write them: its hints and its English name. */
@@ -444,6 +444,18 @@ const ALL_COUNTRIES = [...LETTERS].flatMap((a) => [...LETTERS].map((b) => a + b)
 /** Regions a remote role can be limited to. */
 const REGIONS = ["europe", "eu", "emea", "apac", "asia", "latam", "latin america", "americas", "africa", "middle east", "oceania", "nordics", "dach", "benelux"];
 
+/** One listed place ("San Jose, CA", "Mountain View, California") that is in the US by its state. */
+function usPlace(place: string): boolean {
+  const text = ` ${place.toLowerCase().replace(/[^a-z.]+/g, " ")} `;
+  const names = (hint: string) => text.includes(` ${hint} `);
+  if (!US_STATE_CODE.test(place) && !US_STATE_NAMES.some(names)) return false;
+  // Other countries by their names only: a town that shares a name ("Reading, PA") is no country.
+  return !ALL_COUNTRIES.some((code) => code !== "US" && [REGION_NAMES.of(code)!.toLowerCase(), ...(COUNTRY_ALIASES[code] ?? [])].some(names));
+}
+
+/** Short names a place may give a country by. */
+const COUNTRY_ALIASES: Record<string, string[]> = { GB: ["uk", "u.k.", "england", "scotland", "wales"], AE: ["uae"] };
+
 /**
  * Whether a job's location fits the workspace's target countries (ISO codes; empty = anywhere).
  * Named countries and their main cities count. A remote role counts only when its location names no
@@ -455,8 +467,9 @@ export function jobInCountries(location: string | null, countries: string[]): bo
   const text = ` ${(location ?? "").toLowerCase().replace(/[^a-z.]+/g, " ")} `;
   const names = (hint: string) => text.includes(` ${hint} `);
   if (countries.some((code) => countryNames(code).some(names))) return true;
-  // US places are usually written "City, ST" or with the state's name, not the country's.
-  if (countries.includes("US") && (US_STATE_CODE.test(location ?? "") || US_STATE_NAMES.some(names))) return true;
+  // US places are usually written "City, ST" or with the state's name, not the country's: per place
+  // listed, and only when that place names no other country ("Barcelona, CT, Spain" is Catalonia).
+  if (countries.includes("US") && (location ?? "").split(/[;|/]| or /).some(usPlace)) return true;
   if (!ANYWHERE.test(location ?? "")) return false;
   const elsewhere = ALL_COUNTRIES.filter((code) => !countries.includes(code)).some((code) => countryNames(code).some(names)) || REGIONS.some(names);
   return !elsewhere;
