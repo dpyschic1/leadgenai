@@ -43,6 +43,10 @@ const MATCH_MAX_AGE_DAYS = 90;
 const MATCH_CANDIDATES = 5000;
 /** Companies matched per run; more follow a minute later. */
 export const MATCH_BOARDS_PER_RUN = 40;
+/** Time one matching run may take before it stops and leaves the rest for the next (Vercel stops a tick at 60 s). */
+const MATCH_TIME_BUDGET_MS = 20_000;
+/** Matching jobs stored per company when it is matched; the board's own scan stores the rest later. */
+const MAX_JOBS_PER_MATCH = 25;
 /** New signals per company per run: its strongest few roles, not one per posting. */
 const MAX_ROLES_PER_COMPANY = 3;
 /** The model name stored when the AI could not read a job, so it isn't retried forever. */
@@ -241,7 +245,14 @@ export type MatchResult = {
  */
 export async function matchWorkspaceJobs(
   actor: Actor,
-  { boards: only }: { boards?: { provider: JobBoardProvider; boardToken: string }[] } = {},
+  {
+    boards: only,
+    deadline = Date.now() + MATCH_TIME_BUDGET_MS,
+  }: {
+    boards?: { provider: JobBoardProvider; boardToken: string }[];
+    /** Stop starting new companies after this (epoch ms); the rest continue on the next run. */
+    deadline?: number;
+  } = {},
 ): Promise<MatchResult> {
   const result: MatchResult = { newCompanies: [], companies: [], signalsCreated: 0, more: false };
   const services = await loadServices(actor.workspaceId);
@@ -280,14 +291,24 @@ export async function matchWorkspaceJobs(
     const key = `${job.provider}:${job.board_token}`;
     boards.set(key, [...(boards.get(key) ?? []), job]);
   }
-  result.more = boards.size > MATCH_BOARDS_PER_RUN;
 
   const ref = await getReferenceData();
-  for (const jobs of rankBoards([...boards.values()], categories).slice(0, MATCH_BOARDS_PER_RUN)) {
+  const ranked = rankBoards([...boards.values()], categories).slice(0, MATCH_BOARDS_PER_RUN);
+  for (const [index, allJobs] of ranked.entries()) {
+    // Time is up: what is done is kept (each company was scored as it was matched); the next run
+    // carries on with the rest, so a run cut off by the hosting time limit loses nothing.
+    if (Date.now() > deadline) {
+      result.more = true;
+      break;
+    }
+    // A company's newest matching jobs are enough to show the need; its board scan adds the rest.
+    const jobs = allJobs.slice(0, MAX_JOBS_PER_MATCH);
     const { companyId, created, companyName } = await companyForBoard(actor, jobs);
     if (created) result.newCompanies.push(companyId);
     result.companies.push(companyId);
     result.signalsCreated += await recordMatchedJobs(actor, companyId, companyName, jobs, categories, ref.serviceCategories);
+    await rescoreAfterCompanyChange(actor.workspaceId, companyId);
+    if (index === ranked.length - 1 && boards.size > ranked.length) result.more = true;
   }
   return result;
 }

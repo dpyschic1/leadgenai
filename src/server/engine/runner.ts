@@ -1,7 +1,8 @@
 import "server-only";
 import { and, desc, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { companies, discoveryRuns, engineCapabilities, engineSettings, opportunities, services } from "@/db/schema";
+import { companies, discoveryRuns, engineCapabilities, engineSettings, opportunities, serviceServiceCategories, services } from "@/db/schema";
+import { categorizeJob } from "@/server/jobs/job-categories";
 import {
   DEFAULT_FREQUENCY_MINUTES,
   isDue,
@@ -38,7 +39,7 @@ export type RunSummary = {
   sources: { source: string; ok: boolean; found: number; error?: string; note?: string }[];
 };
 
-type ServiceTerms = { id: string; terms: string[] };
+type ServiceTerms = { id: string; terms: string[]; categories: string[] };
 
 async function loadServices(workspaceId: string, serviceIds: string[]): Promise<ServiceTerms[]> {
   if (serviceIds.length === 0) return [];
@@ -46,13 +47,17 @@ async function loadServices(workspaceId: string, serviceIds: string[]): Promise<
     .select({ id: services.id, name: services.name })
     .from(services)
     .where(and(eq(services.workspaceId, workspaceId), inArray(services.id, serviceIds)));
+  const categories = await db
+    .select({ serviceId: serviceServiceCategories.serviceId, slug: serviceServiceCategories.categorySlug })
+    .from(serviceServiceCategories)
+    .where(inArray(serviceServiceCategories.serviceId, rows.map((r) => r.id)));
   // Names only. Description text is prose ("first", "within", "product") and matches almost any post;
   // matching on it ranked an electrician's cabling job as a strong fit for a software agency.
-  return rows.map((r) => ({ id: r.id, terms: termsOf(r.name) }));
+  return rows.map((r) => ({ id: r.id, terms: termsOf(r.name), categories: categories.filter((c) => c.serviceId === r.id).map((c) => c.slug) }));
 }
 
 /** The service whose name terms the item matched most (first on a tie); null when none matched. Pure. */
-export function bestService(serviceTerms: ServiceTerms[], matched: string[]): string | null {
+export function bestService(serviceTerms: Pick<ServiceTerms, "id" | "terms">[], matched: string[]): string | null {
   let best: { id: string; hits: number } | null = null;
   for (const service of serviceTerms) {
     const hits = service.terms.filter((t) => matched.includes(t)).length;
@@ -100,6 +105,7 @@ export async function runCapability(workspaceId: string, capability: Capability,
     });
     const servicesTargeted = await loadServices(workspaceId, targeting.serviceIds);
     const serviceTerms = [...new Set(servicesTargeted.flatMap((s) => s.terms))].slice(0, 20);
+    const serviceCategories = [...new Set(servicesTargeted.flatMap((s) => s.categories))];
     if (serviceTerms.length === 0) throw new Error("No services to match against. Add a service in Services & ICP first.");
 
     const config = parseCapabilityConfig(capability, row?.config);
@@ -141,7 +147,7 @@ export async function runCapability(workspaceId: string, capability: Capability,
             summary.skipped++;
             continue;
           }
-          if (!isRelevant(item, capability, config as FreelanceConfig & FundedConfig, targeting, serviceTerms, now)) {
+          if (!isRelevant(item, capability, config as FreelanceConfig & FundedConfig, targeting, serviceTerms, now, serviceCategories)) {
             summary.skipped++;
             continue;
           }
@@ -200,10 +206,22 @@ function isRelevant(
   targeting: { countries: string[]; industries: string[]; serviceIds: string[] },
   serviceTerms: string[],
   now: Date,
+  serviceCategories: string[] = [],
 ): boolean {
   if (capability === "funded") return passesFundedFilters(item, config, targeting).pass;
   if (matchedTerms(serviceTerms, `${item.title}\n${item.text}`).length === 0) return false;
+  // A project is work the workspace delivers only when its role fits a service's categories (the
+  // same title rules as job matching): "Laravel developer" fits software development; "LPG pipeline
+  // design" or "photo editing" share a word with a service name but are not its work.
+  if (capability === "freelance" && serviceCategories.length > 0 && !fitsServiceCategories(item, serviceCategories)) return false;
   return capability === "freelance" ? passesFreelanceFilters(item, config, targeting, now).pass : true;
+}
+
+/** The project's own role (title and listed skills) falls in one of these service categories. Pure. */
+export function fitsServiceCategories(item: Pick<DiscoveredItem, "title" | "metadata">, serviceCategories: string[]): boolean {
+  const skills = Array.isArray(item.metadata?.skills) ? (item.metadata.skills as unknown[]).filter((s): s is string => typeof s === "string") : [];
+  const found = new Set([...categorizeJob({ title: item.title, department: null }), ...categorizeJob({ title: `${item.title} ${skills.join(" ")}`, department: null })]);
+  return [...found].some((c) => serviceCategories.includes(c));
 }
 
 /**

@@ -498,8 +498,8 @@ async function discoverYc({ actor }: JobContext): Promise<JobResult> {
  */
 async function evaluateBoards({ actor }: JobContext): Promise<JobResult> {
   if (!(await sourceRunnable(actor.workspaceId, "board_directory"))) return { followUps: [], skipped: true };
+  // Each company is scored as soon as it is matched (inside), so a run cut short keeps its work.
   const result = await matchWorkspaceJobs(actor);
-  for (const companyId of result.companies) await rescoreAfterCompanyChange(actor.workspaceId, companyId);
   const followUps: FollowUp[] = result.newCompanies.flatMap((entityId) => [
     { kind: "enrich_company" as const, entityId },
     // The board's other jobs, sorted against the services the same way (no AI), a little later.

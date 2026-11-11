@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isEmployment, readIntent } from "./intent";
 import { matchedTerms, matchesCountry, termsOf } from "./match";
-import { bestService } from "./runner";
+import { bestService, fitsServiceCategories } from "./runner";
 import { onlyElsewhere } from "./filters";
 import { scoreItem } from "./score-item";
 import { projectBudgetPoints, totalScore, DEFAULT_ENGINE_WEIGHTS } from "./scoring";
@@ -152,5 +152,25 @@ describe("onlyElsewhere", () => {
 
   it("never filters when the workspace targets every country", () => {
     expect(onlyElsewhere(post("India only"), { countries: [] })).toBe(false);
+  });
+});
+
+describe("fitsServiceCategories", () => {
+  const software = ["software_development", "staff_augmentation", "mvp_development", "mobile_development"];
+  const project = (title: string, skills: string[] = []) => ({ title, metadata: { skills } });
+
+  it("keeps projects whose role is the work the services deliver", () => {
+    expect(fitsServiceCategories(project("Laravel Developer Needed for Some Inventory management work"), software)).toBe(true);
+    expect(fitsServiceCategories(project("U.S.-Based AI Chatbot MVP Developer"), software)).toBe(true);
+    expect(fitsServiceCategories(project("Build AI Operations Intelligence SaaS"), software)).toBe(true);
+    // The listed skills count too.
+    expect(fitsServiceCategories(project("Inventory app for our warehouse", ["PHP", "Laravel", "React"]), software)).toBe(true);
+  });
+
+  it("drops projects that only share a word with a service name", () => {
+    expect(fitsServiceCategories(project("LPG Pipeline Process Design Support", ["Process Engineering"]), software)).toBe(false);
+    expect(fitsServiceCategories(project("Edit Foto Estetik Media Sosial", ["Photo Editing"]), software)).toBe(false);
+    expect(fitsServiceCategories(project("Beachwear Design & Manufacturing Partner"), software)).toBe(false);
+    expect(fitsServiceCategories(project("Recruiter for Engineering Talent"), software)).toBe(false);
   });
 });
