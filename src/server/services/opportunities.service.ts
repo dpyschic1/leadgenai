@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import {
   auditLogs,
@@ -9,11 +9,14 @@ import {
   companyPeople,
   contactPoints,
   opportunities,
+  opportunityDiscoveries,
+  opportunityEvidence,
   opportunityFeedback,
   opportunitySignals,
   osmMatches,
   osmPlaces,
   people,
+  pipelineStages,
   savedOpportunities,
   signalEvidence,
   services,
@@ -23,7 +26,8 @@ import {
   users,
 } from "@/db/schema";
 import type { CompanyContact, FeedbackVote, LeadList, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
-import { LEAD_STATUSES, LEAD_TABS, STATUS_GROUPS, type ContactReach, type LeadTab, type StatusGroup } from "@/lib/domain/opportunities";
+import { ENGINE_FACTOR_LABELS } from "@/lib/domain/engine";
+import { LEAD_TABS, STATUS_GROUP_KEYS, type ContactReach, type LeadTab, type StatusGroup } from "@/lib/domain/opportunities";
 import type { SourceSlug } from "@/lib/domain/sources";
 import { EMPTY_FILTERS, type LeadListQuery, type OpportunityFilters, type OpportunityListQuery, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { offsetOf } from "@/lib/validation/pagination";
@@ -32,6 +36,7 @@ import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { refreshStaleScores } from "@/server/scoring/rescore";
 import { listFeedback } from "./feedback.service";
+import { loadStage } from "./pipeline.service";
 import { loadCompanyPeople } from "./people.service";
 import { listCompanySignals } from "./signals.service";
 import { osmContactsFor } from "@/server/sources/osm";
@@ -120,7 +125,11 @@ const summaryColumns = {
   opportunity: opportunities,
   companyName: companies.canonicalName,
   companyDomain: companies.domain,
+  /** The platform of the newest evidence ("Reddit" for a Google result), for engine opportunities. */
+  platform: sql<string | null>`(select e.platform from ${opportunityEvidence} e where e.opportunity_id = ${opportunities.id} order by e.captured_at desc limit 1)`,
   serviceName: services.name,
+  stageName: pipelineStages.name,
+  stageKind: pipelineStages.kind,
   contactName: people.name,
   contactTitle: companyPeople.title,
   signalCount: sql<number>`(select count(*)::int from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
@@ -139,9 +148,12 @@ const summaryColumns = {
 
 export type SummaryRow = {
   opportunity: typeof opportunities.$inferSelect;
-  companyName: string;
+  companyName: string | null;
   companyDomain: string | null;
+  platform: string | null;
   serviceName: string | null;
+  stageName: string;
+  stageKind: "open" | "won" | "lost";
   contactName: string | null;
   contactTitle: string | null;
   companyPhone: string | null;
@@ -159,7 +171,9 @@ export function summaryQuery() {
   return db
     .select(summaryColumns)
     .from(opportunities)
-    .innerJoin(companies, eq(companies.id, opportunities.companyId))
+    // Engine opportunities (intent, funded, freelance) may have no identified company.
+    .leftJoin(companies, eq(companies.id, opportunities.companyId))
+    .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
     .leftJoin(services, eq(services.id, opportunities.serviceId))
     .leftJoin(people, eq(people.id, opportunities.primaryPersonId))
     .leftJoin(
@@ -181,32 +195,27 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
       .offset(offsetOf({ page, pageSize })),
     // Tab counts follow the same filters, so each tab says how many it would show.
     db
-      .select({ status: opportunities.status, count: sql<number>`count(*)::int` })
+      .select(Object.fromEntries(STATUS_GROUP_KEYS.map((g) => [g, sql<number>`(count(*) filter (where ${groupCondition(g)}))::int`])) as Record<StatusGroup, SQL<number>>)
       .from(opportunities)
-      .innerJoin(companies, eq(companies.id, opportunities.companyId))
-      .where(matchesFilters(auth.workspaceId, query))
-      .groupBy(opportunities.status),
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .where(matchesFilters(auth.workspaceId, query)),
   ]);
 
-  const counts = Object.fromEntries(
-    (Object.keys(STATUS_GROUPS) as StatusGroup[]).map((key) => [
-      key,
-      countRows.filter((r) => (STATUS_GROUPS[key] as readonly string[]).includes(r.status)).reduce((sum, r) => sum + r.count, 0),
-    ]),
-  ) as Record<StatusGroup, number>;
+  const counts = countRows[0] as Record<StatusGroup, number>;
 
   // The tab counts use the same filters, so the selected tab's count is this list's total.
   return { items: rows.map(toSummary), counts, total: counts[query.group], page, pageSize };
 }
 
 /**
- * The Leads page: every lead still being worked (new or in progress), in priority order, one tab
+ * The Leads page: every lead still being worked (any open stage, not archived), in priority order, one tab
  * per way it can be reached. Each tab's count follows the search, so every tab says what it holds.
  */
 export async function listLeads(auth: AuthContext, query: LeadListQuery): Promise<LeadList> {
   await refreshStaleScores(auth.workspaceId);
   const { page, pageSize } = query;
-  const base = and(matchesFilters(auth.workspaceId, { ...EMPTY_FILTERS, q: query.q }), inArray(opportunities.status, LEAD_STATUSES));
+  const base = and(matchesFilters(auth.workspaceId, { ...EMPTY_FILTERS, q: query.q }), or(groupCondition("open"), groupCondition("inProgress")));
   const tabFilter = (tab: LeadTab) => (tab === "all" ? undefined : contactReach(tab));
 
   const [rows, [countRow]] = await Promise.all([
@@ -218,7 +227,8 @@ export async function listLeads(auth: AuthContext, query: LeadListQuery): Promis
         ) as Record<LeadTab, SQL<number>>,
       )
       .from(opportunities)
-      .innerJoin(companies, eq(companies.id, opportunities.companyId))
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
       .where(base),
   ]);
   const counts = countRow as Record<LeadTab, number>;
@@ -237,12 +247,31 @@ export function priorityOrder() {
 
 /** One status tab of the feed, narrowed by `filters`. Expects `companies` to be joined. */
 export function feedFilter(workspaceId: string, group: StatusGroup, filters: OpportunityFilters): SQL | undefined {
-  return and(matchesFilters(workspaceId, filters), inArray(opportunities.status, [...STATUS_GROUPS[group]]));
+  return and(matchesFilters(workspaceId, filters), groupCondition(group));
 }
 
-/** Every filter except status. Empty filters add no condition. Expects `companies` to be joined. */
+/**
+ * One feed tab, from stage kind (spec section 12). Open = the first open stage, where discoveries land;
+ * In progress = every other open stage; Won; Closed = lost stages plus archived. Expects `pipeline_stages` joined.
+ */
+export function groupCondition(group: StatusGroup): SQL {
+  const live = isNull(opportunities.archivedAt);
+  const intake = sql`(select min(s.position) from ${pipelineStages} s where s.workspace_id = ${opportunities.workspaceId} and s.kind = 'open')`;
+  switch (group) {
+    case "open":
+      return sql`(${live} and ${pipelineStages.kind} = 'open' and ${pipelineStages.position} = ${intake})`;
+    case "inProgress":
+      return sql`(${live} and ${pipelineStages.kind} = 'open' and ${pipelineStages.position} > ${intake})`;
+    case "won":
+      return sql`(${live} and ${pipelineStages.kind} = 'won')`;
+    case "closed":
+      return sql`(${opportunities.archivedAt} is not null or ${pipelineStages.kind} = 'lost')`;
+  }
+}
+
+/** Every filter except status. Empty filters add no condition. Expects `companies` to be left-joined. */
 function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL | undefined {
-  const any = <T>(values: T[], condition: (values: T[]) => SQL) => (values.length > 0 ? condition(values) : undefined);
+  const any = <T>(values: T[], condition: (values: T[]) => SQL | undefined) => (values.length > 0 ? condition(values) : undefined);
   return and(
     eq(opportunities.workspaceId, workspaceId),
     companySearch(filters.q),
@@ -250,13 +279,23 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
     any(filters.services, (ids) => inArray(opportunities.serviceId, ids)),
     any(filters.urgency, (levels) => inArray(opportunities.urgency, levels)),
     any(filters.industries, (slugs) => inArray(companies.industry, slugs)),
+    any(filters.categories, (cats) => {
+      const engine = cats.filter((c): c is Exclude<typeof c, "signal"> => c !== "signal");
+      return or(cats.includes("signal") ? isNull(opportunities.category) : undefined, engine.length ? inArray(opportunities.category, engine) : undefined);
+    }),
+    any(filters.sources, (slugs) => inArray(opportunities.sourceSlug, slugs)),
+    any(filters.intents, (levels) => inArray(opportunities.intentLevel, levels)),
+    // A company's headquarters, or the country an engine opportunity states (a funded company's address, a project's client).
     any(
       filters.countries,
-      (codes) => sql`exists (
-        select 1 from ${companyLocations}
-        where ${companyLocations.companyId} = ${companies.id} and ${companyLocations.type} = 'headquarters'
-          and ${inArray(companyLocations.country, codes)}
-      )`,
+      (codes) => or(
+        inArray(opportunities.country, codes),
+        sql`exists (
+          select 1 from ${companyLocations}
+          where ${companyLocations.companyId} = ${companies.id} and ${companyLocations.type} = 'headquarters'
+            and ${inArray(companyLocations.country, codes)}
+        )`,
+      ),
     ),
     // At least one supporting (non-negative) signal in one of the categories.
     any(
@@ -272,7 +311,8 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
     filters.minScore === null ? undefined : gte(opportunities.opportunityScore, filters.minScore),
     filters.withinDays === null
       ? undefined
-      : gte(opportunities.latestSignalAt, sql`now() - make_interval(days => ${filters.withinDays})`),
+      // Latest signal for company opportunities; the discovery date for engine ones.
+      : gte(sql`coalesce(${opportunities.latestSignalAt}, ${opportunities.discoveredAt})`, sql`now() - make_interval(days => ${filters.withinDays})`),
     filters.contact === null ? undefined : contactReach(filters.contact),
   );
 }
@@ -280,28 +320,31 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
 function companySearch(q: string): SQL | undefined {
   if (!q) return undefined;
   const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-  return or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern));
+  return or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern), ilike(opportunities.title, pattern), ilike(opportunities.buyerName, pattern));
 }
 
 export async function getOpportunity(auth: AuthContext, opportunityId: string): Promise<OpportunityDetail> {
   const row = await findRow(auth, opportunityId);
   const { opportunity } = row;
 
-  const [links, companySignals, companyPeople, saved, feedback] = await Promise.all([
+  const companyId = opportunity.companyId;
+  const [links, companySignals, companyPeople, saved, feedback, evidenceRows, discoveryRows] = await Promise.all([
     db
       .select({ signalId: opportunitySignals.signalId, role: opportunitySignals.role })
       .from(opportunitySignals)
       .where(eq(opportunitySignals.opportunityId, opportunity.id)),
-    listCompanySignals(auth, opportunity.companyId),
-    loadCompanyPeople(auth.workspaceId, opportunity.companyId),
+    companyId ? listCompanySignals(auth, companyId) : [],
+    companyId ? loadCompanyPeople(auth.workspaceId, companyId) : [],
     db
       .select({ listId: savedOpportunities.listId })
       .from(savedOpportunities)
       .where(and(eq(savedOpportunities.opportunityId, opportunity.id), eq(savedOpportunities.workspaceId, auth.workspaceId))),
     listFeedback(auth, opportunity.id),
+    db.select().from(opportunityEvidence).where(eq(opportunityEvidence.opportunityId, opportunity.id)).orderBy(desc(opportunityEvidence.capturedAt)),
+    db.select().from(opportunityDiscoveries).where(eq(opportunityDiscoveries.opportunityId, opportunity.id)).orderBy(desc(opportunityDiscoveries.seenAt)).limit(50),
   ]);
   const [companyContacts, tender] = await Promise.all([
-    loadCompanyContacts(opportunity.companyId),
+    companyId ? loadCompanyContacts(companyId) : [],
     opportunity.type === "rfp" ? loadTender(auth.workspaceId, links.map((l) => l.signalId)) : null,
   ]);
   const roleOf = new Map(links.map((l) => [l.signalId, l.role]));
@@ -312,6 +355,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
     suggestedAction: opportunity.suggestedAction,
     notes: opportunity.notes,
     factors: hasFactors(opportunity.scoreFactors) ? opportunity.scoreFactors : null,
+    engineFactors: opportunity.category ? engineFactorsOf(opportunity.scoreFactors) : null,
     signals: companySignals
       .filter((s) => roleOf.has(s.id))
       .map((s) => ({ ...s, role: roleOf.get(s.id)! }))
@@ -319,10 +363,28 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
     contactDetails: companyPeople.find((p) => p.id === opportunity.primaryPersonId) ?? null,
     companyContacts,
     tender,
+    engineEvidence: evidenceRows.map((e) => ({
+      id: e.id,
+      platform: e.platform,
+      url: e.url,
+      snippet: e.snippet,
+      verification: e.verification,
+      capturedAt: e.capturedAt.toISOString(),
+      metadata: e.metadata,
+    })),
+    discoveries: discoveryRows.map((d) => ({ seenAt: d.seenAt.toISOString(), change: d.change, changedFields: d.changedFields })),
     scoredAt: opportunity.scoredAt.toISOString(),
     listIds: saved.map((s) => s.listId),
     feedback,
   };
+}
+
+/** An engine opportunity's stored factors as labelled rows, in the spec's order. */
+function engineFactorsOf(stored: Record<string, unknown>): { key: string; label: string; score: number; weight: number }[] {
+  const weights = (stored.weights ?? {}) as Record<string, number>;
+  return Object.entries(ENGINE_FACTOR_LABELS).flatMap(([key, label]) =>
+    typeof stored[key] === "number" ? [{ key, label, score: stored[key] as number, weight: weights[key] ?? 0 }] : [],
+  );
 }
 
 /** The public tender behind an RFP opportunity: its notice and closing date, latest first. */
@@ -386,29 +448,40 @@ async function loadCompanyContacts(companyId: string): Promise<CompanyContact[]>
   return contacts;
 }
 
-/** Changes status and/or notes. Scores are owned by the scoring engine and can't be edited. */
+/** Moves it to a pipeline stage, archives or restores it, and/or edits notes. Scores are owned by the scoring engine. */
 export async function updateOpportunity(
   auth: AuthContext,
   opportunityId: string,
   input: UpdateOpportunityValues,
 ): Promise<OpportunityDetail> {
-  const { opportunity } = await findRow(auth, opportunityId);
+  const { opportunity, stageName } = await findRow(auth, opportunityId);
+  const target = input.stageId !== undefined ? await loadStage(db, auth.workspaceId, input.stageId) : null;
   await db.transaction(async (tx) => {
     await tx
       .update(opportunities)
       .set({
-        ...(input.status !== undefined && { status: input.status }),
+        ...(target && { stageId: target.id }),
+        ...(input.archived !== undefined && { archivedAt: input.archived ? (opportunity.archivedAt ?? new Date()) : null }),
         ...(input.notes !== undefined && { notes: input.notes }),
       })
       .where(and(eq(opportunities.id, opportunityId), eq(opportunities.workspaceId, auth.workspaceId)));
-    if (input.status !== undefined && input.status !== opportunity.status) {
+    if (target && target.id !== opportunity.stageId) {
       await tx.insert(auditLogs).values({
         workspaceId: auth.workspaceId,
         actorId: auth.userId,
-        action: "opportunity.status_changed",
+        action: "opportunity.stage_changed",
         entityType: "opportunity",
         entityId: opportunityId,
-        metadata: { from: opportunity.status, to: input.status },
+        metadata: { from: stageName, to: target.name, kind: target.kind },
+      });
+    }
+    if (input.archived !== undefined && input.archived !== (opportunity.archivedAt !== null)) {
+      await tx.insert(auditLogs).values({
+        workspaceId: auth.workspaceId,
+        actorId: auth.userId,
+        action: input.archived ? "opportunity.archived" : "opportunity.restored",
+        entityType: "opportunity",
+        entityId: opportunityId,
       });
     }
   });
@@ -423,8 +496,19 @@ async function findRow(auth: AuthContext, opportunityId: string): Promise<Summar
   return row;
 }
 
+/**
+ * The company behind an opportunity in the company-centric views. Engine opportunities with no
+ * identified company are not shown there (their feed is built separately), and the feed query
+ * inner-joins companies, so this holds for every row these views read.
+ */
+export function companyIdOf(opportunity: { companyId: string | null }): string {
+  if (!opportunity.companyId) throw new AppError("NOT_FOUND", "Opportunity not found.");
+  return opportunity.companyId;
+}
+
 export function hasFactors(value: unknown): value is Record<ScoreFactor, OpportunityFactor> {
-  return typeof value === "object" && value !== null && "intent" in value;
+  // The company-signal flow stores { intent: { score, ... } }; engine rows store plain numbers, a different shape.
+  return typeof value === "object" && value !== null && typeof (value as { intent?: unknown }).intent === "object";
 }
 
 export function toSummary(row: SummaryRow): OpportunitySummary {
@@ -432,10 +516,35 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
   const factors = hasFactors(opportunity.scoreFactors) ? opportunity.scoreFactors : null;
   return {
     id: opportunity.id,
-    company: { id: opportunity.companyId, name: row.companyName, domain: row.companyDomain },
+    company: opportunity.companyId && row.companyName ? { id: opportunity.companyId, name: row.companyName, domain: row.companyDomain } : null,
+    engine: opportunity.category
+      ? {
+          category: opportunity.category,
+          title: opportunity.title ?? "Untitled",
+          buyerName: opportunity.buyerName,
+          buyerProfileUrl: opportunity.buyerProfileUrl,
+          country: opportunity.country,
+          sourceSlug: opportunity.sourceSlug,
+          platform: row.platform,
+          sourceUrl: opportunity.sourceUrl,
+          budgetUsd: opportunity.budgetUsd,
+          budgetMin: opportunity.budgetMin,
+          budgetMax: opportunity.budgetMax,
+          budgetCurrency: opportunity.budgetCurrency,
+          fundingAmountUsd: opportunity.fundingAmountUsd,
+          fundingStage: opportunity.fundingStage,
+          fundingDate: opportunity.fundingDate,
+          investors: opportunity.investors ?? [],
+          verification: opportunity.verification,
+          intentLevel: opportunity.intentLevel,
+          discoveredAt: opportunity.discoveredAt?.toISOString() ?? null,
+          lastSeenAt: opportunity.lastSeenAt?.toISOString() ?? null,
+          whyNow: opportunity.whyNow,
+        }
+      : null,
     service: opportunity.serviceId && row.serviceName ? { id: opportunity.serviceId, name: row.serviceName } : null,
     type: opportunity.type,
-    score: factors ? opportunity.opportunityScore : null,
+    score: factors || opportunity.category ? opportunity.opportunityScore : null,
     scores: factors
       ? {
           intent: factors.intent.score,
@@ -446,7 +555,8 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
         }
       : null,
     urgency: opportunity.urgency,
-    status: opportunity.status,
+    stage: { id: opportunity.stageId, name: row.stageName, kind: row.stageKind },
+    archived: opportunity.archivedAt !== null,
     problem: opportunity.problem,
     latestSignalOn: opportunity.latestSignalAt?.toISOString().slice(0, 10) ?? null,
     signalCount: row.signalCount,

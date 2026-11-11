@@ -1,4 +1,6 @@
 import "server-only";
+import { refreshEngineScores } from "@/server/engine/rescore";
+import { intakeStageId } from "@/server/services/pipeline.service";
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { db } from "@/db";
 import {
@@ -35,7 +37,7 @@ export async function rescoreCompany(workspaceId: string, companyId: string): Pr
 
   const result = scoreCompany(input.engine);
   const [existing] = await db
-    .select({ id: opportunities.id, status: opportunities.status })
+    .select({ id: opportunities.id, stageId: opportunities.stageId, archivedAt: opportunities.archivedAt })
     .from(opportunities)
     .where(and(eq(opportunities.companyId, companyId), eq(opportunities.workspaceId, workspaceId)))
     .limit(1);
@@ -44,7 +46,8 @@ export async function rescoreCompany(workspaceId: string, companyId: string): Pr
     if (!existing) return;
     // Nothing positive left. An untouched opportunity disappears; one someone has worked on is
     // kept for its history, with its scores cleared.
-    if (existing.status === "new") {
+    // Untouched = still in the intake stage and not archived.
+    if (existing.archivedAt === null && existing.stageId === (await intakeStageId(db, workspaceId))) {
       await db.delete(opportunities).where(eq(opportunities.id, existing.id));
     } else {
       await db.transaction(async (tx) => {
@@ -78,7 +81,7 @@ export async function rescoreCompany(workspaceId: string, companyId: string): Pr
   await db.transaction(async (tx) => {
     const [row] = await tx
       .insert(opportunities)
-      .values({ workspaceId, companyId, ...scores })
+      .values({ workspaceId, companyId, stageId: await intakeStageId(tx, workspaceId), ...scores })
       .onConflictDoUpdate({ target: opportunities.companyId, set: scores })
       .returning({ id: opportunities.id });
 
@@ -106,7 +109,8 @@ export async function rescoreWorkspace(workspaceId: string): Promise<void> {
     .from(opportunities)
     .where(eq(opportunities.workspaceId, workspaceId));
 
-  const companyIds = new Set([...rows, ...withOpportunity].map((r) => r.companyId));
+  // Engine opportunities without a company are scored by the engine itself, not by company rescoring.
+  const companyIds = new Set([...rows, ...withOpportunity].map((r) => r.companyId).filter((id): id is string => id !== null));
   for (const companyId of companyIds) await rescoreCompany(workspaceId, companyId);
 }
 
@@ -116,7 +120,9 @@ export async function refreshStaleScores(workspaceId: string, now = new Date()):
     .select({ companyId: opportunities.companyId })
     .from(opportunities)
     .where(and(eq(opportunities.workspaceId, workspaceId), lt(opportunities.scoredAt, new Date(now.getTime() - STALE_AFTER_MS))));
-  for (const { companyId } of stale) await rescoreCompany(workspaceId, companyId);
+  for (const { companyId } of stale) if (companyId) await rescoreCompany(workspaceId, companyId);
+  // Engine opportunities have no company; their timing score ages the same way.
+  await refreshEngineScores(workspaceId, now);
 }
 
 /**

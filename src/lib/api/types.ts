@@ -2,7 +2,8 @@
 import type { memberRole, signalRole } from "@/db/schema";
 import type { FeedbackVerdict } from "@/lib/domain/feedback";
 import type { CompanyIdentity, SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
-import type { LeadTab, OpportunityStatus, StatusGroup } from "@/lib/domain/opportunities";
+import type { LeadTab, StatusGroup } from "@/lib/domain/opportunities";
+import type { StageRef } from "@/lib/domain/pipeline";
 import type {
   CompanyRelationship,
   ContactVerification,
@@ -176,7 +177,7 @@ export type CompanyDetail = {
   locations: CompanyLocation[];
   people: CompanyPerson[];
   /** This company's opportunity, if its signals have produced one. */
-  opportunity: { id: string; score: number | null; status: OpportunityStatus } | null;
+  opportunity: { id: string; score: number | null; stage: StageRef; archived: boolean } | null;
 };
 
 export type Signal = {
@@ -263,14 +264,20 @@ export type OpportunityFactor = { score: number; weight: number; contribution: n
 
 export type OpportunitySummary = {
   id: string;
-  company: { id: string; name: string; domain: string | null };
+  /** Null for engine opportunities whose buyer has no identified company (an intent post, a freelance project). */
+  company: { id: string; name: string; domain: string | null } | null;
+  /** Set for opportunities found by the LeadGen Engine; null for the company-signal flow. */
+  engine: EngineOpportunity | null;
   service: { id: string; name: string } | null;
   type: string;
   /** Priority 0-100, not a purchase probability. Null once no positive signal remains. */
   score: number | null;
   scores: Record<ScoreFactor, number> | null;
   urgency: UrgencyLevel;
-  status: OpportunityStatus;
+  /** Where it is in the workspace's sales pipeline. */
+  stage: StageRef;
+  /** Archived opportunities are hidden from the working tabs but kept. */
+  archived: boolean;
   problem: string | null;
   /** YYYY-MM-DD of the newest supporting signal. */
   latestSignalOn: string | null;
@@ -289,6 +296,34 @@ export type OpportunitySummary = {
   /** Who on the team judged it and how, newest first; the card shows these as "1 good fit" / "2 flagged". */
   feedbackVotes: FeedbackVote[];
   updatedAt: string;
+};
+
+/** What the LeadGen Engine knows about an opportunity it discovered (spec section 11). */
+export type EngineOpportunity = {
+  category: import("@/lib/domain/engine").OpportunityCategory;
+  title: string;
+  /** The poster or, for a funding event, the company. Never guessed. */
+  buyerName: string | null;
+  buyerProfileUrl: string | null;
+  country: string | null;
+  sourceSlug: string | null;
+  /** Where it was found, as the newest evidence names it ("Reddit" for a Google result). */
+  platform: string | null;
+  sourceUrl: string | null;
+  /** Budget as stated; `budgetUsd` is the comparable figure. */
+  budgetUsd: number | null;
+  budgetMin: number | null;
+  budgetMax: number | null;
+  budgetCurrency: string | null;
+  fundingAmountUsd: number | null;
+  fundingStage: string | null;
+  fundingDate: string | null;
+  investors: string[];
+  verification: import("@/lib/domain/engine").VerificationStatus;
+  intentLevel: import("@/lib/domain/signals").IntentLevel | null;
+  discoveredAt: string | null;
+  lastSeenAt: string | null;
+  whyNow: string[];
 };
 
 /** One page of the feed; `total` is the selected tab's count. */
@@ -318,11 +353,28 @@ export type OpportunityDetail = OpportunitySummary & {
   companyContacts: CompanyContact[];
   /** For a public tender: its notice and closing date (ISO), shown with the contact. */
   tender: { url: string | null; closesAt: string | null; closed: boolean } | null;
+  /** The engine's score factors with their weights; null for company-signal opportunities. */
+  engineFactors: { key: string; label: string; score: number; weight: number }[] | null;
+  /** What backs an engine opportunity, newest first (spec section 8). */
+  engineEvidence: EngineEvidence[];
+  /** Each time a discovery run saw it, newest first. */
+  discoveries: { seenAt: string; change: string; changedFields: string[] }[];
   scoredAt: string;
   /** Saved lists this opportunity is on. */
   listIds: string[];
   /** The team's verdicts, newest first. */
   feedback: OpportunityFeedback[];
+};
+
+/** One source reference behind an engine opportunity. */
+export type EngineEvidence = {
+  id: string;
+  platform: string;
+  url: string | null;
+  snippet: string | null;
+  verification: import("@/lib/domain/engine").VerificationStatus;
+  capturedAt: string;
+  metadata: Record<string, unknown>;
 };
 
 /** A teammate's verdict as the feed shows it: who, and what they said. */
@@ -362,4 +414,35 @@ export type SavedList = {
 export type SavedListDetail = SavedList & {
   /** Highest priority first, whatever their status. */
   items: OpportunitySummary[];
+};
+
+// ---------------------------------------------------------------------------
+// LeadGen Engine
+// ---------------------------------------------------------------------------
+
+export type CapabilityState = {
+  capability: import("@/lib/domain/engine").Capability;
+  enabled: boolean;
+  frequencyMinutes: number;
+  /** Per-dimension override; null = inherits the workspace value. */
+  override: import("@/lib/domain/engine").TargetingOverride;
+  /** What the capability will actually target (override replaces, never adds to, the workspace). */
+  effective: import("@/lib/domain/engine").Targeting;
+  config: import("@/lib/domain/engine").CapabilityConfig;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  nextRunAt: string | null;
+  lastStatus: import("@/lib/domain/engine").RunStatus | null;
+  lastError: string | null;
+};
+
+export type EngineState = {
+  enabled: boolean;
+  /** Factor weights for discovered opportunities (spec section 10): the workspace's own, or the defaults. */
+  weights: import("@/lib/domain/engine").EngineWeights;
+  /** True when the weights differ from the spec's defaults. */
+  customWeights: boolean;
+  /** Targeting derived from Services & ICP: the default every capability inherits. */
+  workspaceTargeting: import("@/lib/domain/engine").Targeting;
+  capabilities: CapabilityState[];
 };

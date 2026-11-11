@@ -13,6 +13,7 @@ import { registerOwner } from "@/server/services/auth.service";
 import { createCompany, listCompanies } from "@/server/services/companies.service";
 import { exportOpportunities } from "@/server/services/exports.service";
 import { listLeads, listOpportunities, updateOpportunity } from "@/server/services/opportunities.service";
+import { listPipeline } from "@/server/services/pipeline.service";
 import { addPerson } from "@/server/services/people.service";
 import { createService, listServices } from "@/server/services/services.service";
 import { createSignal } from "@/server/services/signals.service";
@@ -52,7 +53,7 @@ const COMPANIES = [
 
 const feed = async (filters: Record<string, unknown>) =>
   (await listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", ...filters }))).items
-    .map((item) => item.company.name)
+    .map((item) => item.company?.name)
     .sort();
 
 beforeAll(async () => {
@@ -266,11 +267,11 @@ describe("contacts and the Leads page", () => {
     expect(all.total).toBe(3);
 
     const [named] = (await leads({ tab: "person" })).items;
-    expect(named.company.name).toBe("Northbridge Legal");
+    expect(named.company?.name).toBe("Northbridge Legal");
     expect(named.contact).toMatchObject({ name: "James Whitaker", email: `james-${run}@northbridge.example`, phone: null });
     const [line] = (await leads({ tab: "company" })).items;
     expect(line).toMatchObject({ company: { name: "Ledgerline" }, companyContact: { phone: "0113 496 0000" } });
-    expect((await leads({ tab: "none" })).items.map((i) => i.company.name)).toEqual(["Medisync Health"]);
+    expect((await leads({ tab: "none" })).items.map((i) => i.company?.name)).toEqual(["Medisync Health"]);
     // Search narrows every tab's count.
     expect((await leads({ q: "ledger" })).counts).toEqual({ all: 1, person: 0, company: 1, none: 0 });
   });
@@ -284,8 +285,12 @@ describe("contacts and the Leads page", () => {
 
   it("leaves won and closed leads off the Leads page", async () => {
     const { items } = await leads({ tab: "none" });
-    await updateOpportunity(auth, items[0].id, { status: "won" });
+    const stages = await listPipeline(auth);
+    const stage = (kind: string) => stages.find((s) => s.kind === kind)!.id;
+    await updateOpportunity(auth, items[0].id, { stageId: stage("won") });
     expect((await leads({})).counts.all).toBe(2);
-    await updateOpportunity(auth, items[0].id, { status: "new" });
+    await updateOpportunity(auth, items[0].id, { archived: true });
+    expect((await leads({})).counts.all).toBe(2); // an archived lead is off the Leads page too
+    await updateOpportunity(auth, items[0].id, { stageId: stages.find((s) => s.intake)!.id, archived: false });
   });
 });

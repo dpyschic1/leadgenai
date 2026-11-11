@@ -46,13 +46,13 @@ async function signUp(who: string): Promise<AuthContext> {
 /** What the feedback route does: record the verdict, re-match when it corrects, return the opportunity. */
 async function flag(auth: AuthContext, verdict: string, reason: string | null = null) {
   const change = await giveFeedback(auth, opportunityId, feedbackSchema.parse({ verdict, reason }));
-  if (change.correctsMatch) await rescoreCompany(auth.workspaceId, change.companyId);
+  if (change.correctsMatch && change.companyId) await rescoreCompany(auth.workspaceId, change.companyId);
   return getOpportunity(owner, opportunityId);
 }
 
 async function unflag(auth: AuthContext, feedbackId: string) {
   const change = await removeFeedback(auth, opportunityId, feedbackId);
-  if (change.correctsMatch) await rescoreCompany(auth.workspaceId, change.companyId);
+  if (change.correctsMatch && change.companyId) await rescoreCompany(auth.workspaceId, change.companyId);
   return getOpportunity(owner, opportunityId);
 }
 

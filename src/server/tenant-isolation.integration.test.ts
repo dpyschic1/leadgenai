@@ -199,7 +199,7 @@ describe("changing A's records by id", () => {
     await expectNotFound(deleteSignal(b, a.signalId));
     await expectNotFound(updateService(b, a.serviceId, { ...service, name: "Hijacked" }));
     await expectNotFound(deleteService(b, a.serviceId));
-    await expectNotFound(updateOpportunity(b, a.opportunityId, { status: "dismissed" }));
+    await expectNotFound(updateOpportunity(b, a.opportunityId, { archived: true }));
   });
 
   it("is refused for lists", async () => {
@@ -228,7 +228,8 @@ describe("after all of that, A's data", () => {
     expect((await listCompanySignals(a.auth, a.companyId)).map((s) => s.summary)).toEqual([signal(null).summary]);
     expect((await listServices(a.auth)).items.map((s) => s.name)).toEqual(["MVP Development"]);
     const opportunity = await getOpportunity(a.auth, a.opportunityId);
-    expect(opportunity.status).toBe("new");
+    expect(opportunity.stage.name).toBe("New");
+    expect(opportunity.archived).toBe(false);
     expect(opportunity.listIds).toEqual([a.listId]);
     expect((await getList(a.auth, a.listId)).name).toBe("Contact today");
   });

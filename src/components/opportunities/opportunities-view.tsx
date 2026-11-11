@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { activeFilterCount } from "@/hooks/use-filter-options";
 import { useOpportunities } from "@/hooks/use-opportunities";
+import { FILTER_CATEGORIES, FILTER_CATEGORY_LABELS, type FilterCategory } from "@/lib/domain/engine";
 import type { StatusGroup } from "@/lib/domain/opportunities";
 import { cn } from "@/lib/utils";
 import { EMPTY_FILTERS, type OpportunityFilters } from "@/lib/validation/opportunities";
@@ -48,15 +49,18 @@ export function OpportunitiesView() {
   const filtering = q !== "" || activeFilterCount(filters) > 0;
   const hasAny = data && Object.values(data.counts).some((count) => count > 0);
   const clearFilters = () => {
-    setFilters(EMPTY_FILTERS);
+    setFilters({ ...EMPTY_FILTERS, categories: filters.categories });
     setSearch("");
   };
+  // One category at a time, or all of them (an empty list).
+  const category: FilterCategory | "all" = filters.categories.length === 1 ? filters.categories[0] : "all";
+  const setCategory = (next: FilterCategory | "all") => setFilters({ ...filters, categories: next === "all" ? [] : [next] });
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Opportunities"
-        description="Companies showing a reason to buy what you sell, ranked by priority. The score ranks who to look at first; it doesn't predict a sale."
+        description="Companies, buyers and projects showing a reason to buy what you sell, ranked by priority. The score ranks who to look at first; it doesn't predict a sale."
         action={
           (hasAny || filtering) && <ExportButton request={{ group, filters: active }} disabled={!data?.items.length} />
         }
@@ -72,6 +76,23 @@ export function OpportunitiesView() {
               setSearch(found.q);
             }}
           />
+
+          <div role="tablist" aria-label="Category" className="flex max-w-full gap-2 overflow-x-auto">
+            {(["all", ...FILTER_CATEGORIES] as const).map((c) => (
+              <button
+                key={c}
+                role="tab"
+                aria-selected={c === category}
+                onClick={() => setCategory(c)}
+                className={cn(
+                  "shrink-0 rounded-full border px-3 py-1 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                  c === category ? "border-primary/40 bg-signal-tint font-medium text-[var(--signal-deep)]" : "bg-card text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {c === "all" ? "All" : FILTER_CATEGORY_LABELS[c]}
+              </button>
+            ))}
+          </div>
 
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             {/* On narrow screens the tabs scroll inside their own bar instead of widening the page. */}
@@ -108,7 +129,7 @@ export function OpportunitiesView() {
                   type="search"
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search companies"
+                  placeholder="Search companies, buyers, titles"
                   aria-label="Search opportunities"
                   className="h-9 bg-card pl-9"
                 />

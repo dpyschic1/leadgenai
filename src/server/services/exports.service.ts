@@ -8,6 +8,7 @@ import {
   contactPoints,
   lists,
   opportunities,
+  pipelineStages,
   opportunitySignals,
   people,
   savedOpportunities,
@@ -20,7 +21,6 @@ import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { refreshStaleScores } from "@/server/scoring/rescore";
 import { companyContactFromOsm, companyEmail, companyPhone, feedFilter, priorityOrder, signalEvidenceLink } from "./opportunities.service";
-import { STATUS_LABELS } from "@/lib/domain/opportunities";
 import { OSM_ATTRIBUTION, OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 
 /**
@@ -78,7 +78,8 @@ const exportColumns = {
   latestSignalAt: opportunities.latestSignalAt,
   /** Evidence link of the primary signal, else of the newest supporting one. */
   sourceUrl: sql<string | null>`(${signalEvidenceLink}) ->> 'url'`,
-  status: opportunities.status,
+  stage: pipelineStages.name,
+  archivedAt: opportunities.archivedAt,
   serviceName: services.name,
   companyPhone,
   companyEmail,
@@ -98,6 +99,7 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
     .select(exportColumns)
     .from(opportunities)
     .innerJoin(companies, eq(companies.id, opportunities.companyId))
+    .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
     .leftJoin(services, eq(services.id, opportunities.serviceId))
     .leftJoin(people, eq(people.id, opportunities.primaryPersonId))
     .leftJoin(
@@ -147,7 +149,7 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
           matched_service: row.serviceName,
           signal: row.signal,
           signal_link: row.sourceUrl,
-          status: STATUS_LABELS[row.status],
+          status: row.archivedAt ? `${row.stage} (archived)` : row.stage,
           latest_signal_date: row.latestSignalAt?.toISOString().slice(0, 10),
         };
       },
