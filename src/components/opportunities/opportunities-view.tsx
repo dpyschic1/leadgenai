@@ -215,11 +215,11 @@ function EmptyOpportunities() {
       </span>
       <h2 className="mt-4 font-semibold">No opportunities yet</h2>
       <p className="mt-1.5 max-w-md text-sm text-muted-foreground">
-        An opportunity appears as soon as a company has a buying signal. It&apos;s scored against your services and ICP,
-        and re-scored whenever anything changes.
+        Opportunities are found automatically for what you sell: hiring signals, buying requests and more, each scored
+        against your services and ICP and re-scored whenever anything changes.
       </p>
       <Button asChild className="mt-5">
-        <Link href="/companies">Go to companies</Link>
+        <Link href="/services">Set up your services</Link>
       </Button>
     </section>
   );

@@ -349,6 +349,8 @@ export type OpportunityDetail = OpportunitySummary & {
   factors: Record<ScoreFactor, OpportunityFactor> | null;
   signals: OpportunitySignal[];
   contactDetails: CompanyPerson | null;
+  /** The other people found at the company, those with an email, phone or profile first. */
+  otherPeople: CompanyPerson[];
   /** Every published company phone/email, with where it came from (e.g. "Swindon practice" from CQC). */
   companyContacts: CompanyContact[];
   /** For a public tender: its notice and closing date (ISO), shown with the contact. */

@@ -323,6 +323,10 @@ function companySearch(q: string): SQL | undefined {
   return or(ilike(companies.canonicalName, pattern), ilike(companies.domain, pattern), ilike(opportunities.title, pattern), ilike(opportunities.buyerName, pattern));
 }
 
+/** People shown besides the suggested contact on an opportunity. */
+const MAX_OTHER_PEOPLE = 12;
+const reachable = (p: { email: string | null; phone: string | null; professionalUrl: string | null }) => Boolean(p.email || p.phone || p.professionalUrl);
+
 export async function getOpportunity(auth: AuthContext, opportunityId: string): Promise<OpportunityDetail> {
   const row = await findRow(auth, opportunityId);
   const { opportunity } = row;
@@ -361,6 +365,10 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .map((s) => ({ ...s, role: roleOf.get(s.id)! }))
       .sort((a, b) => roleOrder[a.role] - roleOrder[b.role] || b.occurredOn.localeCompare(a.occurredOn)),
     contactDetails: companyPeople.find((p) => p.id === opportunity.primaryPersonId) ?? null,
+    otherPeople: companyPeople
+      .filter((p) => p.id !== opportunity.primaryPersonId)
+      .sort((a, b) => Number(reachable(b)) - Number(reachable(a)))
+      .slice(0, MAX_OTHER_PEOPLE),
     companyContacts,
     tender,
     engineEvidence: evidenceRows.map((e) => ({

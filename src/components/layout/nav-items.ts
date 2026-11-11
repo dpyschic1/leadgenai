@@ -1,7 +1,6 @@
 import {
   BookmarkIcon,
   BriefcaseBusinessIcon,
-  Building2Icon,
   ContactRoundIcon,
   LayoutDashboardIcon,
   SettingsIcon,
@@ -12,13 +11,13 @@ import {
 export type NavItem = { href: string; label: string; icon: LucideIcon };
 
 /**
- * Main navigation, in the order people work: describe what you sell, add the companies you
- * watch, review the opportunities they produce, contact their leads, then save the best ones to lists.
+ * Main navigation, in the order people work: describe what you sell, review the opportunities
+ * found for it, contact their leads, then save the best ones to lists. Companies have no menu item:
+ * a salesperson works from opportunities, which show the company's details and every contact.
  */
 export const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboardIcon },
   { href: "/services", label: "Services & ICP", icon: BriefcaseBusinessIcon },
-  { href: "/companies", label: "Companies", icon: Building2Icon },
   { href: "/opportunities", label: "Opportunities", icon: TargetIcon },
   { href: "/leads", label: "Leads", icon: ContactRoundIcon },
   { href: "/lists", label: "Lists", icon: BookmarkIcon },

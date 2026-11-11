@@ -16,8 +16,10 @@ export const GET = authedRoute<Context>(async ({ context, auth }) => {
   await refreshStaleScores(auth.workspaceId);
   const opportunity = await getOpportunity(auth, id);
   // Opened without any contact yet: look its company up first (the next tick, within a minute).
-  if (!opportunity.contactDetails && opportunity.companyContacts.length === 0) {
-    after(() => contactsWanted(auth.workspaceId, opportunity.company.id).catch((error) => console.error("[contacts] on-demand lookup", error)));
+  // A discovered buyer without a company has nothing to look up.
+  const company = opportunity.company;
+  if (company && !opportunity.contactDetails && opportunity.otherPeople.length === 0 && opportunity.companyContacts.length === 0) {
+    after(() => contactsWanted(auth.workspaceId, company.id).catch((error) => console.error("[contacts] on-demand lookup", error)));
   }
   return Response.json(opportunity);
 });

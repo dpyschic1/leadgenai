@@ -20,14 +20,12 @@ const STEPS: { title: string; description: string; href?: string }[] = [
     href: "/services",
   },
   {
-    title: "Add a company you're watching",
-    description: "Enter the company and the people you would talk to there.",
-    href: "/companies",
+    title: "Let it find matching companies",
+    description: "Within minutes of saving a service, companies whose hiring or requests fit it are found for you.",
   },
   {
-    title: "Record a signal",
-    description: "On a company page, paste a job post, request or news item. AI pulls out the intent and urgency.",
-    href: "/companies",
+    title: "Get the first signals",
+    description: "Each match comes with its evidence: the job post or request, scored for intent and urgency.",
   },
   {
     title: "Review your first opportunity",

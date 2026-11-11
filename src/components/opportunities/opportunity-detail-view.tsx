@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeftIcon, Building2Icon, GlobeIcon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
+import { ArrowLeftIcon, GlobeIcon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { IdentityBadge, OsmCredit, OvertureCredit, VerificationMark } from "@/components/companies/contact-status";
 import { SaveToListMenu } from "@/components/lists/save-to-list-menu";
@@ -18,11 +18,12 @@ import { usePipeline } from "@/hooks/use-pipeline";
 import { usePermission } from "@/hooks/use-permission";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import { ApiError } from "@/lib/api/client";
-import type { CompanyContact, OpportunityDetail } from "@/lib/api/types";
+import type { CompanyContact, CompanyPerson, OpportunityDetail } from "@/lib/api/types";
 import { SENIORITY_LABELS } from "@/lib/domain/people";
 import { SOURCE_LABELS } from "@/lib/domain/sources";
 import { EDITOR_ROLES } from "@/lib/permissions";
 import { opportunityName } from "@/lib/opportunity-display";
+import { cn } from "@/lib/utils";
 import { BuyerCard, CategoryBadge, EngineEvidencePanel, EngineScoreBreakdown, VerificationBadge, moneyLine } from "./engine-parts";
 import { FeedbackPanel } from "./feedback-panel";
 import { ScoreBreakdown } from "./score-breakdown";
@@ -92,15 +93,6 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
             {opportunity.urgency !== "unknown" && <UrgencyBadge level={opportunity.urgency} />}
             {opportunity.engine && <CategoryBadge category={opportunity.engine.category} />}
             {opportunity.engine && <VerificationBadge status={opportunity.engine.verification} />}
-            {opportunity.company && (
-              <Link
-                href={`/companies/${opportunity.company.id}`}
-                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline underline-offset-4"
-              >
-                <Building2Icon className="size-3.5" />
-                View company
-              </Link>
-            )}
           </div>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -208,50 +200,30 @@ function ContactLink({ href, label, icon: Icon, external }: { href: string; labe
 function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
   const person = opportunity.contactDetails;
   const company = opportunity.company;
+  const others = opportunity.otherPeople;
   return (
     <section className="rounded-xl border bg-card p-5">
       <h2 className="font-semibold">Suggested contact</h2>
       {person ? (
-        <div className="mt-4">
-          <div className="flex items-center gap-3">
-            <span className="grid size-10 place-items-center rounded-full bg-foreground text-background">
-              <UserRoundIcon className="size-4" />
-            </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="truncate font-medium">{person.name}</p>
-                <IdentityBadge level={person.identity} confidence={person.identityConfidence} />
-              </div>
-              <p className="truncate text-sm text-muted-foreground">
-                {[person.title, person.seniority !== "unknown" ? SENIORITY_LABELS[person.seniority] : null].filter(Boolean).join(", ") || "Title unknown"}
-              </p>
-            </div>
-          </div>
-          <div className="mt-3 space-y-0.5">
-            {person.email && (
-              <div className="flex items-center justify-between gap-2">
-                <ContactLink href={`mailto:${person.email}`} label={person.email} icon={MailIcon} />
-                {person.emailVerification && <VerificationMark kind="Email" check={person.emailVerification} inline />}
-              </div>
-            )}
-            {person.phone && (
-              <div className="flex items-center justify-between gap-2">
-                <ContactLink href={`tel:${person.phone.replace(/[^\d+]/g, "")}`} label={person.phone} icon={PhoneIcon} />
-                {person.phoneVerification && <VerificationMark kind="Phone" check={person.phoneVerification} inline />}
-              </div>
-            )}
-            {person.professionalUrl && <ContactLink href={person.professionalUrl} label="Profile" icon={LinkIcon} external />}
-          </div>
-        </div>
+        <PersonContact person={person} className="mt-4" />
       ) : (
         <p className="mt-2 text-sm text-muted-foreground">
-          No one identified yet.{" "}
-          {company && (
-            <Link href={`/companies/${company.id}`} className="font-medium text-primary hover:underline underline-offset-4">
-              Add people at {company.name}
-            </Link>
-          )}
+          {others.length > 0 || opportunity.companyContacts.length > 0
+            ? "No one suggested yet: see the people and contacts below."
+            : "No one identified yet. Contacts are looked up automatically and appear here when found."}
         </p>
+      )}
+      {others.length > 0 && (
+        <div className="mt-4 border-t pt-4">
+          <h3 className="text-sm font-medium">{person ? "Other people" : "People"}{company ? ` at ${company.name}` : ""}</h3>
+          <ul className="mt-3 space-y-4">
+            {others.map((other) => (
+              <li key={other.id}>
+                <PersonContact person={other} compact />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {opportunity.companyContacts.length > 0 && <CompanyContacts contacts={opportunity.companyContacts} />}
       {company?.domain && (
@@ -297,6 +269,44 @@ function TenderNote({ tender }: { tender: OpportunityDetail["tender"] }) {
         )}
         {closesText ? ` by ${closesText}` : " before it closes"}. Don&apos;t pitch the buyer while it&apos;s open: canvassing can disqualify a bid.
       </p>
+    </div>
+  );
+}
+
+/** One person: name, title, how sure we are it's them, and their email, phone and profile. */
+function PersonContact({ person, compact = false, className }: { person: CompanyPerson; compact?: boolean; className?: string }) {
+  const role = [person.title, person.seniority !== "unknown" ? SENIORITY_LABELS[person.seniority] : null].filter(Boolean).join(", ") || "Title unknown";
+  return (
+    <div className={className}>
+      <div className="flex items-center gap-3">
+        <span className={cn("grid shrink-0 place-items-center rounded-full", compact ? "size-8 bg-muted text-muted-foreground" : "size-10 bg-foreground text-background")}>
+          <UserRoundIcon className={compact ? "size-3.5" : "size-4"} />
+        </span>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="truncate font-medium">{person.name}</p>
+            <IdentityBadge level={person.identity} confidence={person.identityConfidence} />
+          </div>
+          <p className="truncate text-sm text-muted-foreground">{role}</p>
+        </div>
+      </div>
+      {(person.email || person.phone || person.professionalUrl) && (
+        <div className="mt-2 space-y-0.5">
+          {person.email && (
+            <div className="flex items-center justify-between gap-2">
+              <ContactLink href={`mailto:${person.email}`} label={person.email} icon={MailIcon} />
+              {person.emailVerification && <VerificationMark kind="Email" check={person.emailVerification} inline />}
+            </div>
+          )}
+          {person.phone && (
+            <div className="flex items-center justify-between gap-2">
+              <ContactLink href={`tel:${person.phone.replace(/[^\d+]/g, "")}`} label={person.phone} icon={PhoneIcon} />
+              {person.phoneVerification && <VerificationMark kind="Phone" check={person.phoneVerification} inline />}
+            </div>
+          )}
+          {person.professionalUrl && <ContactLink href={person.professionalUrl} label="Profile" icon={LinkIcon} external />}
+        </div>
+      )}
     </div>
   );
 }
