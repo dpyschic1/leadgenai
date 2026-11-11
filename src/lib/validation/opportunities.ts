@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { COUNTRY_CODES } from "@/lib/countries";
-import { CONTACT_REACH, LEAD_TABS, OPPORTUNITY_STATUSES, STATUS_GROUPS, type StatusGroup } from "@/lib/domain/opportunities";
+import { FILTER_CATEGORIES } from "@/lib/domain/engine";
+import { CONTACT_REACH, LEAD_TABS, STATUS_GROUP_KEYS, type StatusGroup } from "@/lib/domain/opportunities";
 import { paginationFields } from "./pagination";
 
 /** Shared by the opportunity pages, the AI search and the route handlers. */
@@ -51,6 +52,12 @@ export const opportunityFiltersSchema = z.object({
   industries: list(slug),
   /** Company headquarters country codes. */
   countries: list(z.enum(COUNTRY_CODES)),
+  /** Category: company signals, intent, funded company, freelance project. */
+  categories: list(z.enum(FILTER_CATEGORIES)),
+  /** Where an engine opportunity was found (provider slugs). */
+  sources: list(slug),
+  /** Buying intent level of an engine opportunity. */
+  intents: list(z.enum(["explicit", "high", "medium", "low"])),
   /** Opportunity score at least this (unscored ones are left out). */
   minScore: optionalInt(0, 100),
   /** Latest supporting signal within this many days. */
@@ -69,12 +76,15 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   urgency: [],
   industries: [],
   countries: [],
+  categories: [],
+  sources: [],
+  intents: [],
   minScore: null,
   withinDays: null,
   contact: null,
 };
 
-const groupField = { group: z.enum(Object.keys(STATUS_GROUPS) as [StatusGroup, ...StatusGroup[]]).default("open") };
+const groupField = { group: z.enum(STATUS_GROUP_KEYS as readonly [StatusGroup, ...StatusGroup[]]).default("open") };
 
 /** One page of the feed. */
 export const opportunityListQuerySchema = opportunityFiltersSchema.extend({ ...groupField, ...paginationFields });
@@ -96,7 +106,10 @@ export const interpretSearchSchema = z.object({
 
 export const updateOpportunitySchema = z
   .object({
-    status: z.enum(OPPORTUNITY_STATUSES).optional(),
+    /** Move it to a pipeline stage of this workspace. */
+    stageId: z.uuid().optional(),
+    /** Archive it (hide from the working tabs, keep it) or bring it back. */
+    archived: z.boolean().optional(),
     notes: z
       .string()
       .nullable()
@@ -104,7 +117,7 @@ export const updateOpportunitySchema = z
       .refine((value) => value === null || value.length <= 5000, "Keep notes under 5,000 characters")
       .optional(),
   })
-  .refine((value) => value.status !== undefined || value.notes !== undefined, "Nothing to update");
+  .refine((value) => value.stageId !== undefined || value.archived !== undefined || value.notes !== undefined, "Nothing to update");
 
 export type OpportunityListQuery = z.output<typeof opportunityListQuerySchema>;
 export type OpportunityExportQuery = z.output<typeof opportunityExportQuerySchema>;

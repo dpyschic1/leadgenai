@@ -22,6 +22,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   doublePrecision,
   foreignKey,
   index,
@@ -47,8 +48,9 @@ import {
   INGESTION_JOB_STATUSES,
   SOURCE_AUTHORIZATIONS,
 } from "@/lib/domain/sources";
+import { CAPABILITIES, OPPORTUNITY_CATEGORIES, RUN_STATUSES, VERIFICATION_STATUSES } from "@/lib/domain/engine";
 import { MEMBER_ROLES } from "@/lib/domain/members";
-import { OPPORTUNITY_STATUSES } from "@/lib/domain/opportunities";
+import { STAGE_KINDS } from "@/lib/domain/pipeline";
 import {
   COMPANY_RELATIONSHIPS,
   CONTACT_VERIFICATIONS,
@@ -93,8 +95,14 @@ export const signalSource = pgEnum("signal_source", SIGNAL_SOURCES);
 /** How a signal contributes to an opportunity's signal stack. */
 export const signalRole = pgEnum("signal_role", ["primary", "corroborating", "negative"]);
 
-/** Opportunity lifecycle (SRS Appendix B). */
-export const opportunityStatus = pgEnum("opportunity_status", OPPORTUNITY_STATUSES);
+/** Whether a pipeline stage is still being worked, won or lost (spec section 12). */
+export const stageKind = pgEnum("stage_kind", STAGE_KINDS);
+
+/** LeadGen Engine discovery capabilities, opportunity categories, evidence status, run outcome. */
+export const engineCapability = pgEnum("engine_capability", CAPABILITIES);
+export const opportunityCategory = pgEnum("opportunity_category", OPPORTUNITY_CATEGORIES);
+export const verificationStatus = pgEnum("verification_status", VERIFICATION_STATUSES);
+export const runStatus = pgEnum("run_status", RUN_STATUSES);
 
 /** A teammate's quality verdict on an opportunity. */
 export const feedbackVerdict = pgEnum("feedback_verdict", FEEDBACK_VERDICTS);
@@ -1012,6 +1020,28 @@ export const ingestionJobs = pgTable(
   ],
 );
 
+/**
+ * A workspace's sales pipeline (spec section 12). Positions order the stages; `kind` keeps Won and Lost
+ * identifiable. Every workspace keeps at least one stage of each kind (enforced in the service).
+ */
+export const pipelineStages = pgTable(
+  "pipeline_stages",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    name: text().notNull(),
+    kind: stageKind().notNull().default("open"),
+    position: integer().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("pipeline_stages_workspace_idx").on(t.workspaceId, t.position),
+    unique("pipeline_stages_id_workspace_uq").on(t.id, t.workspaceId),
+    uniqueIndex("pipeline_stages_name_uq").on(t.workspaceId, sql`lower(${t.name})`),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // Opportunities
 // ---------------------------------------------------------------------------
@@ -1021,7 +1051,36 @@ export const opportunities = pgTable(
   {
     id: id(),
     workspaceId: workspaceRef(),
-    companyId: uuid().notNull(),
+    /** Null for buyers who are not identified (an intent post by an anonymous account). */
+    companyId: uuid(),
+    /** Null for opportunities from the original signal-driven flow. */
+    category: opportunityCategory(),
+    title: text(),
+    /** Who posted or asked, when the source shows it; never guessed. */
+    buyerName: text(),
+    buyerProfileUrl: text(),
+    country: countryCode(),
+    sourceSlug: text(),
+    sourceUrl: text(),
+    /** The source's own ID for the post / project / funding event: the deduplication key. */
+    sourceExternalId: text(),
+    /** Budget as the source states it (original currency); `budgetUsd` is the figure used for filtering and scoring. */
+    budgetMin: integer(),
+    budgetMax: integer(),
+    budgetCurrency: text(),
+    budgetUsd: integer(),
+    fundingAmountUsd: bigint({ mode: "number" }),
+    fundingStage: text(),
+    fundingDate: date({ mode: "string" }),
+    investors: text().array(),
+    /** How strongly the source text shows buying intent (spec §3: high / medium / low). */
+    intentLevel: intentLevel(),
+    verification: verificationStatus().notNull().default("unverified"),
+    discoveredAt: timestamp({ withTimezone: true }),
+    /** When the source says it was posted (or the funding date); the timing score is recomputed from it as it ages. */
+    sourcePostedAt: timestamp({ withTimezone: true }),
+    /** Last time a discovery run saw this source item again. */
+    lastSeenAt: timestamp({ withTimezone: true }),
     /** Composite FK uses ON DELETE SET NULL (primary_person_id) — hand-written in migration 0002. */
     primaryPersonId: uuid(),
     /** Composite FK uses ON DELETE SET NULL (service_id) — hand-written in migration 0002. */
@@ -1048,7 +1107,10 @@ export const opportunities = pgTable(
     /** Prioritization score, not a purchase probability (PRD §12). */
     opportunityScore: score(),
     scoreFactors: jsonb().$type<Record<string, unknown>>().notNull().default({}),
-    status: opportunityStatus().notNull().default("new"),
+    /** Where it is in the workspace's sales pipeline; discovery never changes it. */
+    stageId: uuid().notNull(),
+    /** Set when archived (replaces "dismissed"): hidden from the working tabs, kept for history. */
+    archivedAt: timestamp({ withTimezone: true }),
     /** When the scores were last computed; recency changes with time, so stale rows are re-scored. */
     scoredAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     /** Denormalized: max(occurred_at) of linked signals, cached for freshness sorting. */
@@ -1057,11 +1119,26 @@ export const opportunities = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
-    index("opportunities_workspace_status_idx").on(t.workspaceId, t.status),
+    index("opportunities_workspace_stage_idx").on(t.workspaceId, t.stageId),
+    foreignKey({
+      name: "opportunities_stage_fk",
+      columns: [t.stageId, t.workspaceId],
+      foreignColumns: [pipelineStages.id, pipelineStages.workspaceId],
+    }).onDelete("restrict"),
     index("opportunities_workspace_score_idx").on(t.workspaceId, t.opportunityScore),
     // MVP: one opportunity per company, matched to its best-fitting service. Drop this to allow
     // one per (company, service) later.
     uniqueIndex("opportunities_company_uq").on(t.companyId),
+    // Source-based deduplication (spec §9): a rediscovery updates the row, never duplicates it.
+    uniqueIndex("opportunities_source_uq")
+      .on(t.workspaceId, t.sourceSlug, t.sourceExternalId)
+      .where(sql`${t.sourceExternalId} is not null`),
+    index("opportunities_workspace_category_idx").on(t.workspaceId, t.category),
+    check("opportunities_country_chk", sql`${t.country} is null or ${t.country} ~ '^[A-Z]{2}$'`),
+    check(
+      "opportunities_identity_chk",
+      sql`${t.companyId} is not null or ${t.category} is not null`,
+    ),
     unique("opportunities_id_workspace_uq").on(t.id, t.workspaceId),
     foreignKey({
       name: "opportunities_company_fk",
@@ -1077,6 +1154,133 @@ export const opportunities = pgTable(
       name: "opportunities_service_fk",
       columns: [t.serviceId, t.workspaceId],
       foreignColumns: [services.id, services.workspaceId],
+    }).onDelete("set null"),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// LeadGen Engine (Opportunities Engine specification)
+// ---------------------------------------------------------------------------
+
+/** One row per workspace: the master switch. Absent row = defaults (enabled). */
+export const engineSettings = pgTable("engine_settings", {
+  workspaceId: uuid()
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  enabled: boolean().notNull().default(true),
+  /** The workspace's own factor weights for discovered opportunities (spec section 10); null = the defaults. */
+  scoringWeights: jsonb().$type<Record<string, number>>(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * One row per (workspace, capability): switch, schedule, targeting override and filters. A null
+ * targeting column means "inherit the workspace's Services & ICP"; an array replaces it for that
+ * dimension only. `config` is JSONB because it is always read and validated as one unit.
+ */
+export const engineCapabilities = pgTable(
+  "engine_capabilities",
+  {
+    workspaceId: workspaceRef(),
+    capability: engineCapability().notNull(),
+    enabled: boolean().notNull().default(true),
+    frequencyMinutes: integer().notNull(),
+    targetCountries: text().array(),
+    targetIndustries: text().array(),
+    targetServiceIds: uuid().array(),
+    config: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    lastRunAt: timestamp({ withTimezone: true }),
+    lastSuccessAt: timestamp({ withTimezone: true }),
+    lastStatus: runStatus(),
+    lastError: text(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.capability] }),
+    check("engine_capabilities_frequency_chk", sql`${t.frequencyMinutes} between 15 and 10080`),
+  ],
+);
+
+/** One execution of a capability, so a failing source is visible apart from the whole run failing. */
+export const discoveryRuns = pgTable(
+  "discovery_runs",
+  {
+    id: id(),
+    workspaceId: workspaceRef(),
+    capability: engineCapability().notNull(),
+    trigger: text().notNull().default("schedule"),
+    startedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp({ withTimezone: true }),
+    /** Null while running. */
+    status: runStatus(),
+    found: integer().notNull().default(0),
+    created: integer().notNull().default(0),
+    updated: integer().notNull().default(0),
+    /** Per-source outcome: [{ source, ok, found, error }]. */
+    sources: jsonb().$type<{ source: string; ok: boolean; found: number; error?: string; note?: string }[]>().notNull().default([]),
+    error: text(),
+  },
+  (t) => [
+    index("discovery_runs_workspace_idx").on(t.workspaceId, t.capability, t.startedAt),
+    unique("discovery_runs_id_workspace_uq").on(t.id, t.workspaceId),
+  ],
+);
+
+/**
+ * What backs an opportunity (spec §8). One row per distinct source reference; rediscovery updates
+ * `capturedAt`/`snippet` in place and never removes earlier evidence.
+ */
+export const opportunityEvidence = pgTable(
+  "opportunity_evidence",
+  {
+    id: id(),
+    workspaceId: uuid().notNull(),
+    opportunityId: uuid().notNull(),
+    sourceSlug: text().notNull(),
+    /** Human-readable platform, e.g. "Hacker News". */
+    platform: text().notNull(),
+    url: text(),
+    snippet: text(),
+    verification: verificationStatus().notNull().default("unverified"),
+    metadata: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    contentHash: text(),
+    capturedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("opportunity_evidence_opportunity_idx").on(t.opportunityId),
+    uniqueIndex("opportunity_evidence_ref_uq").on(t.opportunityId, t.sourceSlug, t.url),
+    foreignKey({
+      name: "opportunity_evidence_opportunity_fk",
+      columns: [t.opportunityId, t.workspaceId],
+      foreignColumns: [opportunities.id, opportunities.workspaceId],
+    }).onDelete("cascade"),
+  ],
+);
+
+/** Each time a run saw an opportunity: discovery history, kept separate from sales progress. */
+export const opportunityDiscoveries = pgTable(
+  "opportunity_discoveries",
+  {
+    id: id(),
+    workspaceId: uuid().notNull(),
+    opportunityId: uuid().notNull(),
+    runId: uuid(),
+    seenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /** "created" or "updated", plus which fields changed on an update. */
+    change: text().notNull(),
+    changedFields: text().array().notNull().default(sql`'{}'::text[]`),
+  },
+  (t) => [
+    index("opportunity_discoveries_opportunity_idx").on(t.opportunityId, t.seenAt),
+    foreignKey({
+      name: "opportunity_discoveries_opportunity_fk",
+      columns: [t.opportunityId, t.workspaceId],
+      foreignColumns: [opportunities.id, opportunities.workspaceId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "opportunity_discoveries_run_fk",
+      columns: [t.runId, t.workspaceId],
+      foreignColumns: [discoveryRuns.id, discoveryRuns.workspaceId],
     }).onDelete("set null"),
   ],
 );

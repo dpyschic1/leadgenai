@@ -1,23 +1,23 @@
-import { STATUS_LABELS, type OpportunityStatus } from "@/lib/domain/opportunities";
+import type { StageRef } from "@/lib/domain/pipeline";
 import { cn } from "@/lib/utils";
 
-const TONE: Record<OpportunityStatus, string> = {
-  new: "bg-signal-tint text-[var(--signal-deep)] border-primary/20",
-  qualified: "bg-sky-50 text-sky-800 border-sky-200",
-  saved: "bg-secondary text-foreground border-border",
-  contacted: "bg-indigo-50 text-indigo-800 border-indigo-200",
-  replied: "bg-indigo-50 text-indigo-800 border-indigo-200",
-  meeting: "bg-violet-50 text-violet-800 border-violet-200",
-  proposal: "bg-violet-50 text-violet-800 border-violet-200",
+const TONE = {
+  intake: "bg-signal-tint text-[var(--signal-deep)] border-primary/20",
+  open: "bg-indigo-50 text-indigo-800 border-indigo-200",
   won: "bg-emerald-50 text-emerald-800 border-emerald-200",
   lost: "bg-secondary text-muted-foreground border-border",
-  dismissed: "bg-secondary text-muted-foreground border-border",
-};
+  archived: "bg-secondary text-muted-foreground border-border",
+} as const;
 
-export function StatusBadge({ status, className }: { status: OpportunityStatus; className?: string }) {
+/**
+ * A stage as a pill. Won and Lost are told apart by kind, so they look right however the workspace names
+ * them. `intake` marks the first open stage, where new discoveries land.
+ */
+export function StatusBadge({ stage, archived = false, intake = false, className }: { stage: StageRef; archived?: boolean; intake?: boolean; className?: string }) {
+  const tone = archived ? TONE.archived : stage.kind === "open" ? (intake ? TONE.intake : TONE.open) : TONE[stage.kind];
   return (
-    <span className={cn("inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium", TONE[status], className)}>
-      {STATUS_LABELS[status]}
+    <span className={cn("inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium", tone, className)}>
+      {archived ? "Archived" : stage.name}
     </span>
   );
 }

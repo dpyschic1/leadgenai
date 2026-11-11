@@ -211,6 +211,34 @@
       "when": 1794340735939,
       "tag": "0029_job_priority",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1794353606659,
+      "tag": "0030_leadgen_engine",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794356854472,
+      "tag": "0031_sales_pipeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794356864813,
+      "tag": "0032_sales_pipeline_enforce",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794357598258,
+      "tag": "0033_engine_score_freshness",
+      "breakpoints": true
     }
   ]
 }

@@ -19,6 +19,7 @@ import { useGiveFeedback, useRemoveFeedback, useUpdateOpportunity } from "@/hook
 import type { OpportunityDetail, OpportunityFeedback } from "@/lib/api/types";
 import { FEEDBACK_DESCRIPTIONS, FEEDBACK_LABELS, isPositiveVerdict, type FeedbackVerdict } from "@/lib/domain/feedback";
 import { cn } from "@/lib/utils";
+import { opportunityName } from "@/lib/opportunity-display";
 
 const ICONS: Record<FeedbackVerdict, LucideIcon> = {
   good_fit: ThumbsUpIcon,
@@ -38,12 +39,12 @@ const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "
 export function FeedbackPanel({ opportunity, canEdit }: { opportunity: OpportunityDetail; canEdit: boolean }) {
   const [choosing, setChoosing] = useState<FeedbackVerdict | null>(null);
   const [showFlags, setShowFlags] = useState(false);
-  // Lives here, not in the form: the toast's "Dismiss it" runs after the form has closed.
+  // Lives here, not in the form: the toast's "Archive it" runs after the form has closed.
   const update = useUpdateOpportunity(opportunity.id);
   const dismiss = () =>
     update.mutate(
-      { status: "dismissed" },
-      { onSuccess: () => toast.success("Marked as dismissed."), onError: (error) => toast.error(error.message) },
+      { archived: true },
+      { onSuccess: () => toast.success("Archived."), onError: (error) => toast.error(error.message) },
     );
   const myOpinion = opportunity.feedback.find((f) => f.isMine && (f.verdict === "good_fit" || f.verdict === "not_relevant"));
 
@@ -81,12 +82,15 @@ export function FeedbackPanel({ opportunity, canEdit }: { opportunity: Opportuni
                 active={choosing === "wrong_person"}
                 onClick={() => setChoosing("wrong_person")}
               />
-              <VerdictButton
-                verdict="wrong_company"
-                detail={opportunity.company.name}
-                active={choosing === "wrong_company"}
-                onClick={() => setChoosing("wrong_company")}
-              />
+              {/* An engine opportunity with no identified company has no company match to dispute. */}
+              {opportunity.company && (
+                <VerdictButton
+                  verdict="wrong_company"
+                  detail={opportunityName(opportunity)}
+                  active={choosing === "wrong_company"}
+                  onClick={() => setChoosing("wrong_company")}
+                />
+              )}
             </div>
           ) : (
             <button
@@ -189,8 +193,8 @@ function VerdictForm({
           toast.success(savedMessage(verdict, opportunity, updated), {
             // A "not relevant" verdict usually means the team won't pursue it.
             action:
-              verdict === "not_relevant" && updated.status !== "dismissed"
-                ? { label: "Dismiss it", onClick: onDismiss }
+              verdict === "not_relevant" && !updated.archived
+                ? { label: "Archive it", onClick: onDismiss }
                 : undefined,
           });
           onDone();

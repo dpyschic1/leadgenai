@@ -204,7 +204,7 @@ function CompanyDetailContent({ company }: { company: CompanyDetail }) {
                 <p className="font-semibold">Opportunity</p>
                 <p className="text-sm text-muted-foreground">Priority score and the evidence behind it</p>
               </div>
-              <StatusBadge status={company.opportunity.status} />
+              <StatusBadge stage={company.opportunity.stage} archived={company.opportunity.archived} />
             </Link>
           )}
 

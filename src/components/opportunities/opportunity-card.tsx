@@ -7,6 +7,8 @@ import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import type { OpportunitySummary } from "@/lib/api/types";
 import { OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
+import { opportunityName } from "@/lib/opportunity-display";
+import { CategoryBadge, EngineChips, VerificationBadge } from "./engine-parts";
 import { FeedbackVotes } from "./feedback-votes";
 import { ScoreRing } from "./score-ring";
 import { StatusBadge } from "./status-badge";
@@ -27,7 +29,11 @@ export function OpportunityCard({
   action?: ReactNode;
 }) {
   const names = useLookupNames();
-  const latest = opportunity.latestSignalOn && dateFormat.format(new Date(`${opportunity.latestSignalOn}T12:00:00`));
+  const latest = opportunity.latestSignalOn
+    ? dateFormat.format(new Date(`${opportunity.latestSignalOn}T12:00:00`))
+    : opportunity.engine?.discoveredAt
+      ? dateFormat.format(new Date(opportunity.engine.discoveredAt))
+      : null;
   const { phone: companyPhone, email: companyEmail } = opportunity.companyContact;
 
   return (
@@ -44,12 +50,19 @@ export function OpportunityCard({
               href={`/opportunities/${opportunity.id}`}
               className="block truncate font-semibold outline-none group-hover:text-primary after:absolute after:inset-0 after:rounded-xl"
             >
-              {opportunity.company.name}
+              {opportunityName(opportunity)}
             </Link>
-            <p className="text-sm text-muted-foreground">{names.opportunityType(opportunity.type)}</p>
+            {opportunity.engine ? (
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <CategoryBadge category={opportunity.engine.category} />
+                <VerificationBadge status={opportunity.engine.verification} />
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">{names.opportunityType(opportunity.type)}</p>
+            )}
           </div>
           <div className="flex items-center gap-1">
-            <StatusBadge status={opportunity.status} />
+            <StatusBadge stage={opportunity.stage} archived={opportunity.archived} />
             {action && <div className="relative z-10">{action}</div>}
           </div>
         </div>
@@ -93,14 +106,18 @@ export function OpportunityCard({
               © OpenStreetMap
             </a>
           )}
-          <span className="inline-flex items-center gap-1">
-            <RadioTowerIcon className="size-3.5" />
-            {opportunity.signalCount} {opportunity.signalCount === 1 ? "signal" : "signals"}
-          </span>
+          {opportunity.engine ? (
+            <EngineChips engine={opportunity.engine} />
+          ) : (
+            <span className="inline-flex items-center gap-1">
+              <RadioTowerIcon className="size-3.5" />
+              {opportunity.signalCount} {opportunity.signalCount === 1 ? "signal" : "signals"}
+            </span>
+          )}
           {latest && (
             <span className="inline-flex items-center gap-1">
               <CalendarIcon className="size-3.5" />
-              Latest {latest}
+              {opportunity.engine ? "Found" : "Latest"} {latest}
             </span>
           )}
           <FeedbackVotes votes={opportunity.feedbackVotes} />

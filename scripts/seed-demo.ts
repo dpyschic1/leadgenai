@@ -24,6 +24,7 @@ import { createCompany } from "@/server/services/companies.service";
 import { giveFeedback } from "@/server/services/feedback.service";
 import { addToList, createList } from "@/server/services/lists.service";
 import { listOpportunities, updateOpportunity } from "@/server/services/opportunities.service";
+import { listPipeline } from "@/server/services/pipeline.service";
 import { addPerson, listCompanyPeople } from "@/server/services/people.service";
 import { createService } from "@/server/services/services.service";
 import { createSignal } from "@/server/services/signals.service";
@@ -448,7 +449,7 @@ async function seed(): Promise<void> {
 
   // Work in progress, so every status tab, list and feedback view has something in it.
   const feed = await listOpportunities(owner, opportunityListQuerySchema.parse({ group: "open" }));
-  const opportunityOf = (name: string) => feed.items.find((item) => item.company.id === companyIds.get(name))?.id;
+  const opportunityOf = (name: string) => feed.items.find((item) => item.company?.id === companyIds.get(name))?.id;
 
   const contactToday = await createList(owner, listSchema.parse({ name: "Contact today" }));
   const websites = await createList(owner, listSchema.parse({ name: "Website projects" }));
@@ -461,15 +462,17 @@ async function seed(): Promise<void> {
     if (id) await addToList(owner, websites.id, id);
   }
 
+  // Pipeline stages are per workspace; look them up by their default names.
+  const stageId = async (name: string) => (await listPipeline(owner)).find((s) => s.name === name)!.id;
   const ledgerline = opportunityOf("Ledgerline Payments");
   if (ledgerline) {
     await updateOpportunity(owner, ledgerline, {
-      status: "contacted",
+      stageId: await stageId("Contacted"),
       notes: "Emailed Rahul about 3 senior React engineers. Follow up Thursday.",
     });
   }
   const freightly = opportunityOf("Freightly");
-  if (freightly) await updateOpportunity(owner, freightly, { status: "meeting", notes: "Intro call booked with Jeroen." });
+  if (freightly) await updateOpportunity(owner, freightly, { stageId: await stageId("Meeting Scheduled"), notes: "Intro call booked with Jeroen." });
 
   const medora = opportunityOf("Medora Health");
   if (medora) {
@@ -486,7 +489,7 @@ async function seed(): Promise<void> {
   console.log(`  Sign in: ${DEMO_OWNER.email} / ${DEMO_OWNER.password}  (teammate: ${DEMO_TEAMMATE.email})`);
   console.log(`  ${COMPANIES.length} companies, ${final.counts.open} open and ${final.counts.inProgress} in-progress opportunities.`);
   for (const item of final.items) {
-    console.log(`  ${String(item.score ?? "-").padStart(3)}  ${item.company.name}  (${item.service?.name ?? "no matching service"})`);
+    console.log(`  ${String(item.score ?? "-").padStart(3)}  ${item.company?.name}  (${item.service?.name ?? "no matching service"})`);
   }
 }
 

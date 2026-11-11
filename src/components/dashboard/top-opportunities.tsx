@@ -7,6 +7,8 @@ import { StatusBadge } from "@/components/opportunities/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOpportunities } from "@/hooks/use-opportunities";
 import { useLookupNames } from "@/hooks/use-reference-data";
+import { CATEGORY_LABELS } from "@/lib/domain/engine";
+import { opportunityName } from "@/lib/opportunity-display";
 
 const SHOWN = 5;
 
@@ -53,12 +55,12 @@ export function TopOpportunities() {
                 <ScoreRing score={opportunity.score} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">
-                    {opportunity.company.name}
-                    <span className="font-normal text-muted-foreground">, {names.opportunityType(opportunity.type)}</span>
+                    {opportunityName(opportunity)}
+                    <span className="font-normal text-muted-foreground">, {opportunity.engine ? CATEGORY_LABELS[opportunity.engine.category] : names.opportunityType(opportunity.type)}</span>
                   </p>
                   {opportunity.problem && <p className="truncate text-sm text-muted-foreground">{opportunity.problem}</p>}
                 </div>
-                <StatusBadge status={opportunity.status} className="hidden sm:inline-flex" />
+                <StatusBadge stage={opportunity.stage} archived={opportunity.archived} className="hidden sm:inline-flex" />
               </Link>
             </li>
           ))}
