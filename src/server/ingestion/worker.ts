@@ -2,12 +2,13 @@ import "server-only";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { sources } from "@/db/schema";
+import type { IngestionJobKind } from "@/lib/domain/sources";
 import { AppError } from "@/server/http/errors";
 import { collectFromArchive, validateDueBoards } from "@/server/sources/board-directory";
 import { HANDLERS, jobContext } from "./handlers";
 import { detectYcBoards } from "@/server/sources/yc";
 import { analyzeSharedJobs, categorizeBoardJobs } from "./shared-jobs";
-import { claimNext, enqueue, markDone, markFailed, postpone, type JobRow } from "./queue";
+import { claimNext, ENRICHMENT_KINDS, enqueue, markDone, markFailed, postpone, type JobRow } from "./queue";
 
 /**
  * One "tick" of background processing: queue each workspace's daily checks (from its Services &
@@ -41,6 +42,24 @@ export async function queueDailyChecks(workspaceId?: string): Promise<void> {
   }
 }
 
+/** A workspace's matching runs again at most this often when new jobs reach the shared pool. */
+const REMATCH_MS = 15 * 60_000;
+
+/**
+ * New jobs just reached the shared pool: each workspace's queued matching, scheduled for its daily
+ * run, is brought forward, unless that workspace matched within the last 15 minutes. New jobs
+ * reach every workspace within minutes, not the next day.
+ */
+async function matchSoon(): Promise<void> {
+  await db.execute(sql`
+    update ingestion_jobs j set run_after = now()
+    where j.kind = 'evaluate_boards' and j.status = 'queued' and j.run_after > now()
+      and not exists (
+        select 1 from ingestion_jobs r
+        where r.workspace_id = j.workspace_id and r.kind = 'evaluate_boards' and r.status = 'done'
+          and r.finished_at > now() - make_interval(secs => ${REMATCH_MS / 1000}))`);
+}
+
 /** "Run now" / services just saved: the workspace's discovery and tender checks, due immediately. */
 export async function queueChecksNow(workspaceId: string): Promise<void> {
   for (const kind of DAILY_KINDS) {
@@ -51,6 +70,8 @@ export async function queueChecksNow(workspaceId: string): Promise<void> {
   }
 }
 
+/** Lanes that only find websites and contacts, beside the one general lane. */
+const ENRICHMENT_LANES = 8;
 /** Share of a tick's budget given to shared job-board discovery before workspace jobs run. */
 const SHARED_SHARE = 0.4;
 /** Below this many boards waiting to be checked, read more candidates from the archive. */
@@ -59,6 +80,8 @@ const MIN_UNCHECKED = 25;
 const YC_BOARDS_PER_TICK = 1;
 /** Boards checked per tick (one request each to the provider). */
 const BOARDS_PER_TICK = 10;
+/** Shared AI readings started per tick (each up to a few seconds on the free plan). */
+const AI_READINGS_PER_TICK = 3;
 
 /**
  * Job-board discovery shared by every workspace: read more candidates from the archive when few
@@ -66,26 +89,42 @@ const BOARDS_PER_TICK = 10;
  * approved platform-wide. A failure here never stops the workspace jobs.
  */
 async function runSharedStep(deadline: number): Promise<void> {
+  const [source] = await db.select({ status: sources.authorizationStatus }).from(sources).where(eq(sources.slug, "board_directory"));
+  if (source?.status !== "approved") return;
+  // Quickest and most important first, so a slow step later never starves them: sort the new jobs
+  // (free, milliseconds) and tell the workspaces; then a few AI readings; then refresh job boards;
+  // last, with whatever time is left, find one YC company's board (a website read, ~20 s).
+  await shared("job sorting", async () => {
+    if ((await categorizeBoardJobs()) > 0) await matchSoon();
+  });
+  await shared("job analysis", () => analyzeSharedJobs({ deadline, limit: AI_READINGS_PER_TICK }), deadline);
+  await shared(
+    "job boards",
+    async () => {
+      const [{ waiting }] = await db.execute<{ waiting: number }>(sql`
+        select count(*)::int as waiting from job_board_directory where validation_status = 'unverified'`);
+      if (waiting < MIN_UNCHECKED) await collectFromArchive();
+      if (Date.now() < deadline) await validateDueBoards({ limit: BOARDS_PER_TICK, deadline });
+    },
+    deadline,
+  );
+  await shared(
+    "YC boards",
+    async () => {
+      const [yc] = await db.select({ status: sources.authorizationStatus }).from(sources).where(eq(sources.slug, "yc_directory"));
+      if (yc?.status === "approved") await detectYcBoards({ limit: YC_BOARDS_PER_TICK, deadline });
+    },
+    deadline,
+  );
+}
+
+/** One shared step: skipped past the deadline, and a failure never stops the others. */
+async function shared(name: string, step: () => Promise<unknown>, deadline = Infinity): Promise<void> {
+  if (Date.now() >= deadline) return;
   try {
-    const [source] = await db.select({ status: sources.authorizationStatus }).from(sources).where(eq(sources.slug, "board_directory"));
-    if (source?.status !== "approved") return;
-    const [{ waiting }] = await db.execute<{ waiting: number }>(sql`
-      select count(*)::int as waiting from job_board_directory where validation_status = 'unverified'`);
-    if (waiting < MIN_UNCHECKED && Date.now() < deadline) await collectFromArchive();
-    if (Date.now() < deadline) await validateDueBoards({ limit: BOARDS_PER_TICK, deadline });
+    await step();
   } catch (error) {
-    console.error("[ingestion] shared job-board step failed", error);
-  }
-  // Shared job intelligence: sort new jobs into service categories (free), then let the AI read the
-  // matched ones once for every workspace.
-  try {
-    // YC companies' own job boards join the shared pool (a few companies a tick, no AI).
-    const [yc] = await db.select({ status: sources.authorizationStatus }).from(sources).where(eq(sources.slug, "yc_directory"));
-    if (yc?.status === "approved" && Date.now() < deadline) await detectYcBoards({ limit: YC_BOARDS_PER_TICK, deadline });
-    if (Date.now() < deadline) await categorizeBoardJobs();
-    if (Date.now() < deadline) await analyzeSharedJobs({ deadline });
-  } catch (error) {
-    console.error("[ingestion] shared job analysis failed", error);
+    console.error(`[ingestion] shared step "${name}" failed`, error);
   }
 }
 
@@ -96,11 +135,19 @@ export async function runTick({ workspaceId, budgetMs = DEFAULT_BUDGET_MS }: { w
   // Shared work first (archive reading, board checks), within a slice of the budget.
   await runSharedStep(startedAt + budgetMs * SHARED_SHARE);
 
-  while (Date.now() - startedAt < budgetMs) {
-    const job = await claimNext(workspaceId);
-    if (!job) break;
-    result[await runJob(job)]++;
-  }
+  // Lanes run side by side, each claiming jobs until the budget is used: one takes jobs in the
+  // usual order (matching and discovery first), the others take only per-company website and
+  // contact jobs, so a matching run that adds 40 companies never holds their contacts back, and
+  // workspace-wide jobs keep their order in the one lane (discovery before matching places to it). Website reads mostly
+  // wait on other servers, and each site still gets one request at a time (`politeGet`).
+  const lane = async (only: readonly IngestionJobKind[]) => {
+    while (Date.now() - startedAt < budgetMs) {
+      const job = await claimNext(workspaceId, { only });
+      if (!job) return;
+      result[await runJob(job)]++;
+    }
+  };
+  await Promise.all([lane([]), ...Array.from({ length: ENRICHMENT_LANES }, () => lane(ENRICHMENT_KINDS))]);
   return result;
 }
 

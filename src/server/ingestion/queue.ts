@@ -36,9 +36,41 @@ export async function enqueue(
   return rows.length > 0;
 }
 
-/** Claims the next due job (optionally for one workspace), marking it running. */
-export async function claimNext(workspaceId?: string): Promise<JobRow | null> {
-  const scope = workspaceId ? sql`and workspace_id = ${workspaceId}` : sql``;
+/** Priority of work a person is waiting for. */
+const WANTED = 10;
+
+/**
+ * Someone opened this company (or its opportunity) and it has no contacts yet: its queued website
+ * and contact jobs go to the front of the queue, due now, and a website search is queued when none
+ * is. The next tick (within a minute) picks them up.
+ */
+export async function contactsWanted(workspaceId: string, companyId: string): Promise<void> {
+  const bumped = await db
+    .update(ingestionJobs)
+    .set({ priority: WANTED, runAfter: sql`least(${ingestionJobs.runAfter}, now())` })
+    .where(
+      and(
+        eq(ingestionJobs.workspaceId, workspaceId),
+        eq(ingestionJobs.entityId, companyId),
+        eq(ingestionJobs.status, "queued"),
+        sql`${ingestionJobs.kind} in ('enrich_company', 'scan_website')`,
+      ),
+    )
+    .returning({ id: ingestionJobs.id });
+  if (bumped.length === 0) {
+    await db.insert(ingestionJobs).values({ workspaceId, kind: "enrich_company", entityId: companyId, priority: WANTED }).onConflictDoNothing();
+  }
+}
+
+/** The jobs that find a company's website and contacts: all the enrichment lanes take. */
+export const ENRICHMENT_KINDS = ["enrich_company", "scan_website", "scan_job_board"] as const;
+
+/**
+ * Claims the next due job (optionally for one workspace, or `only` of some kinds), marking it
+ * running.
+ */
+export async function claimNext(workspaceId?: string, { only = [] }: { only?: readonly IngestionJobKind[] } = {}): Promise<JobRow | null> {
+  const scope = sql`${workspaceId ? sql`and workspace_id = ${workspaceId}` : sql``} ${only.length > 0 ? sql`and kind in (${sql.join(only.map((k) => sql`${k}::ingestion_job_kind`), sql`, `)})` : sql``}`;
   const rows = await db.execute<{ id: string }>(sql`
     update ingestion_jobs set status = 'running', started_at = now(), attempts = attempts + 1
     where id = (
@@ -51,9 +83,16 @@ export async function claimNext(workspaceId?: string): Promise<JobRow | null> {
       -- AI and takes seconds, so it goes first too: it is what fills a new workspace.
       -- Workspaces take turns: the one that started the fewest jobs in the last 10 minutes goes
       -- next, so a new workspace isn't stuck behind another's backlog (the AI allows ~1 job a minute).
-      order by (kind in ('discover_companies', 'discover_cqc', 'discover_npi', 'discover_theirstack', 'discover_yc', 'scan_tenders', 'evaluate_boards')) desc,
+      -- A person waiting (an opportunity opened without contacts) goes first of all, then
+      -- discovery; among per-company jobs, the best opportunities first.
+      -- Contact work in contact order: reading a known website gives contacts now; finding a
+      -- website comes next; a job-board scan adds jobs, not contacts, so it waits.
+      order by priority desc,
+        case kind when 'scan_website' then 0 when 'enrich_company' then 1 when 'scan_job_board' then 2 else 0 end,
+        (kind in ('discover_companies', 'discover_cqc', 'discover_npi', 'discover_theirstack', 'discover_yc', 'scan_tenders', 'evaluate_boards')) desc,
         (select count(*) from ingestion_jobs r
           where r.workspace_id = j.workspace_id and r.started_at > now() - interval '10 minutes'),
+        (select o.opportunity_score from opportunities o where o.company_id = j.entity_id and o.workspace_id = j.workspace_id) desc nulls last,
         run_after
       limit 1
       for update skip locked

@@ -1072,6 +1072,10 @@ async function attachEmails(actor: Actor, companyId: string, domain: string, pub
 async function scanJobBoard({ job, actor }: JobContext): Promise<JobResult> {
   const company = await loadCompany(actor, job.entityId);
   if (!company || !(await sourceRunnable(actor.workspaceId, "job_board"))) return { followUps: [], skipped: true };
+  // A workspace with no services has nothing to judge jobs against: skip quietly, check next week.
+  if ((await loadServices(actor.workspaceId)).length === 0) {
+    return { followUps: [{ kind: "scan_job_board", entityId: company.id, runAfter: later(RECHECK.jobBoard) }], skipped: true };
+  }
   const result = await syncCompanyJobs(actor, company.id);
   await saveHiringEmails(company);
   if (result.signalsCreated > 0) await rescoreAfterCompanyChange(actor.workspaceId, company.id);

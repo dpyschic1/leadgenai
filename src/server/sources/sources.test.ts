@@ -20,7 +20,7 @@ import { isAllowed, parseRobots } from "./http";
 import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
 import { boardDomainGuesses, npiSteps } from "@/server/ingestion/handlers";
 import { boardFitsCompany, toYcCompany, toYcRow, ycBoardTokens, ycCountry, ycIndustry } from "./yc";
-import { boardScore, rankBoards } from "@/server/ingestion/shared-jobs";
+import { boardScore, rankBoards, sizeFit } from "@/server/ingestion/shared-jobs";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender, toTenderContact } from "./uk-tenders";
 import { cleanPhone, comparablePostcode, overtureLookupSql, placeDomains, proposeOvertureMatches, type OverturePlace, type OvertureTarget } from "./overture";
@@ -1203,6 +1203,18 @@ describe("ranking matched companies", () => {
     expect(boardScore([job("ML Engineer - NY"), job("ML Engineer - SF")], ["ai_ml"], now)).toBe(3 + 4 + 1);
     expect(boardScore([job("ML Engineer", { ai_confirmed: true, yc: true })], ["ai_ml"], now)).toBe(3 + 6 + 4 + 4 + 1);
     expect(boardScore([job("ML Engineer", { posted_at: new Date("2026-08-01T00:00:00Z") })], ["ai_ml"], now)).toBe(3 + 0 + 1);
+  });
+
+  it("prefers small and mid-sized companies over large employers", () => {
+    expect(sizeFit({ team_size: 40, board_open_jobs: 900 })).toBe(4); // YC team size wins
+    expect(sizeFit({ team_size: 7000, board_open_jobs: 10 })).toBe(-4);
+    expect(sizeFit({ team_size: null, board_open_jobs: 12 })).toBe(4);
+    expect(sizeFit({ team_size: null, board_open_jobs: 500 })).toBe(-4);
+    expect(sizeFit({ team_size: null, board_open_jobs: 80 })).toBe(0);
+    expect(sizeFit(undefined)).toBe(0);
+    const startup = [job("ML Engineer")].map((j) => ({ ...j, board_open_jobs: 8 }));
+    const giant = [job("ML Engineer")].map((j) => ({ ...j, board_open_jobs: 600 }));
+    expect(rankBoards([giant, startup], ["ai_ml"], now)).toEqual([startup, giant]);
   });
 
   it("puts a company with several real roles before one with a single fresh post", () => {

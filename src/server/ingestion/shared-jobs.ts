@@ -141,17 +141,35 @@ type Candidate = {
   ai_confirmed: boolean;
   /** The board is a known Y Combinator company's own. */
   yc: boolean;
+  /** Its YC team size, when it is a YC company's board. */
+  team_size: number | null;
+  /** Jobs open on the whole board (not only matching ones): how big an employer it is. */
+  board_open_jobs: number | null;
 };
 
-type RankedJob = Pick<Candidate, "title" | "categories" | "posted_at" | "first_seen_at" | "ai_confirmed" | "yc">;
+type RankedJob = Pick<Candidate, "title" | "categories" | "posted_at" | "first_seen_at" | "ai_confirmed" | "yc"> &
+  Partial<Pick<Candidate, "team_size" | "board_open_jobs">>;
+
+/**
+ * Small and mid-sized companies are likelier to buy from an agency (and to publish contacts) than
+ * large employers: +4 for a small one, -4 for a large one, 0 when unknown or in between. Size is the
+ * YC team size when known, else the board's open jobs. Pure.
+ */
+export function sizeFit(job: Partial<Pick<Candidate, "team_size" | "board_open_jobs">> | undefined): number {
+  const team = job?.team_size ?? null;
+  if (team !== null) return team <= 200 ? 4 : team > 2000 ? -4 : 0;
+  const open = job?.board_open_jobs ?? null;
+  if (open === null) return 0;
+  return open <= 25 ? 4 : open > 200 ? -4 : 0;
+}
 
 const DAY_MS = 86_400_000;
 
 /**
  * How strong a matched company is as a lead, from its matching jobs: several distinct roles (a
  * real need, not one post) count most, then a buying signal the AI confirmed, a known company (a YC
- * company's own board: verified website and location), how fresh the newest post is, and how many
- * of the workspace's services it touches. Pure.
+ * company's own board: verified website and location), its size (`sizeFit`), how fresh the newest
+ * post is, and how many of the workspace's services it touches. Pure.
  */
 export function boardScore(jobs: RankedJob[], sold: string[], now = new Date()): number {
   const roles = new Set(jobs.map((j) => roleKey(j.title))).size;
@@ -162,6 +180,7 @@ export function boardScore(jobs: RankedJob[], sold: string[], now = new Date()):
     Math.min(roles, 5) * 3 +
     (jobs.some((j) => j.ai_confirmed) ? 6 : 0) +
     (jobs[0]?.yc ? 4 : 0) +
+    sizeFit(jobs[0]) +
     (ageDays <= 7 ? 4 : ageDays <= 30 ? 2 : 0) +
     Math.min(services, 3)
   );
@@ -234,9 +253,15 @@ export async function matchWorkspaceJobs(
     select j.id, j.provider, j.board_token, j.external_id, j.title, j.department, j.location, j.url, j.description,
       j.posted_at, j.first_seen_at, d.board_name, d.stated_website, array_agg(c.category_slug) as categories,
       coalesce(bool_or(a.is_signal and a.model <> ${FAILED_MODEL}), false) as ai_confirmed,
-      exists (select 1 from yc_companies y where y.board_provider = j.provider and y.board_token = j.board_token) as yc
+      y.id is not null as yc, y.team_size, size.open_jobs as board_open_jobs
     from board_jobs j
     join job_board_directory d on d.provider = j.provider and d.board_token = j.board_token and d.validation_status = 'valid'
+    left join yc_companies y on y.board_provider = j.provider and y.board_token = j.board_token
+    -- How many jobs the board has open in all: a company with hundreds is a large employer.
+    left join lateral (
+      select count(*)::int as open_jobs from board_jobs b
+      where b.provider = j.provider and b.board_token = j.board_token and b.closed_at is null
+    ) size on true
     join board_job_categories c on c.board_job_id = j.id and c.category_slug in (${sql.join(categories.map((c) => sql`${c}`), sql`, `)})
     left join job_analyses a on a.board_job_id = j.id
     where j.closed_at is null
@@ -244,7 +269,7 @@ export async function matchWorkspaceJobs(
       and (a.board_job_id is null or a.is_signal or a.model = ${FAILED_MODEL})
       and not exists (select 1 from job_postings p where p.workspace_id = ${actor.workspaceId} and p.board_job_id = j.id)
       ${only ? sql`and (j.provider, j.board_token) in (${sql.join(only.map((b) => sql`(${b.provider}::job_board_provider, ${b.boardToken})`), sql`, `)})` : sql``}
-    group by j.id, d.board_name, d.stated_website
+    group by j.id, d.board_name, d.stated_website, y.id, y.team_size, size.open_jobs
     order by coalesce(j.posted_at, j.first_seen_at) desc
     limit ${MATCH_CANDIDATES}`);
 

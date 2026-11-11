@@ -999,6 +999,8 @@ export const ingestionJobs = pgTable(
     lastError: text(),
     /** AI calls the job used (cost metering, PRD §20). */
     aiCalls: integer().notNull().default(0),
+    /** Higher goes first: a person is waiting for it (e.g. opened an opportunity without contacts). */
+    priority: integer().notNull().default(0),
     createdAt: createdAt(),
   },
   (t) => [

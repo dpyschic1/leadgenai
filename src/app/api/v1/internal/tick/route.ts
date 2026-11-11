@@ -29,7 +29,7 @@ function assertCron(request: NextRequest): void {
 const tick = publicRoute(async ({ request }) => {
   assertCron(request);
   // Stop claiming new jobs early: a job already started must still finish inside the 60s limit.
-  return Response.json(await runTick({ budgetMs: 30_000 }));
+  return Response.json(await runTick({ budgetMs: 38_000 }));
 });
 
 export const GET = tick;

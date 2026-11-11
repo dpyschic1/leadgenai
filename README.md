@@ -153,6 +153,13 @@ Nothing to set up: from **Services & ICP** (target industries and countries) the
 5. adds **OpenStreetMap** contacts for companies and practices it already has (see below);
 6. records signals with source links and re-scores the companies.
 
+**The worker** (`runTick`, every minute via cron-job.org → `POST /api/v1/internal/tick` on
+Vercel) runs the shared steps, then **9 lanes side by side**: one takes jobs in the usual order
+(discovery and matching first, workspaces taking turns), eight take only website and contact jobs
+(`enrich_company`, `scan_website`, `scan_job_board`), best-scored opportunities first. Opening an
+opportunity with no contacts puts its company's look-up at the front (`contactsWanted`, job
+`priority`). Each website still gets one request a second (`politeGet`).
+
 It also runs straight after a service is saved, and on **Run now** in Settings → Data sources,
 where each source can be switched off. Every fact keeps its source (`source_records`); see a
 company's **Sources** card. Adapters live in `src/server/sources/`, the job queue and handlers in

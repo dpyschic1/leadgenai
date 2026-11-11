@@ -88,10 +88,15 @@ export function registrableDomain(hostname: string): string {
   return parts.slice(TWO_PART_SUFFIX.test(`.${parts.slice(-2).join(".")}`) ? -3 : -2).join(".");
 }
 
+/**
+ * Waits for the site's next free slot. The slot is reserved before waiting, so jobs running at the
+ * same time queue up one request per interval instead of all firing after the same wait.
+ */
 async function throttle(site: string): Promise<void> {
-  const wait = (lastRequestAt.get(site) ?? 0) + SITE_INTERVAL_MS - Date.now();
+  const slot = Math.max(Date.now(), (lastRequestAt.get(site) ?? 0) + SITE_INTERVAL_MS);
+  lastRequestAt.set(site, slot);
+  const wait = slot - Date.now();
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-  lastRequestAt.set(site, Date.now());
 }
 
 async function readCapped(response: Response, maxBytes = MAX_BYTES): Promise<Buffer> {
