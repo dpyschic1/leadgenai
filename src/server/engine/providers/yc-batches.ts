@@ -5,8 +5,9 @@ import { ycCompanies } from "@/db/schema";
 import type { DiscoveredItem, DiscoveryProvider } from "../types";
 
 /**
- * Companies in a recent Y Combinator batch, from the YC directory we already hold. YC invests in every
- * batch company, but the directory is not evidence of a specific round or amount, so these are
+ * Companies in a recent Y Combinator batch that are hiring, from the YC directory we already hold.
+ * Being funded alone says nothing about needing outside help; funded and hiring does. YC invests in
+ * every batch company, but the directory is not evidence of a specific round or amount, so these are
  * "unverified" with no amount, and the date is the batch's start (approximate).
  */
 
@@ -36,6 +37,7 @@ export const ycBatches: DiscoveryProvider = {
       .where(
         and(
           eq(ycCompanies.status, "Active"),
+          eq(ycCompanies.isHiring, true),
           isNotNull(ycCompanies.batch),
           targeting.countries.length ? inArray(ycCompanies.country, targeting.countries) : undefined,
         ),
@@ -55,7 +57,7 @@ export const ycBatches: DiscoveryProvider = {
         platform: "Y Combinator",
         externalId: `yc-${r.id}`,
         url: r.url,
-        title: `${r.name} joined Y Combinator ${r.batch}`,
+        title: `${r.name} joined Y Combinator ${r.batch} and is hiring`,
         text: [r.oneLiner, r.longDescription].filter(Boolean).join("\n"),
         postedAt: null,
         buyerName: null,

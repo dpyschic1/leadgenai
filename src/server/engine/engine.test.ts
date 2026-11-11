@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { isEmployment, readIntent } from "./intent";
 import { matchedTerms, matchesCountry, termsOf } from "./match";
+import { bestService } from "./runner";
+import { onlyElsewhere } from "./filters";
 import { scoreItem } from "./score-item";
 import { projectBudgetPoints, totalScore, DEFAULT_ENGINE_WEIGHTS } from "./scoring";
 import type { DiscoveredItem } from "./types";
@@ -112,5 +114,43 @@ describe("funding wording and dates", () => {
   });
   it("dates a future YC batch after today so the provider can skip it", () => {
     expect(batchStart("Winter 2027")! > "2026-11-11").toBe(true);
+  });
+});
+
+describe("bestService", () => {
+  const services = [
+    { id: "web", terms: termsOf("Website redesign") },
+    { id: "ai", terms: termsOf("AI Automation & Agents") },
+  ];
+  it("picks the service whose own name the lead matched most", () => {
+    expect(bestService(services, ["ai", "automation"])).toBe("ai");
+    expect(bestService(services, ["website"])).toBe("web");
+  });
+  it("is null when no service matched", () => {
+    expect(bestService(services, [])).toBeNull();
+    expect(bestService([], ["ai"])).toBeNull();
+  });
+});
+
+describe("onlyElsewhere", () => {
+  const us = { countries: ["US"] };
+  const post = (title: string, text = "") => ({ title, text });
+
+  it("drops a post that names only other countries", () => {
+    expect(onlyElsewhere(post("Team Leader: Recruit Contributors in India, $20-$30 Per Person (India Only)"), us)).toBe(true);
+    expect(onlyElsewhere(post("Team Leader: Recruit Contributors in South Africa"), us)).toBe(true);
+    expect(onlyElsewhere(post("Recruit contributors in the Philippines"), us)).toBe(true);
+  });
+
+  it("keeps a post that names no country, or names the US", () => {
+    expect(onlyElsewhere(post("Modern Logo for Sologik"), us)).toBe(false);
+    expect(onlyElsewhere(post("AI automation for our team", "We are based in Austin, Texas."), us)).toBe(false);
+    expect(onlyElsewhere(post("Developer needed", "Clients in the USA and Canada"), us)).toBe(false);
+    expect(onlyElsewhere(post("Website for our Atlanta, Georgia office"), us)).toBe(false);
+    expect(onlyElsewhere(post("Ask Jordan or Chad for the brief"), us)).toBe(false);
+  });
+
+  it("never filters when the workspace targets every country", () => {
+    expect(onlyElsewhere(post("India only"), { countries: [] })).toBe(false);
   });
 });

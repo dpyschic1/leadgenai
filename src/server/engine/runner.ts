@@ -1,7 +1,7 @@
 import "server-only";
-import { and, desc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { discoveryRuns, engineCapabilities, engineSettings, services } from "@/db/schema";
+import { companies, discoveryRuns, engineCapabilities, engineSettings, opportunities, services } from "@/db/schema";
 import {
   DEFAULT_FREQUENCY_MINUTES,
   isDue,
@@ -38,15 +38,27 @@ export type RunSummary = {
   sources: { source: string; ok: boolean; found: number; error?: string; note?: string }[];
 };
 
-async function loadServiceTerms(workspaceId: string, serviceIds: string[]): Promise<string[]> {
+type ServiceTerms = { id: string; terms: string[] };
+
+async function loadServices(workspaceId: string, serviceIds: string[]): Promise<ServiceTerms[]> {
   if (serviceIds.length === 0) return [];
   const rows = await db
-    .select({ name: services.name })
+    .select({ id: services.id, name: services.name })
     .from(services)
     .where(and(eq(services.workspaceId, workspaceId), inArray(services.id, serviceIds)));
   // Names only. Description text is prose ("first", "within", "product") and matches almost any post;
   // matching on it ranked an electrician's cabling job as a strong fit for a software agency.
-  return [...new Set(rows.flatMap((r) => termsOf(r.name)))].slice(0, 20);
+  return rows.map((r) => ({ id: r.id, terms: termsOf(r.name) }));
+}
+
+/** The service whose name terms the item matched most (first on a tie); null when none matched. Pure. */
+export function bestService(serviceTerms: ServiceTerms[], matched: string[]): string | null {
+  let best: { id: string; hits: number } | null = null;
+  for (const service of serviceTerms) {
+    const hits = service.terms.filter((t) => matched.includes(t)).length;
+    if (hits > 0 && (!best || hits > best.hits)) best = { id: service.id, hits };
+  }
+  return best?.id ?? null;
 }
 
 /**
@@ -86,12 +98,28 @@ export async function runCapability(workspaceId: string, capability: Capability,
       industries: row?.targetIndustries ?? null,
       serviceIds: row?.targetServiceIds ?? null,
     });
-    const serviceTerms = await loadServiceTerms(workspaceId, targeting.serviceIds);
+    const servicesTargeted = await loadServices(workspaceId, targeting.serviceIds);
+    const serviceTerms = [...new Set(servicesTargeted.flatMap((s) => s.terms))].slice(0, 20);
     if (serviceTerms.length === 0) throw new Error("No services to match against. Add a service in Services & ICP first.");
 
     const config = parseCapabilityConfig(capability, row?.config);
     const weights = await loadEngineWeights(workspaceId);
     const wanted = "providers" in config ? (config as { providers: string[] }).providers : [];
+
+    // One company, one opportunity: a company that already has its own opportunity here (found by
+    // its hiring, with contacts) is not added again as "recently funded".
+    const known =
+      capability === "funded"
+        ? new Set(
+            (
+              await db
+                .select({ domain: companies.domain })
+                .from(companies)
+                .innerJoin(opportunities, eq(opportunities.companyId, companies.id))
+                .where(and(eq(companies.workspaceId, workspaceId), isNotNull(companies.domain)))
+            ).map((c) => c.domain!),
+          )
+        : new Set<string>();
 
     for (const provider of providersFor(capability, wanted)) {
       const source = { source: provider.slug, ok: true, found: 0 } as RunSummary["sources"][number];
@@ -109,12 +137,16 @@ export async function runCapability(workspaceId: string, capability: Capability,
 
         for (const item of items) {
           if (stored >= MAX_ITEMS_PER_PROVIDER) break;
+          if (item.companyDomain && known.has(item.companyDomain)) {
+            summary.skipped++;
+            continue;
+          }
           if (!isRelevant(item, capability, config as FreelanceConfig & FundedConfig, targeting, serviceTerms, now)) {
             summary.skipped++;
             continue;
           }
           const score = scoreItem({ item, targeting, serviceTerms, freelance: capability === "freelance" ? (config as FreelanceConfig) : undefined, weights, now });
-          const result = await ingestItem({ workspaceId, runId: run.id, item, score, now });
+          const result = await ingestItem({ workspaceId, runId: run.id, item, score, now, serviceId: bestService(servicesTargeted, score.matchedTerms) });
           stored++;
           if (result.outcome === "created") summary.created++;
           else summary.updated++;

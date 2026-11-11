@@ -1,24 +1,53 @@
 import "server-only";
-import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { db, type Tx } from "@/db";
 import { opportunities, opportunityDiscoveries, opportunityEvidence } from "@/db/schema";
 import { intakeStageId } from "@/server/services/pipeline.service";
 import { changedFields, mergeVerification, suggestedAction, whyNow } from "./describe";
 import type { DiscoveredItem, EngineScore } from "./types";
 
+/**
+ * One company, one opportunity: the job-signal side just gave a company this website, so a
+ * "recently funded" opportunity the engine made for the same website (no company attached) is
+ * superseded by the company's own, which carries hiring evidence and contacts. Only an untouched one
+ * goes: still in the intake stage, with no notes, feedback or list. Returns how many were removed.
+ */
+export async function supersedeFundedOpportunities(tx: Tx | typeof db, workspaceId: string, domain: string): Promise<number> {
+  const intake = await intakeStageId(tx, workspaceId);
+  const removed = await tx
+    .delete(opportunities)
+    .where(
+      and(
+        eq(opportunities.workspaceId, workspaceId),
+        isNull(opportunities.companyId),
+        eq(opportunities.category, "funded_company"),
+        eq(opportunities.buyerProfileUrl, `https://${domain}`),
+        eq(opportunities.stageId, intake),
+        isNull(opportunities.notes),
+        sql`not exists (select 1 from opportunity_feedback f where f.opportunity_id = ${opportunities.id})`,
+        sql`not exists (select 1 from saved_opportunities l where l.opportunity_id = ${opportunities.id})`,
+      ),
+    )
+    .returning({ id: opportunities.id });
+  return removed.length;
+}
+
 export type IngestOutcome = { id: string; outcome: "created" | "updated"; changed: string[] };
 
 /** Builds the opportunity columns an item determines. Sales progress (`status`) is deliberately absent. */
-function columnsFor(item: DiscoveredItem, score: EngineScore, now: Date) {
+function columnsFor(item: DiscoveredItem, score: EngineScore, now: Date, serviceId: string | null) {
   return {
     category: item.category,
+    // Which of the workspace's services the lead fits (shown as "Matches …").
+    serviceId,
     title: item.title.slice(0, 300),
     // Person for intent/freelance posts, the company for a funding event.
     buyerName: item.buyerName ?? item.companyName,
     buyerProfileUrl: item.buyerProfileUrl ?? (item.companyDomain ? `https://${item.companyDomain}` : null),
     country: item.country && /^[A-Z]{2}$/.test(item.country) ? item.country : null,
     sourceUrl: item.url,
-    problem: item.capability === "funded" ? null : item.text.slice(0, 600) || null,
+    // A funded company: what it does (its own one-line description); a request or project: the request.
+    problem: item.capability === "funded" ? item.text.split("\n")[0]?.trim().slice(0, 300) || null : item.text.slice(0, 600) || null,
     whyNow: whyNow(item, now),
     suggestedAction: suggestedAction(item, score),
     budgetMin: item.budget?.min ?? null,
@@ -52,10 +81,12 @@ export async function ingestItem(args: {
   item: DiscoveredItem;
   score: EngineScore;
   now?: Date;
+  /** The workspace's service the item matches best, if any. */
+  serviceId?: string | null;
 }): Promise<IngestOutcome> {
   const { workspaceId, runId, item, score } = args;
   const now = args.now ?? new Date();
-  const cols = columnsFor(item, score, now);
+  const cols = columnsFor(item, score, now, args.serviceId ?? null);
 
   return db.transaction(async (tx) => {
     const find = async () => {

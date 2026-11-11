@@ -1277,6 +1277,7 @@ export const opportunityDiscoveries = pgTable(
       columns: [t.opportunityId, t.workspaceId],
       foreignColumns: [opportunities.id, opportunities.workspaceId],
     }).onDelete("cascade"),
+    // Composite FK uses ON DELETE SET NULL (run_id) — hand-written in migration 0034.
     foreignKey({
       name: "opportunity_discoveries_run_fk",
       columns: [t.runId, t.workspaceId],

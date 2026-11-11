@@ -1,4 +1,5 @@
 import "server-only";
+import { supersedeFundedOpportunities } from "@/server/engine/ingest";
 import { refreshEngineScores } from "@/server/engine/rescore";
 import { intakeStageId } from "@/server/services/pipeline.service";
 import { and, eq, inArray, lt } from "drizzle-orm";
@@ -84,6 +85,9 @@ export async function rescoreCompany(workspaceId: string, companyId: string): Pr
       .values({ workspaceId, companyId, stageId: await intakeStageId(tx, workspaceId), ...scores })
       .onConflictDoUpdate({ target: opportunities.companyId, set: scores })
       .returning({ id: opportunities.id });
+    // One company, one opportunity: this company now has its own (with hiring evidence and its
+    // contacts), so an untouched "recently funded" engine opportunity for its website gives way.
+    if (input.domain) await supersedeFundedOpportunities(tx, workspaceId, input.domain);
 
     await tx.delete(opportunitySignals).where(eq(opportunitySignals.opportunityId, row.id));
     await tx.insert(opportunitySignals).values(
@@ -137,7 +141,7 @@ export async function rescoreQuietly(task: () => Promise<void>): Promise<void> {
   }
 }
 
-async function loadInput(workspaceId: string, companyId: string): Promise<{ engine: EngineInput } | null> {
+async function loadInput(workspaceId: string, companyId: string): Promise<{ engine: EngineInput; domain: string | null } | null> {
   const [company] = await db
     .select({
       name: companies.canonicalName,
@@ -200,6 +204,7 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
   };
 
   return {
+    domain: company.domain,
     engine: {
       company: {
         name: company.name,

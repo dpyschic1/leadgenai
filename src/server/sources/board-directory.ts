@@ -453,8 +453,30 @@ function usPlace(place: string): boolean {
   return !ALL_COUNTRIES.some((code) => code !== "US" && [REGION_NAMES.of(code)!.toLowerCase(), ...(COUNTRY_ALIASES[code] ?? [])].some(names));
 }
 
+/**
+ * The countries a text names by their English name or a common short name ("India Only",
+ * "in the Philippines", "UK-based"), as ISO codes. City names are not used: a town that shares a
+ * name with one abroad ("Reading", "Cambridge") names no country. Pure.
+ */
+export function countriesNamedIn(text: string): string[] {
+  const words = ` ${text.toLowerCase().replace(/[^a-z.]+/g, " ")} `;
+  const named = ALL_COUNTRIES.filter(
+    (code) => !AMBIGUOUS_COUNTRIES.has(code) && [REGION_NAMES.of(code)!.toLowerCase(), ...(COUNTRY_ALIASES[code] ?? [])].some((name) => words.includes(` ${name} `)),
+  );
+  // A US state ("Austin, TX", "Texas") is the US.
+  if (!named.includes("US") && (US_STATE_CODE.test(text) || US_STATE_NAMES.some((state) => words.includes(` ${state} `)))) named.push("US");
+  return named;
+}
+
+/** Country names that are also common words, first names or US places: never read as a country. */
+const AMBIGUOUS_COUNTRIES = new Set(["GE", "JE", "JO", "TD", "TR"]);
+
 /** Short names a place may give a country by. */
-const COUNTRY_ALIASES: Record<string, string[]> = { GB: ["uk", "u.k.", "england", "scotland", "wales"], AE: ["uae"] };
+const COUNTRY_ALIASES: Record<string, string[]> = {
+  GB: ["uk", "u.k.", "england", "scotland", "wales"],
+  AE: ["uae"],
+  US: ["usa", "u.s.", "u.s.a.", "united states"],
+};
 
 /**
  * Whether a job's location fits the workspace's target countries (ISO codes; empty = anywhere).

@@ -1,4 +1,5 @@
 import type { FreelanceConfig, FundedConfig, Targeting } from "@/lib/domain/engine";
+import { countriesNamedIn } from "@/server/sources/board-directory";
 import { matchesCountry } from "./match";
 import type { DiscoveredItem } from "./types";
 
@@ -27,8 +28,20 @@ export function passesFreelanceFilters(item: DiscoveredItem, config: FreelanceCo
   if (config.workMode === "remote" && item.remote === false) return fail("On-site project");
   if (config.workMode === "onsite" && item.remote === true) return fail("Remote project");
   if (item.country && !matchesCountry(targeting, item.country)) return fail("Client outside target countries");
+  if (!item.country && onlyElsewhere(item, targeting)) return fail("The post names only countries outside your targets");
   if (config.cities.length && item.city && !config.cities.some((c) => c.toLowerCase() === item.city!.toLowerCase())) return fail("City not selected");
   return pass;
+}
+
+/**
+ * No country stated, but the post itself names only other countries ("India Only", "recruit
+ * contributors in South Africa"): it is for there. A post naming none stays (most remote posts don't
+ * say). Pure.
+ */
+export function onlyElsewhere(item: Pick<DiscoveredItem, "title" | "text">, targeting: Pick<Targeting, "countries">): boolean {
+  if (targeting.countries.length === 0) return false;
+  const named = countriesNamedIn(`${item.title}\n${item.text}`);
+  return named.length > 0 && !named.some((code) => targeting.countries.includes(code));
 }
 
 export function passesFundedFilters(item: DiscoveredItem, config: FundedConfig, targeting: Targeting): FilterResult {
