@@ -15,11 +15,7 @@ import { COUNTRY_CODES } from "@/lib/countries";
 import {
   CAPABILITIES,
   CAPABILITY_CONFIG_SCHEMAS,
-  DEFAULT_ENGINE_WEIGHTS,
   DEFAULT_FREQUENCY_MINUTES,
-  ENGINE_WEIGHT_KEYS,
-  parseEngineWeights,
-  type EngineWeights,
   nextRunAt,
   parseCapabilityConfig,
   resolveTargeting,
@@ -29,7 +25,6 @@ import {
 } from "@/lib/domain/engine";
 import type { CapabilityUpdateInput } from "@/lib/validation/engine";
 import type { AuthContext } from "@/server/auth/session";
-import { reweighWorkspace } from "@/server/engine/rescore";
 import { AppError } from "@/server/http/errors";
 
 type CapabilityRow = typeof engineCapabilities.$inferSelect;
@@ -83,33 +78,11 @@ export async function getEngine(auth: AuthContext): Promise<EngineState> {
     loadWorkspaceTargeting(auth.workspaceId),
   ]);
   const enabled = settings[0]?.enabled ?? true;
-  const weights = parseEngineWeights(settings[0]?.scoringWeights);
   return {
     enabled,
-    weights,
-    customWeights: ENGINE_WEIGHT_KEYS.some((k) => weights[k] !== DEFAULT_ENGINE_WEIGHTS[k]),
     workspaceTargeting,
     capabilities: CAPABILITIES.map((c) => toState(c, rows.find((r) => r.capability === c), workspaceTargeting, enabled)),
   };
-}
-
-/** Saves the workspace's factor weights (null resets to the spec's defaults) and re-ranks discoveries at once. */
-export async function saveEngineWeights(auth: AuthContext, weights: EngineWeights | null): Promise<EngineState> {
-  await db.transaction(async (tx) => {
-    await tx
-      .insert(engineSettings)
-      .values({ workspaceId: auth.workspaceId, scoringWeights: weights })
-      .onConflictDoUpdate({ target: engineSettings.workspaceId, set: { scoringWeights: weights } });
-    await tx.insert(auditLogs).values({
-      workspaceId: auth.workspaceId,
-      actorId: auth.userId,
-      action: "engine.weights_updated",
-      entityType: "engine_settings",
-      metadata: { weights: weights ?? "defaults" },
-    });
-  });
-  await reweighWorkspace(auth.workspaceId, weights ?? DEFAULT_ENGINE_WEIGHTS);
-  return getEngine(auth);
 }
 
 export async function setEngineEnabled(auth: AuthContext, enabled: boolean): Promise<EngineState> {

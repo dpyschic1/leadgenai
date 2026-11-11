@@ -3,6 +3,7 @@ import { and, desc, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { companies, discoveryRuns, engineCapabilities, engineSettings, opportunities, serviceServiceCategories, services } from "@/db/schema";
 import { categorizeJob } from "@/server/jobs/job-categories";
+import { DEFAULT_ENGINE_WEIGHTS } from "@/lib/domain/engine";
 import {
   DEFAULT_FREQUENCY_MINUTES,
   isDue,
@@ -18,9 +19,9 @@ import { AppError } from "@/server/http/errors";
 import { loadWorkspaceTargeting } from "@/server/services/engine.service";
 import { passesFreelanceFilters, passesFundedFilters } from "./filters";
 import { ingestItem } from "./ingest";
-import { loadEngineWeights } from "./rescore";
 import { matchedTerms, termsOf } from "./match";
 import { providersFor } from "./providers";
+import { discoveredInput, loadScoreContext, scoreColumns, scoreDiscovered } from "./our-score";
 import { scoreItem } from "./score-item";
 import type { DiscoveredItem } from "./types";
 
@@ -109,7 +110,11 @@ export async function runCapability(workspaceId: string, capability: Capability,
     if (serviceTerms.length === 0) throw new Error("No services to match against. Add a service in Services & ICP first.");
 
     const config = parseCapabilityConfig(capability, row?.config);
-    const weights = await loadEngineWeights(workspaceId);
+    // The engine's own reading of each item (intent, matched words) uses its fixed defaults; the
+    // opportunity's score is the workspace scoring profile's, via our-score.ts.
+    const weights = DEFAULT_ENGINE_WEIGHTS;
+    // Scored by the same rules as company opportunities, so the whole list is on one scale.
+    const ourContext = await loadScoreContext(workspaceId);
     const wanted = "providers" in config ? (config as { providers: string[] }).providers : [];
 
     // One company, one opportunity: a company that already has its own opportunity here (found by
@@ -152,7 +157,15 @@ export async function runCapability(workspaceId: string, capability: Capability,
             continue;
           }
           const score = scoreItem({ item, targeting, serviceTerms, freelance: capability === "freelance" ? (config as FreelanceConfig) : undefined, weights, now });
-          const result = await ingestItem({ workspaceId, runId: run.id, item, score, now, serviceId: bestService(servicesTargeted, score.matchedTerms) });
+          const matched = bestService(servicesTargeted, score.matchedTerms);
+          const input = discoveredInput(item, score, servicesTargeted.find((s) => s.id === matched)?.categories ?? serviceCategories, now);
+          const ours = scoreDiscovered(input, ourContext, now);
+          // Nothing the services need: no opportunity, as for a company with no positive signal.
+          if (!ours) {
+            summary.skipped++;
+            continue;
+          }
+          const result = await ingestItem({ workspaceId, runId: run.id, item, score, now, serviceId: matched, ours: scoreColumns(ours, input) });
           stored++;
           if (result.outcome === "created") summary.created++;
           else summary.updated++;

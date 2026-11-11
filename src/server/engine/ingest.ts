@@ -4,6 +4,7 @@ import { db, type Tx } from "@/db";
 import { opportunities, opportunityDiscoveries, opportunityEvidence } from "@/db/schema";
 import { intakeStageId } from "@/server/services/pipeline.service";
 import { changedFields, mergeVerification, suggestedAction, whyNow } from "./describe";
+import type { scoreColumns } from "./our-score";
 import type { DiscoveredItem, EngineScore } from "./types";
 
 /**
@@ -83,10 +84,12 @@ export async function ingestItem(args: {
   now?: Date;
   /** The workspace's service the item matches best, if any. */
   serviceId?: string | null;
+  /** The score by the same rules as company opportunities (`our-score.ts`); replaces the engine's own. */
+  ours?: ReturnType<typeof scoreColumns> | null;
 }): Promise<IngestOutcome> {
   const { workspaceId, runId, item, score } = args;
   const now = args.now ?? new Date();
-  const cols = columnsFor(item, score, now, args.serviceId ?? null);
+  const cols = { ...columnsFor(item, score, now, args.serviceId ?? null), ...(args.ours ?? {}) };
 
   return db.transaction(async (tx) => {
     const find = async () => {

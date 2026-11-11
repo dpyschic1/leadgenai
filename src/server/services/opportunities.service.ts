@@ -359,7 +359,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
     suggestedAction: opportunity.suggestedAction,
     notes: opportunity.notes,
     factors: hasFactors(opportunity.scoreFactors) ? opportunity.scoreFactors : null,
-    engineFactors: opportunity.category ? engineFactorsOf(opportunity.scoreFactors) : null,
+    engineFactors: opportunity.category && !hasFactors(opportunity.scoreFactors) ? engineFactorsOf(opportunity.scoreFactors) : null,
     signals: companySignals
       .filter((s) => roleOf.has(s.id))
       .map((s) => ({ ...s, role: roleOf.get(s.id)! }))

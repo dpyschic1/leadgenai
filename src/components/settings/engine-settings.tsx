@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useEngine, useRunCapability, useSaveEngineWeights, useSetEngineEnabled, useUpdateCapability } from "@/hooks/use-engine";
+import { useEngine, useRunCapability, useSetEngineEnabled, useUpdateCapability } from "@/hooks/use-engine";
 import { usePermission } from "@/hooks/use-permission";
 import { useReferenceData } from "@/hooks/use-reference-data";
 import { useServices } from "@/hooks/use-services";
@@ -17,12 +17,7 @@ import { COUNTRY_CODES, countryName } from "@/lib/countries";
 import {
   CAPABILITY_DESCRIPTIONS,
   CAPABILITY_LABELS,
-  DEFAULT_ENGINE_WEIGHTS,
-  ENGINE_FACTOR_LABELS,
-  ENGINE_WEIGHT_KEYS,
   FRESHNESS_DAYS,
-  totalEngineWeight,
-  type EngineWeights,
   type FreelanceConfig,
   type FundedConfig,
   type TargetingDimension,
@@ -108,54 +103,8 @@ export function EngineSettings() {
             <CapabilityCard key={`${c.capability}:${JSON.stringify(c)}`} state={c} workspace={data.workspaceTargeting} masterEnabled={data.enabled} canEdit={canEdit} />
           ))}
         </div>
-        <WeightsCard key={JSON.stringify(data.weights)} saved={data.weights} custom={data.customWeights} canEdit={canEdit} />
       </div>
     </SettingsSection>
-  );
-}
-
-function WeightsCard({ saved, custom, canEdit }: { saved: EngineWeights; custom: boolean; canEdit: boolean }) {
-  const [weights, setWeights] = useState(saved);
-  const save = useSaveEngineWeights();
-  const total = totalEngineWeight(weights);
-  const changed = ENGINE_WEIGHT_KEYS.some((k) => weights[k] !== saved[k]);
-  const onSave = (next: EngineWeights | null) =>
-    save.mutate(next, { onSuccess: () => toast.success(next ? "Scoring weights saved. Discoveries re-ranked." : "Back to the default weights."), onError: (e) => toast.error(e.message) });
-
-  return (
-    <div className="rounded-lg border p-4">
-      <h3 className="text-sm font-semibold">How discoveries are scored</h3>
-      <p className="text-sm text-muted-foreground">
-        How much each factor counts towards a discovered opportunity&apos;s score. The defaults are the spec&apos;s proposal; they are not final.
-      </p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-3">
-        {ENGINE_WEIGHT_KEYS.map((key) => (
-          <label key={key} className="space-y-1.5 text-sm">
-            <span>{ENGINE_FACTOR_LABELS[key]}</span>
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              disabled={!canEdit}
-              value={weights[key]}
-              onChange={(e) => setWeights({ ...weights, [key]: Math.min(100, Math.max(0, Math.floor(e.target.valueAsNumber || 0))) })}
-            />
-          </label>
-        ))}
-      </div>
-      <p className={total === 100 ? "mt-3 text-sm text-muted-foreground" : "mt-3 text-sm text-destructive"}>Total {total}% {total === 100 ? "" : "(must be 100)"}</p>
-      {canEdit && (
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="ghost" disabled={!custom && !changed ? true : save.isPending} onClick={() => (custom ? onSave(null) : setWeights(DEFAULT_ENGINE_WEIGHTS))}>
-            Reset to defaults
-          </Button>
-          <Button disabled={!changed || total !== 100 || save.isPending} aria-busy={save.isPending} onClick={() => onSave(weights)}>
-            {save.isPending && <Loader2Icon className="animate-spin" />}
-            Save weights
-          </Button>
-        </div>
-      )}
-    </div>
   );
 }
 

@@ -3,6 +3,8 @@ import { isEmployment, readIntent } from "./intent";
 import { matchedTerms, matchesCountry, termsOf } from "./match";
 import { bestService, fitsServiceCategories } from "./runner";
 import { onlyElsewhere } from "./filters";
+import { discoveredInput, needsOf, scoreDiscovered, signalTypeOf } from "./our-score";
+import { DEFAULT_SCORE_WEIGHTS } from "@/lib/validation/scoring";
 import { scoreItem } from "./score-item";
 import { projectBudgetPoints, totalScore, DEFAULT_ENGINE_WEIGHTS } from "./scoring";
 import type { DiscoveredItem } from "./types";
@@ -172,5 +174,60 @@ describe("fitsServiceCategories", () => {
     expect(fitsServiceCategories(project("Edit Foto Estetik Media Sosial", ["Photo Editing"]), software)).toBe(false);
     expect(fitsServiceCategories(project("Beachwear Design & Manufacturing Partner"), software)).toBe(false);
     expect(fitsServiceCategories(project("Recruiter for Engineering Talent"), software)).toBe(false);
+  });
+});
+
+describe("discovered items scored by the company-opportunity rules", () => {
+  const now = new Date("2026-11-11T12:00:00Z");
+  const item = {
+    capability: "freelance" as const,
+    category: "freelance_project" as const,
+    sourceSlug: "freelancer",
+    platform: "Freelancer.com",
+    externalId: "1",
+    url: "https://www.freelancer.com/projects/1",
+    title: "Laravel Developer Needed for Inventory Management",
+    text: "We need a Laravel developer to extend our inventory system.",
+    postedAt: new Date("2026-11-11T10:00:00Z"),
+    buyerName: null,
+    buyerProfileUrl: null,
+    companyName: null,
+    companyDomain: null,
+    country: "US",
+    city: null,
+    industry: null,
+    remote: true,
+    clientType: null,
+    budget: { min: 3000, max: 5000, currency: "USD", usd: 5000 },
+    funding: null,
+    intentHint: null,
+    verification: "verified" as const,
+    metadata: { skills: ["PHP", "Laravel"] },
+  };
+  const engineScore = { total: 0, factors: { serviceFit: 0, intent: 0, icpFit: 0, budget: 0, timing: 0, evidence: 0 }, weights: { serviceFit: 25, intent: 25, icpFit: 20, budget: 15, timing: 10, evidence: 5 }, intentLevel: "high" as const, matchedTerms: [] };
+  const context = {
+    services: [{ id: "s1", name: "Software Engineers", categories: ["software_development", "staff_augmentation"], targetIndustries: [], targetJobFunctions: [], targetCountries: ["US"], companySizeMin: null, companySizeMax: null }],
+    weights: DEFAULT_SCORE_WEIGHTS,
+    labels: { signalType: (s: string) => s, category: (s: string) => s, industry: (s: string) => s, jobFunction: (s: string) => s },
+  };
+
+  it("turns a post into a signal of the shared taxonomy", () => {
+    expect(signalTypeOf(item)).toBe("project_request");
+    expect(signalTypeOf({ ...item, capability: "intent", title: "Looking for an agency to build our MVP" })).toBe("mvp_request");
+    expect(signalTypeOf({ ...item, capability: "funded" })).toBe("funding");
+    expect(needsOf(item, [])).toEqual(expect.arrayContaining(["software_development"]));
+    expect(needsOf({ ...item, title: "Something vague", text: "", metadata: {} }, ["ai_ml"])).toEqual(["ai_ml"]);
+  });
+
+  it("scores it with the same factors and weights as a company opportunity, matching the service by its needs", () => {
+    const input = discoveredInput(item, engineScore, [], now);
+    expect(input.signal).toMatchObject({ intentLevel: "explicit", evidenceLabel: "observed", hasSourceUrl: true });
+    const result = scoreDiscovered(input, context, now)!;
+    expect(result.serviceId).toBe("s1");
+    expect(Object.keys(result.factors).sort()).toEqual(["icpFit", "identity", "intent", "recency", "serviceFit"]);
+    expect(result.opportunityScore).toBeGreaterThan(50);
+    // Older evidence counts less, as for company signals.
+    const later = scoreDiscovered(input, context, new Date("2027-02-01T12:00:00Z"))!;
+    expect(later.opportunityScore).toBeLessThan(result.opportunityScore);
   });
 });

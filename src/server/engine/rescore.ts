@@ -1,8 +1,9 @@
 import "server-only";
-import { and, eq, isNotNull, lt, sql } from "drizzle-orm";
+import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { db } from "@/db";
-import { engineSettings, opportunities } from "@/db/schema";
-import { ENGINE_WEIGHT_KEYS, parseEngineWeights, type EngineWeights } from "@/lib/domain/engine";
+import { loadScoreContext, scoreColumns, scoreDiscovered, type DiscoveredInput, type ScoreContext } from "./our-score";
+import { opportunities } from "@/db/schema";
+import { DEFAULT_ENGINE_WEIGHTS, ENGINE_WEIGHT_KEYS } from "@/lib/domain/engine";
 import { timingPoints, totalScore } from "./scoring";
 
 /**
@@ -15,14 +16,10 @@ import { timingPoints, totalScore } from "./scoring";
 const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 const BATCH = 500;
 
-export async function loadEngineWeights(workspaceId: string): Promise<EngineWeights> {
-  const [row] = await db.select({ w: engineSettings.scoringWeights }).from(engineSettings).where(eq(engineSettings.workspaceId, workspaceId));
-  return parseEngineWeights(row?.w);
-}
-
 /** Recomputes timing and the total for engine opportunities whose score is more than six hours old. */
 export async function refreshEngineScores(workspaceId: string, now = new Date()): Promise<number> {
-  const weights = await loadEngineWeights(workspaceId);
+  // Items still scored by the engine's own factors (before our scoring) keep its default weights.
+  const weights = DEFAULT_ENGINE_WEIGHTS;
   const stale = await db
     .select({ id: opportunities.id, factors: opportunities.scoreFactors, posted: opportunities.sourcePostedAt, discovered: opportunities.discoveredAt })
     .from(opportunities)
@@ -35,8 +32,18 @@ export async function refreshEngineScores(workspaceId: string, now = new Date())
     )
     .limit(BATCH);
 
+  let ourContext: ScoreContext | null = null;
   for (const row of stale) {
     const stored = row.factors as Record<string, unknown>;
+    // Scored by our rules: rerun them (recency changes intent and the total as the item ages).
+    if (stored.input && typeof stored.intent === "object") {
+      ourContext ??= await loadScoreContext(workspaceId);
+      const input = stored.input as DiscoveredInput;
+      const result = scoreDiscovered(input, ourContext, now);
+      if (result) await db.update(opportunities).set({ ...scoreColumns(result, input), scoredAt: now }).where(eq(opportunities.id, row.id));
+      else await db.update(opportunities).set({ scoredAt: now }).where(eq(opportunities.id, row.id));
+      continue;
+    }
     const factors = Object.fromEntries(ENGINE_WEIGHT_KEYS.map((k) => [k, typeof stored[k] === "number" ? (stored[k] as number) : 0])) as Record<(typeof ENGINE_WEIGHT_KEYS)[number], number>;
     factors.timing = timingPoints(row.posted ?? row.discovered, now);
     await db
@@ -45,21 +52,4 @@ export async function refreshEngineScores(workspaceId: string, now = new Date())
       .where(eq(opportunities.id, row.id));
   }
   return stale.length;
-}
-
-/** Applies new weights to every engine opportunity's stored factors at once (no source data is re-read). */
-export async function reweighWorkspace(workspaceId: string, weights: EngineWeights): Promise<void> {
-  const sum = ENGINE_WEIGHT_KEYS.reduce((acc, k) => acc + weights[k], 0);
-  if (sum === 0) return;
-  const weighted = sql.join(
-    ENGINE_WEIGHT_KEYS.map((k) => sql`coalesce((${opportunities.scoreFactors}->>${k})::numeric, 0) * ${weights[k]}`),
-    sql` + `,
-  );
-  await db
-    .update(opportunities)
-    .set({
-      opportunityScore: sql`round((${weighted}) / ${sum})::int`,
-      scoreFactors: sql`${opportunities.scoreFactors} || jsonb_build_object('weights', ${JSON.stringify(weights)}::jsonb)`,
-    })
-    .where(and(eq(opportunities.workspaceId, workspaceId), isNotNull(opportunities.category)));
 }

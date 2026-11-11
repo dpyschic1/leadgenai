@@ -162,28 +162,17 @@ export function parseCapabilityConfig(capability: Capability, raw: unknown): Cap
 }
 
 // ---------------------------------------------------------------------------
-// Scoring weights (spec section 10): rules and AI factors, weights adjustable per workspace.
+// The engine's own reading of an item (intent, matched words). An opportunity's score is the
+// workspace scoring profile's (src/server/engine/our-score.ts), the same as company opportunities.
 // ---------------------------------------------------------------------------
 
 export const ENGINE_WEIGHT_KEYS = ["serviceFit", "intent", "icpFit", "budget", "timing", "evidence"] as const;
 export type EngineWeightKey = (typeof ENGINE_WEIGHT_KEYS)[number];
 export type EngineWeights = Record<EngineWeightKey, number>;
 
-/** The spec's proposed defaults. It marks them provisional, so workspaces may override them. */
+/** Fixed weights for the engine's own reading of an item; not a setting. */
 export const DEFAULT_ENGINE_WEIGHTS: EngineWeights = { serviceFit: 25, intent: 25, icpFit: 20, budget: 15, timing: 10, evidence: 5 };
 
-const weight = z.number().int("Use a whole number").min(0).max(100);
-export const engineWeightsSchema = z
-  .object({ serviceFit: weight, intent: weight, icpFit: weight, budget: weight, timing: weight, evidence: weight })
-  .refine((w) => Object.values(w).reduce((a, b) => a + b, 0) === 100, { message: "Weights must add up to 100" });
-
-export const totalEngineWeight = (w: EngineWeights) => ENGINE_WEIGHT_KEYS.reduce((sum, k) => sum + w[k], 0);
-
-/** Stored weights, falling back to the defaults when absent or malformed. */
-export function parseEngineWeights(raw: unknown): EngineWeights {
-  const parsed = engineWeightsSchema.safeParse(raw);
-  return parsed.success ? parsed.data : DEFAULT_ENGINE_WEIGHTS;
-}
 
 // ---------------------------------------------------------------------------
 // Scheduling

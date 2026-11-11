@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { engineApi } from "@/lib/api/engine";
-import type { Capability, EngineWeights } from "@/lib/domain/engine";
+import type { Capability } from "@/lib/domain/engine";
 import type { CapabilityUpdateInput } from "@/lib/validation/engine";
 import { queryKeys } from "./query-keys";
 
@@ -27,16 +27,7 @@ export function useUpdateCapability() {
   });
 }
 
-export function useSaveEngineWeights() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (weights: EngineWeights | null) => engineApi.saveWeights(weights),
-    onSuccess: (state) => {
-      queryClient.setQueryData(queryKeys.engine, state);
-      return queryClient.invalidateQueries({ queryKey: queryKeys.opportunities });
-    },
-  });
-}
+
 
 export function useRunCapability() {
   const queryClient = useQueryClient();

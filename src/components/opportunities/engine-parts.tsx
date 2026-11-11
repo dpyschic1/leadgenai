@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { BadgeCheckIcon, CircleHelpIcon, ExternalLinkIcon, GlobeIcon, HistoryIcon, MapPinIcon, TagIcon, WalletIcon } from "lucide-react";
-import type { EngineEvidence, EngineOpportunity, OpportunityDetail } from "@/lib/api/types";
+import { BadgeCheckIcon, CircleHelpIcon, ExternalLinkIcon, GlobeIcon, HistoryIcon, MapPinIcon, RadarIcon, TagIcon, WalletIcon } from "lucide-react";
+import { IntentBadge } from "@/components/signals/signal-badges";
+import type { EngineOpportunity, OpportunityDetail } from "@/lib/api/types";
 import { countryName } from "@/lib/countries";
 import { CATEGORY_LABELS, VERIFICATION_LABELS, type VerificationStatus } from "@/lib/domain/engine";
-import { INTENT_LABELS } from "@/lib/domain/signals";
+import { INTENT_LABELS, type IntentLevel } from "@/lib/domain/signals";
 import { cn } from "@/lib/utils";
 
 /** Pieces shared by the feed card and the detail page for opportunities the LeadGen Engine discovered. */
@@ -88,52 +89,6 @@ export function EngineChips({ engine }: { engine: EngineOpportunity }) {
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 
-/** The buyer behind an engine opportunity; identity is shown only when the source gave it. */
-export function BuyerCard({ opportunity }: { opportunity: OpportunityDetail }) {
-  const engine = opportunity.engine;
-  if (!engine) return null;
-  const heading = engine.category === "funded_company" ? "Company" : "Buyer";
-  return (
-    <section className="rounded-xl border bg-card p-5">
-      <h2 className="font-semibold">{heading}</h2>
-      {engine.buyerName ? (
-        <div className="mt-3 text-sm">
-          <p className="font-medium">{engine.buyerName}</p>
-          {engine.buyerProfileUrl && (
-            <a href={engine.buyerProfileUrl} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-primary hover:underline underline-offset-4">
-              {engine.category === "funded_company" ? "Website" : "Profile"}
-              <ExternalLinkIcon className="size-3" />
-            </a>
-          )}
-        </div>
-      ) : (
-        <p className="mt-3 text-sm text-muted-foreground">Not identified. The source doesn&apos;t say who posted this, and we don&apos;t guess.</p>
-      )}
-      {engine.investors.length > 0 && <p className="mt-3 text-sm text-muted-foreground">Investors: {engine.investors.join(", ")}</p>}
-      {opportunity.engineEvidence.some((e) => Array.isArray((e.metadata as { people?: unknown }).people)) && <FilingPeople evidence={opportunity.engineEvidence} />}
-    </section>
-  );
-}
-
-/** Officers named on a Form D filing: the decision-makers the source itself lists. */
-function FilingPeople({ evidence }: { evidence: EngineEvidence[] }) {
-  const people = evidence.flatMap((e) => ((e.metadata as { people?: { name: string; roles: string[] }[] }).people ?? []));
-  if (people.length === 0) return null;
-  return (
-    <div className="mt-4 border-t pt-3">
-      <p className="mb-1.5 text-xs text-muted-foreground">Named in the filing</p>
-      <ul className="space-y-1 text-sm">
-        {people.slice(0, 6).map((p) => (
-          <li key={p.name}>
-            {p.name}
-            {p.roles.length > 0 && <span className="text-muted-foreground">, {p.roles.join(", ")}</span>}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** Engine score factors as bars with their weights (spec section 10). */
 export function EngineScoreBreakdown({ factors, total }: { factors: NonNullable<OpportunityDetail["engineFactors"]>; total: number }) {
   return (
@@ -159,29 +114,90 @@ export function EngineScoreBreakdown({ factors, total }: { factors: NonNullable<
 }
 
 /** What backs the opportunity, with each source's verification status (spec section 8), then its discovery history. */
+/** The timeline marker's colour by intent: the same scale the signal timeline uses. */
+const MARKER: Record<IntentLevel, string> = {
+  explicit: "bg-[var(--signal-deep)] ring-[var(--signal-deep)]/20",
+  high: "bg-primary ring-primary/20",
+  medium: "bg-amber-400 ring-amber-400/25",
+  low: "bg-slate-300 ring-slate-300/40",
+  unknown: "bg-background ring-border border border-slate-300",
+};
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+};
+
+/**
+ * What backs an engine opportunity, laid out like the signal timeline on company opportunities:
+ * a marker by intent, what it is and when, its badges, the source's own words quoted, and where
+ * it was found.
+ */
 export function EngineEvidencePanel({ opportunity }: { opportunity: OpportunityDetail }) {
   const { engineEvidence: evidence, discoveries } = opportunity;
+  const intent = opportunity.engine?.intentLevel ?? "unknown";
+  const kind = opportunity.engine ? CATEGORY_LABELS[opportunity.engine.category] : "Evidence";
   return (
     <>
-      <div className="divide-y">
-        {evidence.length === 0 && <p className="p-5 text-sm text-muted-foreground">No evidence stored.</p>}
-        {evidence.map((e) => (
-          <div key={e.id} className="space-y-1.5 p-5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium">{e.platform}</span>
-              <VerificationBadge status={e.verification} />
-              <span className="text-xs text-muted-foreground">captured {when(e.capturedAt)}</span>
-            </div>
-            {e.snippet && <p className="line-clamp-6 whitespace-pre-line text-sm leading-relaxed text-muted-foreground">{e.snippet}</p>}
-            {e.url && (
-              <Link href={e.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline underline-offset-4">
-                View source
-                <ExternalLinkIcon className="size-3" />
-              </Link>
-            )}
-          </div>
-        ))}
-      </div>
+      {evidence.length === 0 && <p className="p-5 text-sm text-muted-foreground">No evidence stored.</p>}
+      {evidence.length > 0 && (
+        <ol className="relative px-5 py-2">
+          {evidence.map((e, index) => (
+            <li key={e.id} className="relative flex gap-4 py-4">
+              {index < evidence.length - 1 && <span aria-hidden="true" className="absolute top-9 bottom-0 left-[7px] w-px bg-border" />}
+              <span aria-hidden="true" className={cn("relative mt-1.5 size-[15px] shrink-0 rounded-full ring-4", MARKER[intent])} />
+              <div className="min-w-0 flex-1">
+                <p className="flex flex-wrap items-center gap-2 font-medium">
+                  {kind}
+                  <VerificationBadge status={e.verification} />
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {e.platform}
+                  <span aria-hidden="true"> / </span>
+                  captured {when(e.capturedAt)}
+                </p>
+
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                  <IntentBadge level={intent} />
+                  {opportunity.service && (
+                    <span className="rounded-full border border-primary/15 bg-signal-tint px-2 py-0.5 text-xs text-[var(--signal-deep)]">{opportunity.service.name}</span>
+                  )}
+                </div>
+
+                {(e.snippet || e.url) && (
+                  <figure className="mt-3 rounded-lg border-l-4 border-primary/40 bg-canvas px-4 py-3">
+                    {e.snippet && <blockquote className="line-clamp-6 whitespace-pre-line text-sm leading-relaxed text-foreground/85">“{e.snippet}”</blockquote>}
+                    {e.url && (
+                      <figcaption className={cn(e.snippet && "mt-2")}>
+                        <Link
+                          href={e.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex max-w-full items-center gap-1 text-xs font-medium text-primary hover:underline underline-offset-4"
+                        >
+                          <span className="truncate">{hostOf(e.url)}</span>
+                          <ExternalLinkIcon className="size-3 shrink-0" />
+                        </Link>
+                      </figcaption>
+                    )}
+                  </figure>
+                )}
+
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+                  <span>{e.verification === "verified" ? "The source states it directly" : "Not confirmed by the source"}</span>
+                  <span className="inline-flex items-center gap-1">
+                    <RadarIcon className="size-3" />
+                    Found on {e.platform}
+                  </span>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
       {discoveries.length > 0 && (
         <div className="border-t p-5">
           <p className="mb-2 flex items-center gap-1.5 text-sm font-medium">

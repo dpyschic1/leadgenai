@@ -24,7 +24,7 @@ import { SOURCE_LABELS } from "@/lib/domain/sources";
 import { EDITOR_ROLES } from "@/lib/permissions";
 import { opportunityName } from "@/lib/opportunity-display";
 import { cn } from "@/lib/utils";
-import { BuyerCard, CategoryBadge, EngineEvidencePanel, EngineScoreBreakdown, VerificationBadge, moneyLine } from "./engine-parts";
+import { EngineEvidencePanel, EngineScoreBreakdown } from "./engine-parts";
 import { FeedbackPanel } from "./feedback-panel";
 import { ScoreBreakdown } from "./score-breakdown";
 import { ScoreRing } from "./score-ring";
@@ -79,7 +79,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
         <ScoreRing score={opportunity.score} size="lg" />
         <div className="min-w-0 flex-1">
           <p className="text-sm text-muted-foreground">
-            {opportunity.engine ? [opportunity.engine.platform, opportunity.engine ? moneyLine(opportunity.engine) : null].filter(Boolean).join(" · ") : names.opportunityType(opportunity.type)}
+            {names.opportunityType(opportunity.type)}
           </p>
           <h1 className="truncate text-2xl font-semibold">{opportunityName(opportunity)}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -91,8 +91,6 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
               <span className="text-xs text-muted-foreground">No matching service</span>
             )}
             {opportunity.urgency !== "unknown" && <UrgencyBadge level={opportunity.urgency} />}
-            {opportunity.engine && <CategoryBadge category={opportunity.engine.category} />}
-            {opportunity.engine && <VerificationBadge status={opportunity.engine.verification} />}
           </div>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -126,14 +124,8 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
         <div className="min-w-0 space-y-6">
           <Panel title="Why it's an opportunity">
             <div className="space-y-4 p-5">
-              {opportunity.problem && <p className="leading-relaxed">{opportunity.problem}</p>}
-              {opportunity.engine && opportunity.engine.whyNow.length > 0 && (
-                <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-                  {opportunity.engine.whyNow.map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
-              )}
+              {/* One sentence from the lead signal, for every opportunity; the full post is under Evidence. */}
+              {opportunity.problem && <p className="line-clamp-3 leading-relaxed">{opportunity.problem}</p>}
               {opportunity.suggestedAction && (
                 <div className="flex gap-3 rounded-lg border border-primary/20 bg-signal-tint/60 p-4">
                   <LightbulbIcon className="mt-0.5 size-4 shrink-0 text-primary" />
@@ -175,7 +167,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
         </div>
 
         <aside className="space-y-6">
-          {opportunity.company ? <ContactCard opportunity={opportunity} /> : <BuyerCard opportunity={opportunity} />}
+          {opportunity.company ? <ContactCard opportunity={opportunity} /> : <DiscoveredContactCard opportunity={opportunity} />}
           <FeedbackPanel opportunity={opportunity} canEdit={canEdit} />
           <NotesCard key={opportunity.notes ?? ""} opportunity={opportunity} canEdit={canEdit} />
         </aside>
@@ -233,6 +225,71 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
         </div>
       )}
       {opportunity.type === "rfp" && <TenderNote tender={opportunity.tender} />}
+    </section>
+  );
+}
+
+/**
+ * The "Suggested contact" card for a discovered opportunity (no company record): the buyer the
+ * source names, with their profile or website, and the people a filing names. Same card, same layout
+ * as a company opportunity's; nothing is guessed when the source names no one.
+ */
+function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
+  const engine = opportunity.engine;
+  const named = opportunity.engineEvidence.flatMap((e) => ((e.metadata as { people?: { name: string; roles: string[] }[] }).people ?? []));
+  const funded = engine?.category === "funded_company";
+  return (
+    <section className="rounded-xl border bg-card p-5">
+      <h2 className="font-semibold">Suggested contact</h2>
+      {engine?.buyerName ? (
+        <div className="mt-4">
+          <div className="flex items-center gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-foreground text-background">
+              <UserRoundIcon className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate font-medium">{engine.buyerName}</p>
+              <p className="truncate text-sm text-muted-foreground">{funded ? "The company" : "Posted this request"}</p>
+            </div>
+          </div>
+          {engine.buyerProfileUrl && (
+            <div className="mt-2 space-y-0.5">
+              <ContactLink
+                href={engine.buyerProfileUrl}
+                label={engine.buyerProfileUrl.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
+                icon={funded ? GlobeIcon : LinkIcon}
+                external
+              />
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm text-muted-foreground">No one identified yet. The source doesn&apos;t say who posted this, and we don&apos;t guess.</p>
+      )}
+      {named.length > 0 && (
+        <div className="mt-4 border-t pt-4">
+          <h3 className="text-sm font-medium">Named in the filing</h3>
+          <ul className="mt-3 space-y-3">
+            {named.slice(0, 6).map((p) => (
+              <li key={p.name} className="flex items-center gap-3">
+                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+                  <UserRoundIcon className="size-3.5" />
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{p.name}</p>
+                  <p className="truncate text-sm text-muted-foreground">{p.roles.join(", ") || "Title unknown"}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {engine && engine.investors.length > 0 && (
+        <div className="mt-4 border-t pt-3">
+          <p className="mb-1 text-xs text-muted-foreground">Investors</p>
+          <p className="text-sm">{engine.investors.join(", ")}</p>
+        </div>
+      )}
     </section>
   );
 }

@@ -440,10 +440,6 @@ export type CapabilityState = {
 
 export type EngineState = {
   enabled: boolean;
-  /** Factor weights for discovered opportunities (spec section 10): the workspace's own, or the defaults. */
-  weights: import("@/lib/domain/engine").EngineWeights;
-  /** True when the weights differ from the spec's defaults. */
-  customWeights: boolean;
   /** Targeting derived from Services & ICP: the default every capability inherits. */
   workspaceTargeting: import("@/lib/domain/engine").Targeting;
   capabilities: CapabilityState[];
