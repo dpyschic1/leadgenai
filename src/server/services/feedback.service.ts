@@ -14,7 +14,8 @@ import { AppError } from "@/server/http/errors";
  */
 
 export type FeedbackChange = {
-  companyId: string;
+  /** Null for an opportunity with no identified company (nothing to re-score). */
+  companyId: string | null;
   /** True when the change affects matching, so the company should be re-scored. */
   correctsMatch: boolean;
 };
@@ -73,6 +74,9 @@ export async function giveFeedback(auth: AuthContext, opportunityId: string, inp
       .limit(1);
     if (!opportunity) throw new AppError("NOT_FOUND", "Opportunity not found.");
 
+    if (input.verdict === "wrong_company" && !opportunity.companyId) {
+      throw invalid("This opportunity has no identified company to flag.");
+    }
     if (input.verdict === "wrong_person" && !opportunity.personId) {
       throw invalid("There's no suggested contact to flag. Add people on the company page.");
     }
@@ -118,7 +122,7 @@ export async function giveFeedback(auth: AuthContext, opportunityId: string, inp
       entityId: opportunityId,
       metadata: { feedbackId: saved.id, verdict: input.verdict, personId: values.personId, serviceId: values.serviceId },
     });
-    return { companyId: opportunity.companyId, correctsMatch: corrects(input.verdict) };
+    return { companyId: opportunity.companyId, correctsMatch: opportunity.companyId !== null && corrects(input.verdict) };
   });
 }
 

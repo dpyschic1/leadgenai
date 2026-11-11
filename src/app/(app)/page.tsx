@@ -1,4 +1,5 @@
 import { DashboardGreeting } from "@/components/dashboard/dashboard-greeting";
+import { PipelineOverview } from "@/components/dashboard/pipeline-overview";
 import { ScoreExplainer } from "@/components/dashboard/score-explainer";
 import { SetupSteps } from "@/components/dashboard/setup-steps";
 import { TopOpportunities } from "@/components/dashboard/top-opportunities";
@@ -12,6 +13,7 @@ export default function DashboardPage() {
         <ScoreExplainer />
       </div>
       <TopOpportunities />
+      <PipelineOverview />
     </div>
   );
 }

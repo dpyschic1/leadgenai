@@ -13,6 +13,8 @@ const LIST_LABELS: Record<ListFilterKey, string> = {
   urgency: "Urgency",
   industries: "Industry",
   countries: "Country",
+  sources: "Source",
+  intents: "Intent",
 };
 
 type Chip = { key: string; label: string; remove: (filters: OpportunityFilters) => OpportunityFilters };
@@ -71,7 +73,7 @@ export function ActiveFilters({
           </li>
         ))}
       </ul>
-      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => onChange({ ...EMPTY_FILTERS, q: filters.q })}>
+      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => onChange({ ...EMPTY_FILTERS, q: filters.q, categories: filters.categories })}>
         Clear all
       </Button>
     </div>

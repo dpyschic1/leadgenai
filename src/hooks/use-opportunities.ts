@@ -48,7 +48,7 @@ function refreshAfterFeedback(queryClient: QueryClient, id: string, opportunity:
   return Promise.all([
     // Feeds and lists show feedback counts and the (possibly re-matched) contact and service.
     queryClient.invalidateQueries({ queryKey: queryKeys.opportunities, predicate: (q) => q.queryKey[1] !== "detail" }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.company(opportunity.company.id) }),
+    ...(opportunity.company ? [queryClient.invalidateQueries({ queryKey: queryKeys.company(opportunity.company.id) })] : []),
   ]);
 }
 

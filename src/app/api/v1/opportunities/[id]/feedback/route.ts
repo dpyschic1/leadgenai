@@ -14,7 +14,7 @@ export const POST = authedRoute<Context>(
     const id = uuidParam((await context.params).id, "Opportunity");
     const input = await parseJsonBody(request, feedbackSchema);
     const change = await giveFeedback(auth, id, input);
-    if (change.correctsMatch) await rescoreAfterCompanyChange(auth.workspaceId, change.companyId);
+    if (change.correctsMatch && change.companyId) await rescoreAfterCompanyChange(auth.workspaceId, change.companyId);
     return Response.json(await getOpportunity(auth, id));
   },
   { roles: EDITOR_ROLES },

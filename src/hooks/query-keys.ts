@@ -12,6 +12,8 @@ export const queryKeys = {
   services: ["services"] as const,
   servicePage: (page: Pagination) => ["services", page] as const,
   scoringProfile: ["scoring-profile"] as const,
+  engine: ["engine"] as const,
+  pipeline: ["pipeline"] as const,
   /** Prefix of every companies-list query, whatever the search. */
   companyLists: ["companies"] as const,
   companies: (search: string, page: Pagination) => ["companies", { search, ...page }] as const,

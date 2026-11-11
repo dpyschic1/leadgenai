@@ -61,7 +61,20 @@ export function FilterPanel({
                 emptyText="No industry found."
               />
             </Group>
-            <Group label="Headquarters country">
+            <Group label="Source">
+              <MultiCombobox
+                options={options.sources}
+                value={filters.sources}
+                onChange={setList("sources")}
+                placeholder="Any source"
+                searchPlaceholder="Search sources"
+                emptyText="No source found."
+              />
+            </Group>
+            <Group label="Buying intent">
+              <ChipSelect options={options.intents} value={filters.intents} onChange={setList("intents")} />
+            </Group>
+            <Group label="Country (headquarters or stated)">
               <MultiCombobox
                 options={options.countries}
                 value={filters.countries}
@@ -82,7 +95,7 @@ export function FilterPanel({
                   onChange={(minScore) => onChange({ ...filters, minScore })}
                 />
               </Group>
-              <Group label="Latest signal">
+              <Group label="Latest signal or discovery">
                 <NumberChoice
                   label="Latest signal within"
                   value={filters.withinDays}
@@ -130,7 +143,7 @@ export function FilterPanel({
             variant="ghost"
             size="sm"
             disabled={count === 0}
-            onClick={() => onChange({ ...EMPTY_FILTERS, q: filters.q })}
+            onClick={() => onChange({ ...EMPTY_FILTERS, q: filters.q, categories: filters.categories })}
           >
             Clear filters
           </Button>

@@ -14,14 +14,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useOpportunity, useUpdateOpportunity } from "@/hooks/use-opportunities";
+import { usePipeline } from "@/hooks/use-pipeline";
 import { usePermission } from "@/hooks/use-permission";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import { ApiError } from "@/lib/api/client";
 import type { CompanyContact, OpportunityDetail } from "@/lib/api/types";
-import { OPPORTUNITY_STATUSES, STATUS_LABELS, type OpportunityStatus } from "@/lib/domain/opportunities";
 import { SENIORITY_LABELS } from "@/lib/domain/people";
 import { SOURCE_LABELS } from "@/lib/domain/sources";
 import { EDITOR_ROLES } from "@/lib/permissions";
+import { opportunityName } from "@/lib/opportunity-display";
+import { BuyerCard, CategoryBadge, EngineEvidencePanel, EngineScoreBreakdown, VerificationBadge, moneyLine } from "./engine-parts";
 import { FeedbackPanel } from "./feedback-panel";
 import { ScoreBreakdown } from "./score-breakdown";
 import { ScoreRing } from "./score-ring";
@@ -53,14 +55,17 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
   const update = useUpdateOpportunity(opportunity.id);
   const roles = new Map(opportunity.signals.map((s) => [s.id, s.role]));
 
-  const changeStatus = (status: OpportunityStatus) =>
+  const { data: stages } = usePipeline();
+  const moveTo = (stageId: string) =>
     update.mutate(
-      { status },
+      { stageId },
       {
-        onSuccess: () => toast.success(`Marked as ${STATUS_LABELS[status].toLowerCase()}.`),
+        onSuccess: () => toast.success(`Moved to ${stages?.find((s) => s.id === stageId)?.name ?? "the new stage"}.`),
         onError: (e) => toast.error(e.message),
       },
     );
+  const setArchived = (archived: boolean) =>
+    update.mutate({ archived }, { onSuccess: () => toast.success(archived ? "Archived." : "Restored."), onError: (e) => toast.error(e.message) });
 
   return (
     <div className="space-y-6">
@@ -72,8 +77,10 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
       <header className="flex flex-col gap-5 rounded-2xl border bg-card p-6 sm:flex-row sm:items-center">
         <ScoreRing score={opportunity.score} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-muted-foreground">{names.opportunityType(opportunity.type)}</p>
-          <h1 className="truncate text-2xl font-semibold">{opportunity.company.name}</h1>
+          <p className="text-sm text-muted-foreground">
+            {opportunity.engine ? [opportunity.engine.platform, opportunity.engine ? moneyLine(opportunity.engine) : null].filter(Boolean).join(" · ") : names.opportunityType(opportunity.type)}
+          </p>
+          <h1 className="truncate text-2xl font-semibold">{opportunityName(opportunity)}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
             {opportunity.service ? (
               <span className="rounded-full border border-primary/15 bg-signal-tint px-2.5 py-0.5 text-xs font-medium text-[var(--signal-deep)]">
@@ -83,34 +90,43 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
               <span className="text-xs text-muted-foreground">No matching service</span>
             )}
             {opportunity.urgency !== "unknown" && <UrgencyBadge level={opportunity.urgency} />}
-            <Link
-              href={`/companies/${opportunity.company.id}`}
-              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline underline-offset-4"
-            >
-              <Building2Icon className="size-3.5" />
-              View company
-            </Link>
+            {opportunity.engine && <CategoryBadge category={opportunity.engine.category} />}
+            {opportunity.engine && <VerificationBadge status={opportunity.engine.verification} />}
+            {opportunity.company && (
+              <Link
+                href={`/companies/${opportunity.company.id}`}
+                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline underline-offset-4"
+              >
+                <Building2Icon className="size-3.5" />
+                View company
+              </Link>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           {canEdit && <SaveToListMenu opportunity={opportunity} />}
           <div className="w-full sm:w-52">
-            <label htmlFor="status" className="mb-1.5 block text-xs text-muted-foreground">
-              Status
+            <label htmlFor="stage" className="mb-1.5 block text-xs text-muted-foreground">
+              Stage {opportunity.archived && "(archived)"}
             </label>
-            <Select value={opportunity.status} onValueChange={(value) => changeStatus(value as OpportunityStatus)} disabled={!canEdit || update.isPending}>
-              <SelectTrigger id="status" className="h-10! w-full">
-                <SelectValue />
+            <Select value={opportunity.stage.id} onValueChange={moveTo} disabled={!canEdit || update.isPending}>
+              <SelectTrigger id="stage" className="h-10! w-full">
+                <SelectValue>{opportunity.stage.name}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {OPPORTUNITY_STATUSES.map((status) => (
-                  <SelectItem key={status} value={status}>
-                    {STATUS_LABELS[status]}
+                {(stages ?? [{ id: opportunity.stage.id, name: opportunity.stage.name }]).map((stage) => (
+                  <SelectItem key={stage.id} value={stage.id}>
+                    {stage.name}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+          {canEdit && (
+            <Button variant="outline" className="h-10" disabled={update.isPending} onClick={() => setArchived(!opportunity.archived)}>
+              {opportunity.archived ? "Restore" : "Archive"}
+            </Button>
+          )}
         </div>
       </header>
 
@@ -119,6 +135,13 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
           <Panel title="Why it's an opportunity">
             <div className="space-y-4 p-5">
               {opportunity.problem && <p className="leading-relaxed">{opportunity.problem}</p>}
+              {opportunity.engine && opportunity.engine.whyNow.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                  {opportunity.engine.whyNow.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              )}
               {opportunity.suggestedAction && (
                 <div className="flex gap-3 rounded-lg border border-primary/20 bg-signal-tint/60 p-4">
                   <LightbulbIcon className="mt-0.5 size-4 shrink-0 text-primary" />
@@ -133,7 +156,9 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
 
           <Panel title="How the score is built" description="A priority for who to look at first, not a chance of winning.">
             <div className="p-5">
-              {opportunity.factors && opportunity.score !== null ? (
+              {opportunity.engineFactors && opportunity.score !== null ? (
+                <EngineScoreBreakdown factors={opportunity.engineFactors} total={opportunity.score} />
+              ) : opportunity.factors && opportunity.score !== null ? (
                 <ScoreBreakdown factors={opportunity.factors} total={opportunity.score} />
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -143,8 +168,13 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
             </div>
           </Panel>
 
-          <Panel title="Evidence" description="The signals behind this opportunity, strongest first.">
-            {opportunity.signals.length > 0 ? (
+          <Panel
+            title="Evidence"
+            description={opportunity.engine ? "Where this came from, and how well it is confirmed." : "The signals behind this opportunity, strongest first."}
+          >
+            {opportunity.engine ? (
+              <EngineEvidencePanel opportunity={opportunity} />
+            ) : opportunity.signals.length > 0 ? (
               <SignalTimeline signals={opportunity.signals} people={opportunity.contactDetails ? [opportunity.contactDetails] : []} canEdit={false} onEdit={() => {}} roles={roles} />
             ) : (
               <p className="p-5 text-sm text-muted-foreground">No signals linked.</p>
@@ -153,7 +183,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
         </div>
 
         <aside className="space-y-6">
-          <ContactCard opportunity={opportunity} />
+          {opportunity.company ? <ContactCard opportunity={opportunity} /> : <BuyerCard opportunity={opportunity} />}
           <FeedbackPanel opportunity={opportunity} canEdit={canEdit} />
           <NotesCard key={opportunity.notes ?? ""} opportunity={opportunity} canEdit={canEdit} />
         </aside>
@@ -177,6 +207,7 @@ function ContactLink({ href, label, icon: Icon, external }: { href: string; labe
 
 function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
   const person = opportunity.contactDetails;
+  const company = opportunity.company;
   return (
     <section className="rounded-xl border bg-card p-5">
       <h2 className="font-semibold">Suggested contact</h2>
@@ -215,16 +246,18 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
       ) : (
         <p className="mt-2 text-sm text-muted-foreground">
           No one identified yet.{" "}
-          <Link href={`/companies/${opportunity.company.id}`} className="font-medium text-primary hover:underline underline-offset-4">
-            Add people at {opportunity.company.name}
-          </Link>
+          {company && (
+            <Link href={`/companies/${company.id}`} className="font-medium text-primary hover:underline underline-offset-4">
+              Add people at {company.name}
+            </Link>
+          )}
         </p>
       )}
       {opportunity.companyContacts.length > 0 && <CompanyContacts contacts={opportunity.companyContacts} />}
-      {opportunity.company.domain && (
+      {company?.domain && (
         <div className="mt-4 border-t pt-3">
           <p className="mb-1 text-xs text-muted-foreground">Website</p>
-          <ContactLink href={`https://${opportunity.company.domain}`} label={opportunity.company.domain} icon={GlobeIcon} external />
+          <ContactLink href={`https://${company.domain}`} label={company.domain} icon={GlobeIcon} external />
         </div>
       )}
       {opportunity.type === "rfp" && <TenderNote tender={opportunity.tender} />}

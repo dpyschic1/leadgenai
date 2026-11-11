@@ -7,6 +7,7 @@ import { collectFromArchive, validateDueBoards } from "@/server/sources/board-di
 import { HANDLERS, jobContext } from "./handlers";
 import { detectYcBoards } from "@/server/sources/yc";
 import { analyzeSharedJobs, categorizeBoardJobs } from "./shared-jobs";
+import { runDueCapabilities } from "@/server/engine/runner";
 import { claimNext, enqueue, markDone, markFailed, postpone, type JobRow } from "./queue";
 
 /**
@@ -95,6 +96,15 @@ export async function runTick({ workspaceId, budgetMs = DEFAULT_BUDGET_MS }: { w
   await queueDailyChecks(workspaceId);
   // Shared work first (archive reading, board checks), within a slice of the budget.
   await runSharedStep(startedAt + budgetMs * SHARED_SHARE);
+  // LeadGen Engine capabilities that are due (their own schedules). Not on a single workspace's quick
+  // tick ("Run now", a saved service), which must stay fast; the scheduler's tick covers everyone.
+  if (!workspaceId) {
+    try {
+      await runDueCapabilities(startedAt + budgetMs * 0.6);
+    } catch (error) {
+      console.error("[engine] due capabilities failed", error);
+    }
+  }
 
   while (Date.now() - startedAt < budgetMs) {
     const job = await claimNext(workspaceId);

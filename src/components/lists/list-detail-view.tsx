@@ -17,6 +17,7 @@ import { ApiError } from "@/lib/api/client";
 import type { OpportunitySummary, SavedListDetail } from "@/lib/api/types";
 import { EDITOR_ROLES } from "@/lib/permissions";
 import { ListNameDialog } from "./list-name-dialog";
+import { opportunityName } from "@/lib/opportunity-display";
 
 export function ListDetailView() {
   const { id } = useParams<{ id: string }>();
@@ -136,14 +137,14 @@ function RemoveFromListButton({
       variant="ghost"
       size="icon"
       className="size-8 text-muted-foreground hover:text-destructive"
-      aria-label={`Remove ${opportunity.company.name} from ${listName}`}
+      aria-label={`Remove ${opportunityName(opportunity)} from ${listName}`}
       title="Remove from list"
       disabled={toggle.isPending}
       onClick={() =>
         toggle.mutate(
           { listId, opportunityId: opportunity.id, saved: false },
           {
-            onSuccess: () => toast.success(`Removed ${opportunity.company.name} from ${listName}.`),
+            onSuccess: () => toast.success(`Removed ${opportunityName(opportunity)} from ${listName}.`),
             onError: (error) => toast.error(error.message),
           },
         )

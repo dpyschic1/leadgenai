@@ -17,9 +17,10 @@ import type { OpportunitySummary } from "@/lib/api/types";
 import { OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 import type { LeadTab } from "@/lib/domain/opportunities";
 import { cn } from "@/lib/utils";
+import { opportunityName } from "@/lib/opportunity-display";
 
 const TABS: { tab: LeadTab; label: string; hint: string }[] = [
-  { tab: "all", label: "All leads", hint: "Every lead still being worked: new or in progress." },
+  { tab: "all", label: "All leads", hint: "Every lead still being worked: companies, buyers and projects, new or in progress." },
   { tab: "person", label: "Named contact", hint: "A named person with their own phone or email: call or write to them directly." },
   { tab: "company", label: "Company line", hint: "No named person reachable yet, but the company's own phone or email works as a way in." },
   { tab: "none", label: "No contact yet", hint: "Nothing to call or write to yet. Open the lead to research it, or wait for its website to be read." },
@@ -128,11 +129,11 @@ function LeadRow({ lead }: { lead: OpportunitySummary }) {
   return (
     <li className={cn("relative grid items-center gap-4 px-4 py-3 text-sm transition-colors hover:bg-accent/60", COLUMNS)}>
       <span className="flex min-w-0 items-center gap-3">
-        <CompanyAvatar name={lead.company.name} />
+        <CompanyAvatar name={opportunityName(lead)} />
         <span className="min-w-0">
           {/* The whole row opens the lead; the contact links sit above this link. */}
           <Link href={`/opportunities/${lead.id}`} className="block truncate font-medium outline-none after:absolute after:inset-0 focus-visible:underline">
-            {lead.company.name}
+            {opportunityName(lead)}
           </Link>
           <span className="block truncate text-xs text-muted-foreground">{lead.service?.name ?? "No service matched"}</span>
         </span>
@@ -173,7 +174,7 @@ function LeadRow({ lead }: { lead: OpportunitySummary }) {
       <LeadLinks lead={lead} />
 
       <span>
-        <StatusBadge status={lead.status} />
+        <StatusBadge stage={lead.stage} archived={lead.archived} />
       </span>
       <span className="flex justify-end">
         <ScoreRing score={lead.score} size="sm" />
@@ -188,8 +189,9 @@ function LeadRow({ lead }: { lead: OpportunitySummary }) {
  * tender, register entry or news item), whose summary shows on hover.
  */
 function LeadLinks({ lead }: { lead: OpportunitySummary }) {
-  const domain = lead.company.domain;
-  const evidence = lead.evidence;
+  const domain = lead.company?.domain ?? null;
+  // A discovered post, project or filing links to its source; a company lead to its signal's page.
+  const evidence = lead.evidence ?? (lead.engine?.sourceUrl ? { url: lead.engine.sourceUrl, summary: lead.engine.title } : null);
   if (!domain && !evidence) return <span className="text-muted-foreground">—</span>;
   return (
     <span className="relative z-10 flex min-w-0 flex-col gap-0.5">
@@ -213,7 +215,7 @@ function LeadLinks({ lead }: { lead: OpportunitySummary }) {
           className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-primary hover:underline underline-offset-4"
         >
           <RadioTowerIcon className="size-3.5 shrink-0" />
-          <span className="truncate">Signal source · {hostOf(evidence.url)}</span>
+          <span className="truncate">{lead.engine ? `${lead.engine.platform ?? "Source"} · ` : "Signal source · "}{hostOf(evidence.url)}</span>
         </a>
       )}
     </span>

@@ -1,4 +1,5 @@
 import "server-only";
+import { ensureDefaultStages } from "./pipeline.service";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
@@ -23,6 +24,7 @@ export async function registerOwner(input: RegisterInput): Promise<Me> {
         .insert(workspaces)
         .values({ name: input.workspaceName })
         .returning();
+      await ensureDefaultStages(tx, workspace.id);
       const [member] = await tx
         .insert(workspaceMembers)
         .values({ workspaceId: workspace.id, userId: user.id, role: "owner", status: "active" })
