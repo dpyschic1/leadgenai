@@ -15,6 +15,7 @@ const LIST_LABELS: Record<ListFilterKey, string> = {
   countries: "Country",
   sources: "Source",
   intents: "Intent",
+  needs: "Hiring for",
 };
 
 type Chip = { key: string; label: string; remove: (filters: OpportunityFilters) => OpportunityFilters };
@@ -46,6 +47,14 @@ export function ActiveFilters({
       key: "withinDays",
       label: filters.withinDays === 1 ? "Signal today" : `Signal in last ${filters.withinDays} days`,
       remove: (f) => ({ ...f, withinDays: null }),
+    });
+  }
+
+  if (filters.foundWithinDays !== null) {
+    chips.push({
+      key: "foundWithinDays",
+      label: filters.foundWithinDays === 7 ? "New this week" : `Found in last ${filters.foundWithinDays} days`,
+      remove: (f) => ({ ...f, foundWithinDays: null }),
     });
   }
 

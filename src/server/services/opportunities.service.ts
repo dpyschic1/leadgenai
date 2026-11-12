@@ -17,8 +17,10 @@ import {
   osmPlaces,
   people,
   pipelineStages,
+  lists,
   savedOpportunities,
   signalEvidence,
+  signalServiceCategories,
   services,
   signals,
   signalTypes,
@@ -29,7 +31,15 @@ import type { CompanyContact, FeedbackVote, LeadList, OpportunityDetail, Opportu
 import { ENGINE_FACTOR_LABELS } from "@/lib/domain/engine";
 import { LEAD_TABS, STATUS_GROUP_KEYS, type ContactReach, type LeadTab, type StatusGroup } from "@/lib/domain/opportunities";
 import type { SourceSlug } from "@/lib/domain/sources";
-import { EMPTY_FILTERS, type LeadListQuery, type OpportunityFilters, type OpportunityListQuery, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import {
+  EMPTY_FILTERS,
+  type BulkOpportunitiesValues,
+  type LeadListQuery,
+  type OpportunityFilters,
+  type OpportunityListQuery,
+  type OpportunitySort,
+  type UpdateOpportunityValues,
+} from "@/lib/validation/opportunities";
 import { offsetOf } from "@/lib/validation/pagination";
 import type { ScoreFactor } from "@/lib/validation/scoring";
 import type { AuthContext } from "@/server/auth/session";
@@ -187,10 +197,10 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
   await refreshStaleScores(auth.workspaceId);
   const { page, pageSize } = query;
 
-  const [rows, countRows] = await Promise.all([
+  const [rows, countRows, [fresh]] = await Promise.all([
     summaryQuery()
       .where(feedFilter(auth.workspaceId, query.group, query))
-      .orderBy(...priorityOrder())
+      .orderBy(...feedOrder(query.sort))
       .limit(pageSize)
       .offset(offsetOf({ page, pageSize })),
     // Tab counts follow the same filters, so each tab says how many it would show.
@@ -200,12 +210,39 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
       .leftJoin(companies, eq(companies.id, opportunities.companyId))
       .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
       .where(matchesFilters(auth.workspaceId, query)),
+    // "New this week" on the selected tab, with every other filter applied (whether or not it's switched on).
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(opportunities)
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .where(and(feedFilter(auth.workspaceId, query.group, { ...query, foundWithinDays: NEW_DAYS }))),
   ]);
 
   const counts = countRows[0] as Record<StatusGroup, number>;
 
   // The tab counts use the same filters, so the selected tab's count is this list's total.
-  return { items: rows.map(toSummary), counts, total: counts[query.group], page, pageSize };
+  return { items: rows.map(toSummary), counts, newThisWeek: fresh?.n ?? 0, total: counts[query.group], page, pageSize };
+}
+
+/** What "new" means in the feed: found in the last 7 days. */
+export const NEW_DAYS = 7;
+
+/** Open supporting signals: how many roles or reasons back the opportunity. */
+const supportingSignals = sql`(select count(*) from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`;
+
+/** Feed order for each sort; every order ends in the priority order, so ties and pages stay stable. */
+export function feedOrder(sort: OpportunitySort = "best") {
+  switch (sort) {
+    case "newest":
+      return [desc(opportunities.createdAt), ...priorityOrder()] as const;
+    case "latest":
+      return [sql`coalesce(${opportunities.latestSignalAt}, ${opportunities.sourcePostedAt}, ${opportunities.discoveredAt}) desc nulls last`, ...priorityOrder()] as const;
+    case "roles":
+      return [sql`${supportingSignals} desc`, ...priorityOrder()] as const;
+    default:
+      return priorityOrder();
+  }
 }
 
 /**
@@ -314,6 +351,21 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
       // Latest signal for company opportunities; the discovery date for engine ones.
       : gte(sql`coalesce(${opportunities.latestSignalAt}, ${opportunities.discoveredAt})`, sql`now() - make_interval(days => ${filters.withinDays})`),
     filters.contact === null ? undefined : contactReach(filters.contact),
+    // Hiring for / needs: a supporting signal points to one of these services, or (for a discovered
+    // project, post or startup) the item's own needs do.
+    any(
+      filters.needs,
+      (slugs) => or(
+        sql`exists (
+          select 1 from ${opportunitySignals}
+          join ${signalServiceCategories} on ${signalServiceCategories.signalId} = ${opportunitySignals.signalId}
+          where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+            and ${inArray(signalServiceCategories.categorySlug, slugs)}
+        )`,
+        sql`(${opportunities.scoreFactors} -> 'input' -> 'signal' -> 'serviceCategories') ?| ${sql`array[${sql.join(slugs.map((s) => sql`${s}`), sql`, `)}]::text[]`}`,
+      ),
+    ),
+    filters.foundWithinDays === null ? undefined : gte(opportunities.createdAt, sql`now() - make_interval(days => ${filters.foundWithinDays})`),
   );
 }
 
@@ -494,6 +546,76 @@ export async function updateOpportunity(
     }
   });
   return getOpportunity(auth, opportunityId);
+}
+
+/**
+ * One action on several opportunities at once: move to a stage, archive/restore, or add to a list.
+ * All of them must be this workspace's; it's all or nothing, with an audit entry per changed one.
+ * Returns how many changed (one already in that stage, state or list doesn't count).
+ */
+export async function bulkUpdateOpportunities(auth: AuthContext, input: BulkOpportunitiesValues): Promise<{ changed: number }> {
+  const ids = [...new Set(input.ids)];
+  const rows = await db
+    .select({ id: opportunities.id, stageId: opportunities.stageId, archivedAt: opportunities.archivedAt, stageName: pipelineStages.name })
+    .from(opportunities)
+    .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+    .where(and(eq(opportunities.workspaceId, auth.workspaceId), inArray(opportunities.id, ids)));
+  if (rows.length !== ids.length) throw new AppError("NOT_FOUND", "Some of the selected opportunities no longer exist. Refresh and try again.");
+
+  if (input.listId !== undefined) {
+    const [list] = await db.select({ id: lists.id }).from(lists).where(and(eq(lists.id, input.listId), eq(lists.workspaceId, auth.workspaceId)));
+    if (!list) throw new AppError("NOT_FOUND", "List not found.");
+    return db.transaction(async (tx) => {
+      const added = await tx
+        .insert(savedOpportunities)
+        .values(ids.map((opportunityId) => ({ workspaceId: auth.workspaceId, listId: list.id, opportunityId })))
+        .onConflictDoNothing()
+        .returning({ id: savedOpportunities.opportunityId });
+      await tx.update(lists).set({ updatedAt: new Date() }).where(eq(lists.id, list.id));
+      return { changed: added.length };
+    });
+  }
+
+  if (input.stageId !== undefined) {
+    const target = await loadStage(db, auth.workspaceId, input.stageId);
+    const moving = rows.filter((r) => r.stageId !== target.id);
+    if (moving.length === 0) return { changed: 0 };
+    await db.transaction(async (tx) => {
+      await tx.update(opportunities).set({ stageId: target.id }).where(and(eq(opportunities.workspaceId, auth.workspaceId), inArray(opportunities.id, moving.map((r) => r.id))));
+      await tx.insert(auditLogs).values(
+        moving.map((r) => ({
+          workspaceId: auth.workspaceId,
+          actorId: auth.userId,
+          action: "opportunity.stage_changed",
+          entityType: "opportunity",
+          entityId: r.id,
+          metadata: { from: r.stageName, to: target.name, kind: target.kind, bulk: true },
+        })),
+      );
+    });
+    return { changed: moving.length };
+  }
+
+  const archive = input.archived === true;
+  const changing = rows.filter((r) => (r.archivedAt !== null) !== archive);
+  if (changing.length === 0) return { changed: 0 };
+  await db.transaction(async (tx) => {
+    await tx
+      .update(opportunities)
+      .set({ archivedAt: archive ? new Date() : null })
+      .where(and(eq(opportunities.workspaceId, auth.workspaceId), inArray(opportunities.id, changing.map((r) => r.id))));
+    await tx.insert(auditLogs).values(
+      changing.map((r) => ({
+        workspaceId: auth.workspaceId,
+        actorId: auth.userId,
+        action: archive ? "opportunity.archived" : "opportunity.restored",
+        entityType: "opportunity",
+        entityId: r.id,
+        metadata: { bulk: true },
+      })),
+    );
+  });
+  return { changed: changing.length };
 }
 
 async function findRow(auth: AuthContext, opportunityId: string): Promise<SummaryRow> {

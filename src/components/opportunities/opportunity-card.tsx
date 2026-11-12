@@ -2,18 +2,43 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { BriefcaseBusinessIcon, CalendarIcon, MailIcon, PhoneIcon, RadioTowerIcon, UserRoundIcon } from "lucide-react";
+import {
+  BriefcaseBusinessIcon,
+  CalendarIcon,
+  CheckIcon,
+  MailIcon,
+  MinusIcon,
+  PhoneIcon,
+  RadioTowerIcon,
+  UserRoundIcon,
+} from "lucide-react";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { useLookupNames } from "@/hooks/use-reference-data";
 import type { OpportunitySummary } from "@/lib/api/types";
 import { OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 import { opportunityName } from "@/lib/opportunity-display";
+import { cn } from "@/lib/utils";
 import { CategoryBadge, EngineChips, VerificationBadge } from "./engine-parts";
 import { FeedbackVotes } from "./feedback-votes";
 import { ScoreRing } from "./score-ring";
 import { StatusBadge } from "./status-badge";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+
+/** A rounded tick box (visual only; the button around it carries the state). `partly` shows a dash. */
+export function TickBox({ checked, partly = false }: { checked: boolean; partly?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex size-5 shrink-0 items-center justify-center rounded-md border-2 transition-colors",
+        checked || partly ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40 bg-card",
+      )}
+    >
+      {checked ? <CheckIcon className="size-3.5" strokeWidth={3} /> : partly && <MinusIcon className="size-3.5" strokeWidth={3} />}
+    </span>
+  );
+}
 
 /**
  * One opportunity in a feed. The whole card opens it (a stretched link), so `action`, e.g. a
@@ -23,10 +48,13 @@ export function OpportunityCard({
   opportunity,
   rank = null,
   action,
+  selection,
 }: {
   opportunity: OpportunitySummary;
   rank?: number | null;
   action?: ReactNode;
+  /** Selecting for bulk actions: a click anywhere on the card ticks it instead of opening it. */
+  selection?: { selected: boolean; onToggle: () => void };
 }) {
   const names = useLookupNames();
   const latest = opportunity.latestSignalOn
@@ -37,7 +65,23 @@ export function OpportunityCard({
   const { phone: companyPhone, email: companyEmail } = opportunity.companyContact;
 
   return (
-    <li className="group relative flex gap-4 rounded-xl border bg-card p-4 transition-shadow hover:shadow-[0_8px_24px_-12px_rgba(27,36,51,0.18)] has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 sm:gap-5 sm:p-5">
+    <li
+      className={cn(
+        "group relative flex gap-4 rounded-xl border bg-card p-4 transition-[box-shadow,border-color,background-color] hover:shadow-[0_8px_24px_-12px_rgba(27,36,51,0.18)] has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 has-[button:focus-visible]:ring-3 has-[button:focus-visible]:ring-ring/50 sm:gap-5 sm:p-5",
+        selection?.selected && "border-primary/50 bg-signal-tint/40",
+      )}
+    >
+      {/* While selecting, this covers the card's link: a click ticks rather than opens. */}
+      {selection && (
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={selection.selected}
+          aria-label={`Select ${opportunityName(opportunity)}`}
+          onClick={selection.onToggle}
+          className="absolute inset-0 z-[5] cursor-pointer rounded-xl outline-none"
+        />
+      )}
       <div className="flex flex-col items-center gap-1">
         <ScoreRing score={opportunity.score} />
         {rank !== null && <span className="text-xs tabular-nums text-muted-foreground">#{rank}</span>}
@@ -64,6 +108,11 @@ export function OpportunityCard({
           <div className="flex items-center gap-1">
             <StatusBadge stage={opportunity.stage} archived={opportunity.archived} />
             {action && <div className="relative z-10">{action}</div>}
+            {selection && (
+              <span className="ml-1">
+                <TickBox checked={selection.selected} />
+              </span>
+            )}
           </div>
         </div>
 

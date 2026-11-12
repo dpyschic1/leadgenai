@@ -330,6 +330,8 @@ export type EngineOpportunity = {
 export type OpportunityList = Page<OpportunitySummary> & {
   /** Totals per status tab, independent of the selected tab. */
   counts: Record<StatusGroup, number>;
+  /** How many on the selected tab were found in the last 7 days (with the other filters). */
+  newThisWeek: number;
 };
 
 /** One page of the Leads page; `total` is the selected tab's count. */

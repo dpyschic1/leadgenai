@@ -8,7 +8,7 @@ import { useReferenceData } from "./use-reference-data";
 import { useServices } from "./use-services";
 
 /** Feed filters that hold a list of values. */
-export type ListFilterKey = "types" | "services" | "signals" | "urgency" | "industries" | "countries" | "sources" | "intents";
+export type ListFilterKey = "types" | "services" | "signals" | "urgency" | "industries" | "countries" | "sources" | "intents" | "needs";
 
 /** One choice for a filter; matches the option shape the select components take. */
 type Option = { value: string; label: string };
@@ -37,16 +37,19 @@ export function useFilterOptions(): Record<ListFilterKey, Option[]> {
     countries: COUNTRY_OPTIONS,
     sources: SOURCE_OPTIONS,
     intents: INTENT_OPTIONS,
+    // Hiring for: the kind of work the evidence points to (the service categories).
+    needs: options(ref?.serviceCategories),
   };
 }
 
 /** How many filters are narrowing the feed, not counting the company search box. */
 export function activeFilterCount(filters: OpportunityFilters): number {
-  const lists: ListFilterKey[] = ["types", "services", "signals", "urgency", "industries", "countries", "sources", "intents"];
+  const lists: ListFilterKey[] = ["types", "services", "signals", "urgency", "industries", "countries", "sources", "intents", "needs"];
   return (
     lists.filter((key) => filters[key].length > 0).length +
     (filters.minScore === null ? 0 : 1) +
     (filters.withinDays === null ? 0 : 1) +
+    (filters.foundWithinDays === null ? 0 : 1) +
     (filters.contact === null ? 0 : 1)
   );
 }

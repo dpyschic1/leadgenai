@@ -20,7 +20,7 @@ import type { OpportunityExportQuery } from "@/lib/validation/opportunities";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 import { refreshStaleScores } from "@/server/scoring/rescore";
-import { companyContactFromOsm, companyEmail, companyPhone, feedFilter, priorityOrder, signalEvidenceLink } from "./opportunities.service";
+import { companyContactFromOsm, companyEmail, companyPhone, feedFilter, feedOrder, signalEvidenceLink } from "./opportunities.service";
 import { OSM_ATTRIBUTION, OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 
 /**
@@ -92,7 +92,7 @@ export type OpportunityExport = { filename: string; csv: string; count: number }
 export async function exportOpportunities(auth: AuthContext, query: OpportunityExportQuery): Promise<OpportunityExport> {
   await refreshStaleScores(auth.workspaceId);
 
-  const { listId, group, ...filters } = query;
+  const { listId, group, sort, ...filters } = query;
   const list = listId ? await findList(auth, listId) : null;
 
   const base = db
@@ -113,7 +113,7 @@ export async function exportOpportunities(auth: AuthContext, query: OpportunityE
         .where(and(eq(savedOpportunities.listId, list.id), eq(opportunities.workspaceId, auth.workspaceId)))
     : base.where(feedFilter(auth.workspaceId, group, filters))
   )
-    .orderBy(...priorityOrder())
+    .orderBy(...feedOrder(sort))
     .limit(EXPORT_LIMIT);
 
   await db.insert(auditLogs).values({

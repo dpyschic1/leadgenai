@@ -6,6 +6,7 @@ const raw = (overrides: Partial<Parameters<typeof toFilters>[0]> = {}): Paramete
   opportunityTypes: [],
   services: [],
   signalCategories: [],
+  hiringFor: [],
   urgency: [],
   industries: [],
   countries: [],

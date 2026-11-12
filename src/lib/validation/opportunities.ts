@@ -62,6 +62,10 @@ export const opportunityFiltersSchema = z.object({
   minScore: optionalInt(0, 100),
   /** Latest supporting signal within this many days. */
   withinDays: optionalInt(1, 365),
+  /** Hiring for / needs: service category slugs the opportunity's evidence points to (e.g. ui_ux_design). */
+  needs: list(slug),
+  /** Found (added to the list) within this many days: "new this week" is 7. */
+  foundWithinDays: optionalInt(1, 365),
   /** How the lead can be reached (see `CONTACT_REACH`); missing means any. */
   contact: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(CONTACT_REACH).nullable()).default(null),
 });
@@ -81,19 +85,46 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   intents: [],
   minScore: null,
   withinDays: null,
+  needs: [],
+  foundWithinDays: null,
   contact: null,
 };
 
+/** How the feed is ordered: best match (score) by default, or newest found, latest activity, most open roles. */
+export const OPPORTUNITY_SORTS = ["best", "newest", "latest", "roles"] as const;
+export type OpportunitySort = (typeof OPPORTUNITY_SORTS)[number];
+export const OPPORTUNITY_SORT_LABELS: Record<OpportunitySort, string> = {
+  best: "Best match",
+  newest: "Newest found",
+  latest: "Latest activity",
+  roles: "Most open roles",
+};
+
 const groupField = { group: z.enum(STATUS_GROUP_KEYS as readonly [StatusGroup, ...StatusGroup[]]).default("open") };
+const sortField = { sort: z.enum(OPPORTUNITY_SORTS).default("best") };
 
 /** One page of the feed. */
-export const opportunityListQuerySchema = opportunityFiltersSchema.extend({ ...groupField, ...paginationFields });
+export const opportunityListQuerySchema = opportunityFiltersSchema.extend({ ...groupField, ...sortField, ...paginationFields });
 
-/** CSV export: one saved list (any status), or the whole feed as filtered on screen (every page). */
+/** CSV export: one saved list (any status), or the whole feed as filtered and sorted on screen (every page). */
 export const opportunityExportQuerySchema = opportunityFiltersSchema.extend({
   ...groupField,
+  ...sortField,
   listId: z.uuid("Unknown list").optional(),
 });
+
+/** Bulk actions on selected opportunities: exactly one of move to a stage, archive/restore, or add to a list. */
+export const MAX_BULK = 100;
+export const bulkOpportunitiesSchema = z
+  .object({
+    ids: z.array(z.uuid()).min(1, "Select at least one opportunity").max(MAX_BULK, `Select at most ${MAX_BULK} at a time`),
+    stageId: z.uuid().optional(),
+    archived: z.boolean().optional(),
+    listId: z.uuid().optional(),
+  })
+  .refine((v) => [v.stageId, v.archived, v.listId].filter((x) => x !== undefined).length === 1, "Choose one action");
+
+export type BulkOpportunitiesValues = z.infer<typeof bulkOpportunitiesSchema>;
 
 /** A plain-language request for the AI search, e.g. "funded UK startups needing an app". */
 export const interpretSearchSchema = z.object({

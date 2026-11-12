@@ -30,6 +30,7 @@ function outputSchema(ref: ReferenceData, services: SearchService[]) {
         ? z.array(z.enum(services.map((s) => s.id) as [string, ...string[]]))
         : z.array(z.string()).describe("Always empty."),
     signalCategories: z.array(z.enum(values(ref.signalCategories.filter((c) => c.slug !== "negative")))),
+    hiringFor: z.array(z.enum(values(ref.serviceCategories))).describe("The kind of work the company is hiring for or needs."),
     urgency: z.array(z.enum(FILTER_URGENCY_LEVELS)),
     industries: z.array(z.enum(values(ref.industries))),
     countries: z.array(z.enum(COUNTRY_CODES)).describe("ISO 3166-1 alpha-2 codes of the company's headquarters."),
@@ -62,6 +63,8 @@ ${list(ref.opportunityTypes)}
 ${serviceList}
 - signalCategories: what kind of evidence the company shows.
 ${list(ref.signalCategories.filter((c) => c.slug !== "negative"))}
+- hiringFor: the kind of work the company is hiring for or asking for, from its evidence ("hiring designers" -> ui_ux_design; "needs AI engineers" -> ai_ml; "mobile developers" -> mobile_development).
+${list(ref.serviceCategories)}
 - urgency: high, medium or low.
 - industries: the company's industry.
 ${list(ref.industries)}
@@ -73,7 +76,7 @@ ${list(ref.industries)}
 Translating words:
 - "startup", "new company", "MVP", "first product" -> opportunityTypes mvp_startup.
 - "funded", "raised", "investment", "expanding", "new office", "launch" -> signalCategories company_event.
-- "hiring", "recruiting", "open roles", "developers needed", "team growth" -> signalCategories workforce.
+- "hiring", "recruiting", "open roles", "developers needed", "team growth" -> signalCategories workforce. When it names the role ("hiring designers", "React developers"), also set hiringFor.
 - "looking for an agency/vendor/partner", "asking for quotes", "RFP", "tender" -> signalCategories explicit_buying.
 - "website", "SEO", "app", "AI" and similar describe the deal or the service: use opportunityTypes and/or services, not industries.
 - "hot", "strong", "best", "top", "high priority" -> minScore 70. "very strong" or "the very best" -> minScore 80.
@@ -132,6 +135,7 @@ export function toFilters(raw: RawSearch): InterpretedSearch {
     types: raw.opportunityTypes,
     services: raw.services,
     signals: raw.signalCategories,
+    needs: raw.hiringFor ?? [],
     urgency: raw.urgency,
     industries: raw.industries,
     countries: raw.countries,

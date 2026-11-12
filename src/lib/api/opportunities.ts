@@ -1,6 +1,6 @@
 import type { LeadTab, StatusGroup } from "@/lib/domain/opportunities";
 import type { FeedbackInput } from "@/lib/validation/feedback";
-import type { InterpretSearchInput, OpportunityFilters, UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import type { BulkOpportunitiesValues, InterpretSearchInput, OpportunityFilters, OpportunitySort, UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { setPageParams, type Pagination } from "@/lib/validation/pagination";
 import { apiRequest } from "./client";
 import type { InterpretedSearch, LeadList, OpportunityDetail, OpportunityList } from "./types";
@@ -16,8 +16,13 @@ export function setFilterParams(params: URLSearchParams, filters: OpportunityFil
 }
 
 export const opportunitiesApi = {
-  list: (group: StatusGroup, filters: OpportunityFilters, page: Pagination, signal?: AbortSignal) =>
-    apiRequest<OpportunityList>(`/opportunities?${setPageParams(setFilterParams(new URLSearchParams({ group }), filters), page)}`, { signal }),
+  list: (group: StatusGroup, filters: OpportunityFilters, page: Pagination, sort: OpportunitySort = "best", signal?: AbortSignal) =>
+    apiRequest<OpportunityList>(
+      `/opportunities?${setPageParams(setFilterParams(new URLSearchParams(sort === "best" ? { group } : { group, sort }), filters), page)}`,
+      { signal },
+    ),
+  /** One action on several opportunities: move to a stage, archive/restore, or add to a list. */
+  bulk: (input: BulkOpportunitiesValues) => apiRequest<{ changed: number }>("/opportunities/bulk", { method: "POST", body: input }),
   get: (id: string, signal?: AbortSignal) => apiRequest<OpportunityDetail>(`/opportunities/${id}`, { signal }),
   /** The Leads page: one tab and page of active leads, with every tab's count. */
   leads: (tab: LeadTab, q: string, page: Pagination, signal?: AbortSignal) => {

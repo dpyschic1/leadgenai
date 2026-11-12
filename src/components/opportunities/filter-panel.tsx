@@ -41,6 +41,16 @@ export function FilterPanel({
       <PopoverContent align="end" className="max-h-[min(36rem,80vh)] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto p-0">
         <div className="space-y-5 p-5">
           <div className="grid gap-5 sm:grid-cols-2">
+            <Group label="Hiring for">
+              <MultiCombobox
+                options={options.needs}
+                value={filters.needs}
+                onChange={setList("needs")}
+                placeholder="Any work"
+                searchPlaceholder="Search: design, AI, mobile…"
+                emptyText="No kind of work found."
+              />
+            </Group>
             <Group label="Opportunity type">
               <MultiCombobox
                 options={options.types}

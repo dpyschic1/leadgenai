@@ -5,15 +5,24 @@ import { opportunitiesApi } from "@/lib/api/opportunities";
 import type { OpportunityDetail } from "@/lib/api/types";
 import type { LeadTab, StatusGroup } from "@/lib/domain/opportunities";
 import type { FeedbackInput } from "@/lib/validation/feedback";
-import { EMPTY_FILTERS, type OpportunityFilters, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
+import { EMPTY_FILTERS, type BulkOpportunitiesValues, type OpportunityFilters, type OpportunitySort, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { FIRST_PAGE, type Pagination } from "@/lib/validation/pagination";
 import { queryKeys } from "./query-keys";
 
-export function useOpportunities(group: StatusGroup, filters: OpportunityFilters = EMPTY_FILTERS, page: Pagination = FIRST_PAGE) {
+export function useOpportunities(group: StatusGroup, filters: OpportunityFilters = EMPTY_FILTERS, page: Pagination = FIRST_PAGE, sort: OpportunitySort = "best") {
   return useQuery({
-    queryKey: queryKeys.opportunityList(group, filters, page),
-    queryFn: ({ signal }) => opportunitiesApi.list(group, filters, page, signal),
+    queryKey: queryKeys.opportunityList(group, filters, page, sort),
+    queryFn: ({ signal }) => opportunitiesApi.list(group, filters, page, sort, signal),
     placeholderData: keepPreviousData,
+  });
+}
+
+/** One action on the selected opportunities; every feed, list and count refreshes after it. */
+export function useBulkOpportunities() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: BulkOpportunitiesValues) => opportunitiesApi.bulk(input),
+    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }), queryClient.invalidateQueries({ queryKey: queryKeys.lists })]),
   });
 }
 
