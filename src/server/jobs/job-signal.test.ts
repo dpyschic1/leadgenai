@@ -188,6 +188,10 @@ describe("categorizeJob", () => {
     expect(cats("Senior Ground Software Engineer")).toContain("software_development");
     expect(cats("Machine Learning Engineer, Predictive Maintenance")).toContain("ai_ml");
     expect(cats("Forward Deployed Engineer, Production", "Engineering")).toContain("software_development");
+    // Chip design and technicians are hardware, even for AI; "AI&T" is integration and test.
+    expect(cats("Principal Design Verification Engineer (AI Fabric Switches)")).toEqual([]);
+    expect(cats("Assembly, Integration & Test (AI&T) Technician")).toEqual([]);
+    expect(cats("FPGA Firmware Engineer")).toContain("software_development");
   });
 
   it("holds the AI's categories to the same title rules", () => {

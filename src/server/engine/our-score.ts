@@ -48,6 +48,9 @@ export function signalTypeOf(item: Pick<DiscoveredItem, "capability" | "title" |
  * company, its own description), else the categories of the service it matched by name. Pure.
  */
 export function needsOf(item: Pick<DiscoveredItem, "title" | "text" | "metadata">, fallback: string[]): string[] {
+  // A startup listed with its open roles needs what those roles are (a YC company hiring engineers).
+  const roles = Array.isArray(item.metadata?.jobCategories) ? (item.metadata.jobCategories as unknown[]).filter((c): c is string => typeof c === "string") : [];
+  if (roles.length > 0) return roles;
   const skills = Array.isArray(item.metadata?.skills) ? (item.metadata.skills as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const found = new Set([
     ...categorizeJob({ title: item.title, department: null }),

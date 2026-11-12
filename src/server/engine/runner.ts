@@ -221,13 +221,27 @@ function isRelevant(
   now: Date,
   serviceCategories: string[] = [],
 ): boolean {
-  if (capability === "funded") return passesFundedFilters(item, config, targeting).pass;
+  if (capability === "funded") {
+    // A startup listed with the roles it's hiring for fits only when one of them is work a service delivers.
+    if (!fitsHiringRoles(item, serviceCategories)) return false;
+    return passesFundedFilters(item, config, targeting).pass;
+  }
   if (matchedTerms(serviceTerms, `${item.title}\n${item.text}`).length === 0) return false;
   // A project is work the workspace delivers only when its role fits a service's categories (the
   // same title rules as job matching): "Laravel developer" fits software development; "LPG pipeline
   // design" or "photo editing" share a word with a service name but are not its work.
   if (capability === "freelance" && serviceCategories.length > 0 && !fitsServiceCategories(item, serviceCategories)) return false;
   return capability === "freelance" ? passesFreelanceFilters(item, config, targeting, now).pass : true;
+}
+
+/**
+ * For an item listed with the roles it's hiring for (a YC startup): one role's categories are among
+ * these service categories. Items without a role list (an SEC filing) are not judged here. Pure.
+ */
+export function fitsHiringRoles(item: Pick<DiscoveredItem, "metadata">, serviceCategories: string[]): boolean {
+  const roles = item.metadata?.jobCategories;
+  if (!Array.isArray(roles)) return true;
+  return roles.some((c) => typeof c === "string" && serviceCategories.includes(c));
 }
 
 /** The project's own role (title and listed skills) falls in one of these service categories. Pure. */

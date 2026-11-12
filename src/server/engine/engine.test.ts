@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isEmployment, readIntent } from "./intent";
 import { matchedTerms, matchesCountry, termsOf } from "./match";
-import { bestService, fitsServiceCategories } from "./runner";
+import { bestService, fitsHiringRoles, fitsServiceCategories } from "./runner";
 import { onlyElsewhere } from "./filters";
 import { discoveredInput, needsOf, scoreDiscovered, signalTypeOf } from "./our-score";
 import { DEFAULT_SCORE_WEIGHTS } from "@/lib/validation/scoring";
@@ -154,6 +154,23 @@ describe("onlyElsewhere", () => {
 
   it("never filters when the workspace targets every country", () => {
     expect(onlyElsewhere(post("India only"), { countries: [] })).toBe(false);
+  });
+});
+
+describe("YC startups match on the roles they're hiring for", () => {
+  const yc = (jobCategories: string[]) => ({ metadata: { roles: ["Founding Engineer"], jobCategories } });
+
+  it("keeps a startup only when one open role is work a service delivers", () => {
+    expect(fitsHiringRoles(yc(["software_development", "staff_augmentation"]), ["software_development"])).toBe(true);
+    expect(fitsHiringRoles(yc(["software_development", "staff_augmentation"]), ["ai_ml"])).toBe(false);
+    expect(fitsHiringRoles(yc(["ui_ux_design"]), ["branding_design", "ui_ux_design"])).toBe(true);
+    // An SEC filing has no role list: not judged by this rule.
+    expect(fitsHiringRoles({ metadata: { industryGroup: "Other Technology" } }, ["ai_ml"])).toBe(true);
+  });
+
+  it("reads the startup's needs from its roles, not its description", () => {
+    const item = { title: "Acme joined Y Combinator F26 and is hiring: Founding Engineer", text: "AI agents for lawyers", metadata: { jobCategories: ["software_development"] } };
+    expect(needsOf(item, ["ai_ml"])).toEqual(["software_development"]);
   });
 });
 

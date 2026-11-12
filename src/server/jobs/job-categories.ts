@@ -77,6 +77,10 @@ const PHYSICAL_ENGINEERING =
   /\b(mechanical|mechatronics?|electrical|electronics?|civil|structural|geotechnical|chemical|process|manufacturing|industrial|hardware|rf|antenna|analog|asic|fpga|pcb|silicon|semiconductor|photonics?|optical|materials?|metallurg\w*|aerospace|propulsion|avionics|flight test|structures? test|reactor|thermal|hvac|piping|plumbing|power|energy|battery|charging|solar|grid|substation|nuclear|petroleum|mining|environmental|water|wastewater|roadway|transportation|traffic|bridge|construction|facilities|maintenance|field service|packaging|biomedical|controls?|instrumentation|robotics hardware|quality engineer\w*|environmental test|design verification|layout|manufacturing engineer|supplier quality|estimator|surveyor)\b/;
 const SOFTWARE_WORDS =
   /\b(software|firmware|embedded|web|full ?stack|front ?end|back ?end|cloud|data|ml|ai|machine learning|deep learning|computer vision|llms?|platform|devops|site reliability|security|mobile|app|application|automation|forward deployed)\b/;
+/** Chip and board design: hardware even when the chip is for AI ("Design Verification Engineer (AI Fabric Switches)"). */
+const CHIP_DESIGN = /\b(design verification|asic|fpga|pcb|analog|silicon|rtl|physical design|technician)\b/;
+/** Physical engineering, unless the title also says software. Chip design and technicians stay hardware even "for AI". */
+const isPhysical = (t: string) => (PHYSICAL_ENGINEERING.test(t) && !SOFTWARE_WORDS.test(t)) || (CHIP_DESIGN.test(t) && !/\b(software|firmware)\b/.test(t));
 /** Sales roles about a technology (not building it). Sales engineers build demos, so they stay. */
 const SELLING = /\b(sales(?! engineer)|account executive|account manager|business develop(ment|er)|partnerships?)\b/;
 /**
@@ -107,6 +111,8 @@ const AI_TRAINING_WORK =
 const normalize = (text: string | null) =>
   ` ${(text ?? "")
     .toLowerCase()
+    // "AI&T" is assembly, integration and test, not AI.
+    .replace(/\bai ?& ?t\b/g, "integration and test")
     .replace(/[-_/,()|:]+/g, " ")
     .replace(/\s+/g, " ")} `;
 
@@ -121,7 +127,7 @@ export function categorizeJob(job: { title: string; department: string | null })
   const around = worksAround(title);
   if (around) for (const c of TECH_CATEGORIES) found.delete(c);
   // Mechanical, electrical, civil, chip work: not a software role, whatever the department.
-  const physical = PHYSICAL_ENGINEERING.test(title) && !SOFTWARE_WORDS.test(title);
+  const physical = isPhysical(title);
   if (physical) for (const c of TECH_CATEGORIES) found.delete(c);
   if (found.size === 0 && !around && !physical && TECH_DEPARTMENT.test(department) && PLAIN_ENGINEER.test(title)) found.add("software_development");
   if ([...found].some((c) => TECH_CATEGORIES.has(c))) found.add("staff_augmentation");
@@ -135,7 +141,7 @@ export function categorizeJob(job: { title: string; department: string | null })
 export function refineCategories(title: string, categories: string[]): string[] {
   const t = normalize(title);
   if (TRAINEE.test(t)) return [];
-  if (PHYSICAL_ENGINEERING.test(t) && !SOFTWARE_WORDS.test(t)) return categories.filter((c) => !TECH_CATEGORIES.has(c) && c !== "staff_augmentation");
+  if (isPhysical(t)) return categories.filter((c) => !TECH_CATEGORIES.has(c) && c !== "staff_augmentation");
   if (!worksAround(t)) return categories;
   return categories.filter((c) => !TECH_CATEGORIES.has(c) && c !== "staff_augmentation");
 }

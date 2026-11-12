@@ -66,7 +66,9 @@ export function OpportunitiesView() {
         }
       />
 
-      {data && !hasAny && !filtering ? (
+      {/* Only a workspace with no opportunities at all gets the setup screen; an empty category tab
+          (e.g. Intent before any post is found) keeps the tabs so another can be picked. */}
+      {data && !hasAny && !filtering && category === "all" ? (
         <EmptyOpportunities />
       ) : (
         <>
@@ -173,6 +175,13 @@ export function OpportunitiesView() {
                   <p>No {TABS.find((tab) => tab.group === group)?.label.toLowerCase()} opportunities match these filters.</p>
                   <Button variant="outline" size="sm" className="mt-4" onClick={clearFilters}>
                     Clear search and filters
+                  </Button>
+                </>
+              ) : category !== "all" ? (
+                <>
+                  <p>No {TABS.find((tab) => tab.group === group)?.label.toLowerCase()} {FILTER_CATEGORY_LABELS[category].toLowerCase()} opportunities yet.</p>
+                  <Button variant="outline" size="sm" className="mt-4" onClick={() => setCategory("all")}>
+                    Show all opportunities
                   </Button>
                 </>
               ) : (

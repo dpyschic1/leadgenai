@@ -95,7 +95,7 @@ export function FilterPanel({
                   onChange={(minScore) => onChange({ ...filters, minScore })}
                 />
               </Group>
-              <Group label="Latest signal or discovery">
+              <Group label="Latest signal">
                 <NumberChoice
                   label="Latest signal within"
                   value={filters.withinDays}
