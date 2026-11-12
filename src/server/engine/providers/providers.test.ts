@@ -99,7 +99,7 @@ describe("SEC Form D", () => {
     <issuerAddress><city>AUSTIN</city><stateOrCountry>TX</stateOrCountry><stateOrCountryDescription>TEXAS</stateOrCountryDescription></issuerAddress><entityType>Corporation</entityType></primaryIssuer>
     <relatedPersonsList><relatedPersonInfo><relatedPersonName><firstName>Ada</firstName><lastName>Lovelace</lastName></relatedPersonName>
     <relatedPersonRelationshipList><relationship>Executive Officer</relationship></relatedPersonRelationshipList></relatedPersonInfo></relatedPersonsList>
-    <offeringData><industryGroup><industryGroupType>${over.industry ?? "Biotechnology"}</industryGroupType></industryGroup>
+    <offeringData><industryGroup><industryGroupType>${over.industry ?? "Other Technology"}</industryGroupType></industryGroup>
     <typeOfFiling><newOrAmendment><isAmendment>${over.amendment ?? "false"}</isAmendment></newOrAmendment><dateOfFirstSale><value>2026-11-01</value></dateOfFirstSale></typeOfFiling>
     <offeringSalesAmounts><totalOfferingAmount>3000000</totalOfferingAmount><totalAmountSold>${over.sold ?? "1200000"}</totalAmountSold></offeringSalesAmounts></offeringData></edgarSubmission>`;
 
@@ -119,6 +119,14 @@ describe("SEC Form D", () => {
     expect(parseFormD(doc({ amendment: "true" }), filing)).toBeNull();
     expect(isVehicleName("Series 85-2, a series of StartEngine Private LLC")).toBe(true);
     expect(isVehicleName("Bloodless Diagnostics Inc.")).toBe(false);
+  });
+  it("keeps only technology and business-services companies raising a real amount", () => {
+    expect(parseFormD(doc({ industry: "Business Services" }), filing)).not.toBeNull();
+    for (const industry of ["Biotechnology", "Manufacturing", "Lodging and Conventions", "Other"]) expect(parseFormD(doc({ industry }), filing)).toBeNull();
+    expect(parseFormD(doc({ sold: "50000" }), filing)).toBeNull();
+    // One-deal syndicates and investment firms.
+    expect(isVehicleName("Gaingels Path Robotics SEP 2026 LLC")).toBe(true);
+    expect(isVehicleName("Servant Invest, LLC")).toBe(true);
   });
   it("reads new filings from the feed and ignores amendments", () => {
     const feed = `<feed><entry><title>D - Acme Robotics Inc. (0001) (Filer)</title><link href="https://www.sec.gov/Archives/edgar/data/1/000-index.htm"/>

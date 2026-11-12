@@ -13,9 +13,19 @@ const val = (xml: string, tag: string) => xml.match(new RegExp(`<${tag}>([^<]*)<
 const num = (s: string | null) => (s && /^\d+(\.\d+)?$/.test(s) ? Number(s) : null);
 
 /** Names that mark an investment vehicle rather than an operating company. */
-const VEHICLE_NAME = /(\bfund\b|\bseries\b|a series of|\bspv\b|\btrust\b|\bl\.?p\.?\b|\bpartners\b|\bholdings? (i|ii|iii)\b|\bventures? (i|ii|iii|iv)\b|\bcapital\b)/i;
+// A year in the name ("Gaingels Palmetto 2026 LLC") marks a one-deal syndicate.
+const VEHICLE_NAME =
+  /(\bfund\b|\bseries\b|a series of|\bspv\b|\btrust\b|\bl\.?p\.?\b|\bpartners\b|\bholdings? (i|ii|iii)\b|\bventures? (i|ii|iii|iv)\b|\bcapital\b|\binvest(ments?|ors?)?\b|\b(19|20)\d{2}\b)/i;
 /** Form D industry groups that are finance, real estate or funds, not companies that buy services. */
 const FINANCE_INDUSTRIES = /^(pooled investment fund|hedge fund|private equity fund|venture capital fund|other investment fund|investing|investment banking|commercial banking|insurance|reits & finance|residential|commercial|construction|other real estate|other banking & financial services)$/i;
+/**
+ * The Form D industries whose companies buy tech and agency services: technology and business
+ * services. Biotech, manufacturing, lodging, clubs and "Other" are left out: a filing alone says
+ * nothing about needing software, AI or marketing work.
+ */
+const BUYING_INDUSTRIES = /^(computers|telecommunications|other technology|business services)$/i;
+/** Below this, a raise is too small to pay for outside work. */
+const MIN_RAISE_USD = 100_000;
 
 const US_STATES = new Set("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA PR RI SC SD TN TX UT VT VA WA WV WI WY".split(" "));
 const CA_PROVINCES = new Set("AB BC MB NB NL NS NT NU ON PE QC SK YT".split(" "));
@@ -55,12 +65,14 @@ export function parseFormD(xml: string, filing: Filing): DiscoveredItem | null {
   if (!name || isVehicleName(name)) return null;
   const industry = val(xml, "industryGroupType");
   if (industry && FINANCE_INDUSTRIES.test(industry)) return null;
+  if (!industry || !BUYING_INDUSTRIES.test(industry)) return null;
 
   const sold = num(val(xml, "totalAmountSold"));
   const offering = num(val(xml, "totalOfferingAmount"));
   // Money actually sold is confirmed funding; an opened-but-unsold offering is only a claim.
   const confirmed = sold !== null && sold > 0;
   const amount = confirmed ? sold : offering;
+  if (amount !== null && amount < MIN_RAISE_USD) return null;
   const date = xml.match(/<dateOfFirstSale>\s*<value>(\d{4}-\d{2}-\d{2})</)?.[1] ?? filing.filedOn;
   const state = val(xml, "stateOrCountry");
   const people = [...xml.matchAll(/<relatedPersonInfo>([\s\S]*?)<\/relatedPersonInfo>/g)].flatMap(([, p]) => {

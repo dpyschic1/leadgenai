@@ -212,8 +212,7 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
 
   // The strongest positive signal leads: intent strength, discounted by age.
   const strength = (s: EngineSignal) => INTENT_BASE[s.intentLevel] * recencyMultiplier(daysBetween(s.occurredAt, now));
-  const ranked = [...positives].sort((a, b) => strength(b) - strength(a) || b.occurredAt.getTime() - a.occurredAt.getTime());
-  const lead = ranked[0];
+  const byStrength = [...positives].sort((a, b) => strength(b) - strength(a) || b.occurredAt.getTime() - a.occurredAt.getTime());
   const latestSignalAt = new Date(Math.max(...positives.map((s) => s.occurredAt.getTime())));
 
   const rejectedServices = new Set(input.rejected?.serviceIds);
@@ -225,6 +224,11 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
 
   const best = pickService(candidates, positives, labels, input.company.industry);
   const service = best?.service ?? null;
+  // The lead signal is the strongest one that needs the matched service, so "why" explains the match
+  // (a company matched to a design service leads with its designer job, not its engineering one).
+  const fits = (s: EngineSignal) => service !== null && s.serviceCategories.some((c) => service.categories.includes(c));
+  const ranked = [...byStrength.filter(fits), ...byStrength.filter((s) => !fits(s))];
+  const lead = ranked[0];
   // Never suggest someone the team flagged, or isn't sure is the right person.
   const person = pickPerson(
     input.people.filter((p) => p.suggestable && !rejectedPeople.has(p.id)),

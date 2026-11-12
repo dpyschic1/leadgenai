@@ -175,6 +175,13 @@ describe("fitsServiceCategories", () => {
     expect(fitsServiceCategories(project("Beachwear Design & Manufacturing Partner"), software)).toBe(false);
     expect(fitsServiceCategories(project("Recruiter for Engineering Talent"), software)).toBe(false);
   });
+
+  it("drops AI training and data-labelling gigs", () => {
+    const ai = ["ai_ml", "staff_augmentation"];
+    expect(fitsServiceCategories(project("Remote AI Training Specialists Needed"), ai)).toBe(false);
+    expect(fitsServiceCategories(project("AI Politeness Training for Support"), ai)).toBe(false);
+    expect(fitsServiceCategories(project("Build Local AI Resume Screening"), ai)).toBe(true);
+  });
 });
 
 describe("discovered items scored by the company-opportunity rules", () => {

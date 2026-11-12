@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { candidateTokens } from "./detect";
-import { categorizeJob, ruleJobSignal } from "./job-categories";
+import { categorizeJob, isAiTrainingWork, isDataScienceOnly, refineCategories, ruleJobSignal } from "./job-categories";
 import { jobSignalValues, jobSourceText, MIN_AUTO_CONFIDENCE, openDays, rejectionReason, roleKey } from "./job-signal";
 
 const now = new Date("2026-11-03T12:00:00Z");
@@ -145,6 +145,65 @@ describe("categorizeJob", () => {
     expect(cats("Principal Research Scientist I - Biologics Analytical Research")).toEqual([]);
     expect(cats("Research Scientist, Machine Learning")).toEqual(["ai_ml", "staff_augmentation"]);
   });
+
+  it("never makes trainees and academic posts a lead", () => {
+    expect(cats("2027 Data Science Intern")).toEqual([]);
+    expect(cats("Robotics Research, Embodied AI Intern (Spring & Summer 2027)")).toEqual([]);
+    expect(cats("Physics-Informed Machine Learning - Postdoctoral Researcher")).toEqual([]);
+    expect(cats("2027 Health AI Scholar, Digital Health Algorithms Team")).toEqual([]);
+    expect(cats("Graduate Data Scientist")).toEqual([]);
+    expect(cats("AI Fellow")).toEqual([]);
+    // A technical fellow is a senior engineer.
+    expect(cats("Technical Fellow - AI and Robotics")).toEqual(["ai_ml", "staff_augmentation"]);
+  });
+
+  it("doesn't read roles around a technology as building it", () => {
+    expect(cats("Sr. Product Manager, AI Products")).toEqual([]);
+    expect(cats("Data Journalist, AI & Automation")).toEqual([]);
+    expect(cats("Sr. Growth Marketing Manager, AI Discovery")).toEqual(["digital_marketing"]);
+    expect(cats("AI Trainer - Coding")).toEqual([]);
+    expect(cats("Applied AI Engineer")).toEqual(["ai_ml", "staff_augmentation"]);
+    expect(cats("Applied AI Architect, International Policy")).toEqual(["ai_ml", "staff_augmentation"]);
+    expect(cats("Senior Product Manager, AI Infrastructure Engineering")).toEqual([]);
+    expect(cats("Director of Product Management - AI Security & AI Gateway")).toEqual([]);
+    expect(cats("Developer Relations Advocate")).toEqual([]);
+    expect(cats("Business Developer")).toEqual([]);
+    expect(cats("AI Code Evaluation Specialist")).toEqual([]);
+  });
+
+  it("reads a design engineer as UX work only for web and UI design", () => {
+    expect(cats("Roadway Design Engineer - Mid-Level")).toEqual([]);
+    expect(cats("Staff Photonics Design Engineer")).toEqual([]);
+    expect(cats("Web Design Engineer")).toContain("ui_ux_design");
+  });
+
+  it("never reads physical engineering as software work", () => {
+    expect(cats("R&D Mechanical Engineer - Medium Voltage", "Engineering")).toEqual([]);
+    expect(cats("EV Charging Infrastructure Engineer (PE Preferred)")).toEqual([]);
+    expect(cats("Senior Electrical Engineer", "Engineering")).toEqual([]);
+    expect(cats("Manufacturing Engineer", "R&D")).toEqual([]);
+    expect(refineCategories("Hardware Engineer", ["software_development", "staff_augmentation"])).toEqual([]);
+    // Software in the title keeps it.
+    expect(cats("Embedded Software Engineer, Power Systems")).toContain("software_development");
+    expect(cats("Senior Ground Software Engineer")).toContain("software_development");
+    expect(cats("Machine Learning Engineer, Predictive Maintenance")).toContain("ai_ml");
+    expect(cats("Forward Deployed Engineer, Production", "Engineering")).toContain("software_development");
+  });
+
+  it("holds the AI's categories to the same title rules", () => {
+    expect(refineCategories("Data Science Intern", ["ai_ml", "data_analytics"])).toEqual([]);
+    expect(refineCategories("Product Manager, AI", ["ai_ml", "staff_augmentation", "ui_ux_design"])).toEqual(["ui_ux_design"]);
+    expect(refineCategories("ML Engineer", ["ai_ml"])).toEqual(["ai_ml"]);
+  });
+
+  it("tells data-science-only roles and AI training gigs apart", () => {
+    expect(isDataScienceOnly("Senior Data Scientist")).toBe(true);
+    expect(isDataScienceOnly("Data Scientist, Machine Learning")).toBe(false);
+    expect(isDataScienceOnly("ML Engineer")).toBe(false);
+    expect(isAiTrainingWork("Remote AI Training Specialists Needed")).toBe(true);
+    expect(isAiTrainingWork("AI-Powered Web Scraping Training Mentor")).toBe(true);
+    expect(isAiTrainingWork("Build Local AI Resume Screening")).toBe(false);
+  });
 });
 
 describe("ruleJobSignal", () => {
@@ -170,5 +229,7 @@ describe("ruleJobSignal", () => {
     expect(ruleJobSignal("Acme", lead, 4, ["ai_ml"], now).signalType).toBe("multiple_same_role_openings");
     expect(ruleJobSignal("Acme", { ...lead, postedAt: new Date("2026-08-01T00:00:00Z") }, 1, ["ai_ml"], now).signalType).toBe("long_running_vacancy");
     expect(ruleJobSignal("Acme", { ...lead, title: "Content Writer" }, 1, ["content_marketing"], now)).toMatchObject({ signalType: "recruiting_pressure", intentLevel: "low" });
+    // A data scientist is a weaker sign of buying AI work than an ML engineer.
+    expect(ruleJobSignal("Acme", { ...lead, title: "Senior Data Scientist" }, 1, ["ai_ml"], now)).toMatchObject({ signalType: "engineering_hiring", intentLevel: "low" });
   });
 });

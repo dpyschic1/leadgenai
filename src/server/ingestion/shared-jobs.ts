@@ -7,7 +7,7 @@ import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
 import { systemActor, type Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
-import { categorizeJob, ruleJobSignal } from "@/server/jobs/job-categories";
+import { categorizeJob, refineCategories, ruleJobSignal } from "@/server/jobs/job-categories";
 import { jobSignalValues, jobSourceText, MAX_JOB_TEXT, rejectionReason, roleKey } from "@/server/jobs/job-signal";
 import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
@@ -501,6 +501,9 @@ export async function analyzeSharedJobs({
       await db.insert(jobAnalyses).values(failedAnalysis(row.id)).onConflictDoNothing();
       continue;
     }
+    // The AI reads the whole post; the title rules still decide trainee and non-building roles.
+    const refined = refineCategories(row.title, analysis.serviceCategories);
+    if (refined.length !== analysis.serviceCategories.length) analysis = { ...analysis, serviceCategories: refined, isSignal: analysis.isSignal && refined.length > 0 };
     await saveAnalysis(row.id, analysis);
     await applyAnalysis(row, analysis);
     read++;

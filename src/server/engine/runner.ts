@@ -2,7 +2,7 @@ import "server-only";
 import { and, desc, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { companies, discoveryRuns, engineCapabilities, engineSettings, opportunities, serviceServiceCategories, services } from "@/db/schema";
-import { categorizeJob } from "@/server/jobs/job-categories";
+import { categorizeJob, isAiTrainingWork } from "@/server/jobs/job-categories";
 import { DEFAULT_ENGINE_WEIGHTS } from "@/lib/domain/engine";
 import {
   DEFAULT_FREQUENCY_MINUTES,
@@ -161,7 +161,7 @@ export async function runCapability(workspaceId: string, capability: Capability,
           const input = discoveredInput(item, score, servicesTargeted.find((s) => s.id === matched)?.categories ?? serviceCategories, now);
           const ours = scoreDiscovered(input, ourContext, now);
           // Nothing the services need: no opportunity, as for a company with no positive signal.
-          if (!ours) {
+          if (!ours || ours.serviceId === null) {
             summary.skipped++;
             continue;
           }
@@ -232,6 +232,8 @@ function isRelevant(
 
 /** The project's own role (title and listed skills) falls in one of these service categories. Pure. */
 export function fitsServiceCategories(item: Pick<DiscoveredItem, "title" | "metadata">, serviceCategories: string[]): boolean {
+  // "Remote AI Training Specialists Needed": hand-labelling work for people, not a project to build.
+  if (isAiTrainingWork(item.title)) return false;
   const skills = Array.isArray(item.metadata?.skills) ? (item.metadata.skills as unknown[]).filter((s): s is string => typeof s === "string") : [];
   const found = new Set([...categorizeJob({ title: item.title, department: null }), ...categorizeJob({ title: `${item.title} ${skills.join(" ")}`, department: null })]);
   return [...found].some((c) => serviceCategories.includes(c));

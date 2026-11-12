@@ -89,6 +89,16 @@ describe("scoreCompany", () => {
     expect(withEvidence?.signalRoles.map((r) => [r.signalId, r.role])).toEqual(expect.arrayContaining([["s1", "primary"], ["s0", "corroborating"]]));
   });
 
+  it("leads with the strongest signal that needs the matched service", () => {
+    // A stronger hiring signal for another service doesn't become the "why" of a website match.
+    const web = signal({ id: "web1", intentLevel: "medium", summary: "Hiring a UX designer.", serviceCategories: ["ui_ux_design"] });
+    const other = hiring({ id: "eng1", intentLevel: "high", summary: "Hiring an engineering manager.", serviceCategories: ["software_development"] });
+    const result = scoreCompany({ ...base, signals: [other, web, signal({ id: "web2", intentLevel: "medium", serviceCategories: ["ui_ux_design"] })] })!;
+    expect(result.serviceId).toBe("web");
+    expect(result.problem).toBe("Hiring a UX designer.");
+    expect(result.signalRoles.find((r) => r.role === "primary")?.signalId).toBe("web1");
+  });
+
   it("scores a 3-day-old explicit request from an ideal customer at 91", () => {
     const result = score();
     // Intent = 30 explicit + 15 severity + 15 evaluating + 15×0.85 recency + 10×0.6 urgency + 0 corroboration + 5 source
