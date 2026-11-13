@@ -1,9 +1,9 @@
-import type { LeadTab, StatusGroup } from "@/lib/domain/opportunities";
+import type { LeadTab, RoleFamily, StatusGroup } from "@/lib/domain/opportunities";
 import type { FeedbackInput } from "@/lib/validation/feedback";
 import type { BulkOpportunitiesValues, InterpretSearchInput, OpportunityFilters, OpportunitySort, UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { setPageParams, type Pagination } from "@/lib/validation/pagination";
 import { apiRequest } from "./client";
-import type { InterpretedSearch, LeadList, OpportunityDetail, OpportunityList } from "./types";
+import type { InterpretedSearch, LeadContacts, LeadList, OpportunityDetail, OpportunityList } from "./types";
 
 /** Adds the active filters to `params` (lists comma-separated); empty filters are left out. */
 export function setFilterParams(params: URLSearchParams, filters: OpportunityFilters): URLSearchParams {
@@ -12,6 +12,17 @@ export function setFilterParams(params: URLSearchParams, filters: OpportunityFil
       params.set(key, Array.isArray(value) ? value.join(",") : String(value));
     }
   }
+  return params;
+}
+
+/** What the Leads page shows: a contact tab, a role type (null: any) and a search. */
+export type LeadFilter = { tab: LeadTab; role: RoleFamily | null; q: string };
+
+function leadParams({ tab, role, q }: LeadFilter): URLSearchParams {
+  const params = new URLSearchParams();
+  if (tab !== "all") params.set("tab", tab);
+  if (role) params.set("role", role);
+  if (q) params.set("q", q);
   return params;
 }
 
@@ -24,12 +35,11 @@ export const opportunitiesApi = {
   /** One action on several opportunities: move to a stage, archive/restore, or add to a list. */
   bulk: (input: BulkOpportunitiesValues) => apiRequest<{ changed: number }>("/opportunities/bulk", { method: "POST", body: input }),
   get: (id: string, signal?: AbortSignal) => apiRequest<OpportunityDetail>(`/opportunities/${id}`, { signal }),
-  /** The Leads page: one tab and page of active leads, with every tab's count. */
-  leads: (tab: LeadTab, q: string, page: Pagination, signal?: AbortSignal) => {
-    const params = new URLSearchParams(tab === "all" ? {} : { tab });
-    if (q) params.set("q", q);
-    return apiRequest<LeadList>(`/leads?${setPageParams(params, page)}`, { signal });
-  },
+  /** The Leads page: one tab, role type and page of active leads, with every tab's and role type's count. */
+  leads: (filter: LeadFilter, page: Pagination, signal?: AbortSignal) =>
+    apiRequest<LeadList>(`/leads?${setPageParams(leadParams(filter), page)}`, { signal }),
+  /** Every lead the same filter matches, with its email and phone, for copying all at once. */
+  leadContacts: (filter: LeadFilter) => apiRequest<LeadContacts>(`/leads/contacts?${leadParams(filter)}`),
   update: (id: string, input: UpdateOpportunityValues) =>
     apiRequest<OpportunityDetail>(`/opportunities/${id}`, { method: "PATCH", body: input }),
   /** Gives the signed-in user's verdict; resolves with the opportunity, re-matched if it corrects it. */

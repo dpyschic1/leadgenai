@@ -2,7 +2,7 @@
 import type { memberRole, signalRole } from "@/db/schema";
 import type { FeedbackVerdict } from "@/lib/domain/feedback";
 import type { CompanyIdentity, SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
-import type { LeadTab, StatusGroup } from "@/lib/domain/opportunities";
+import type { LeadTab, RoleFamily, StatusGroup } from "@/lib/domain/opportunities";
 import type { StageRef } from "@/lib/domain/pipeline";
 import type {
   CompanyRelationship,
@@ -334,8 +334,24 @@ export type OpportunityList = Page<OpportunitySummary> & {
   newThisWeek: number;
 };
 
+/** A lead on the Leads page: an opportunity plus the roles it is hiring for (newest first). */
+export type LeadSummary = OpportunitySummary & { roles: string[]; roleCount: number };
+
 /** One page of the Leads page; `total` is the selected tab's count. */
-export type LeadList = Page<OpportunitySummary> & { counts: Record<LeadTab, number> };
+export type LeadList = Page<LeadSummary> & {
+  /** Per contact tab, with the role type applied. */
+  counts: Record<LeadTab, number>;
+  /** Per role type, with the contact tab applied. */
+  roleCounts: Record<RoleFamily, number>;
+};
+
+/** Every matching lead's best email and phone (the person's, else the company's), for copying. */
+export type LeadContacts = {
+  total: number;
+  /** True when there were more leads than one copy holds. */
+  truncated: boolean;
+  items: { id: string; name: string; contact: string | null; email: string | null; phone: string | null }[];
+};
 
 export type CompanyList = Page<CompanySummary>;
 export type ServiceList = Page<Service>;

@@ -8,6 +8,7 @@ import {
   companyLocations,
   companyPeople,
   contactPoints,
+  jobPostings,
   opportunities,
   opportunityDiscoveries,
   opportunityEvidence,
@@ -27,13 +28,33 @@ import {
   sourceRecords,
   users,
 } from "@/db/schema";
-import type { CompanyContact, FeedbackVote, LeadList, OpportunityDetail, OpportunityFactor, OpportunityList, OpportunitySummary } from "@/lib/api/types";
+import type {
+  CompanyContact,
+  FeedbackVote,
+  LeadContacts,
+  LeadList,
+  OpportunityDetail,
+  OpportunityFactor,
+  OpportunityList,
+  OpportunitySummary,
+} from "@/lib/api/types";
 import { ENGINE_FACTOR_LABELS } from "@/lib/domain/engine";
-import { LEAD_TABS, STATUS_GROUP_KEYS, type ContactReach, type LeadTab, type StatusGroup } from "@/lib/domain/opportunities";
+import {
+  LEAD_TABS,
+  ROLE_FAMILIES,
+  ROLE_FAMILY_PATTERNS,
+  roleFamiliesOf,
+  STATUS_GROUP_KEYS,
+  type ContactReach,
+  type LeadTab,
+  type RoleFamily,
+  type StatusGroup,
+} from "@/lib/domain/opportunities";
 import type { SourceSlug } from "@/lib/domain/sources";
 import {
   EMPTY_FILTERS,
   type BulkOpportunitiesValues,
+  type LeadContactsQuery,
   type LeadListQuery,
   type OpportunityFilters,
   type OpportunityListQuery,
@@ -252,24 +273,161 @@ export function feedOrder(sort: OpportunitySort = "best") {
 export async function listLeads(auth: AuthContext, query: LeadListQuery): Promise<LeadList> {
   await refreshStaleScores(auth.workspaceId);
   const { page, pageSize } = query;
-  const base = and(matchesFilters(auth.workspaceId, { ...EMPTY_FILTERS, q: query.q }), or(groupCondition("open"), groupCondition("inProgress")));
-  const tabFilter = (tab: LeadTab) => (tab === "all" ? undefined : contactReach(tab));
-
-  const [rows, [countRow]] = await Promise.all([
-    summaryQuery().where(and(base, tabFilter(query.tab))).orderBy(...priorityOrder()).limit(pageSize).offset(offsetOf({ page, pageSize })),
+  const base = leadBase(auth.workspaceId, query.q);
+  const tab = leadTab(query.tab);
+  const index = await roleIndex(base);
+  const role = query.role ? hiringFor(index, query.role) : undefined;
+  const [rows, [tabRow], tabIds] = await Promise.all([
+    summaryQuery().where(and(base, role, tab)).orderBy(...priorityOrder()).limit(pageSize).offset(offsetOf({ page, pageSize })),
+    // Each tab's count has the role type applied, and each role type's count the tab: what a click would show.
     db
       .select(
         Object.fromEntries(
-          LEAD_TABS.map((tab) => [tab, tab === "all" ? sql<number>`count(*)::int` : sql<number>`(count(*) filter (where ${contactReach(tab)}))::int`]),
+          LEAD_TABS.map((t) => {
+            const condition = leadTab(t);
+            return [t, condition ? sql<number>`(count(*) filter (where ${condition}))::int` : sql<number>`count(*)::int`];
+          }),
         ) as Record<LeadTab, SQL<number>>,
       )
       .from(opportunities)
       .leftJoin(companies, eq(companies.id, opportunities.companyId))
       .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
-      .where(base),
+      .where(and(base, role)),
+    tab
+      ? db
+          .select({ id: opportunities.id })
+          .from(opportunities)
+          .leftJoin(companies, eq(companies.id, opportunities.companyId))
+          .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+          .where(and(base, tab))
+          .then((found) => new Set(found.map((r) => r.id)))
+      : null,
   ]);
-  const counts = countRow as Record<LeadTab, number>;
-  return { items: rows.map(toSummary), counts, total: counts[query.tab], page, pageSize };
+
+  const roleCounts = Object.fromEntries(ROLE_FAMILIES.map((f) => [f, 0])) as Record<RoleFamily, number>;
+  for (const [id, lead] of index) {
+    if (tabIds && !tabIds.has(id)) continue;
+    for (const family of lead.families) roleCounts[family]++;
+  }
+  const counts = tabRow as Record<LeadTab, number>;
+  return {
+    items: rows.map((row) => {
+      const titles = index.get(row.opportunity.id)?.titles ?? [];
+      // With a role type picked, its titles come first: the reason the lead is in the list.
+      const ordered = query.role ? [...titles].sort((a, b) => Number(ROLE_FAMILY_PATTERNS[query.role!].test(b)) - Number(ROLE_FAMILY_PATTERNS[query.role!].test(a))) : titles;
+      return { ...toSummary(row), roles: ordered.slice(0, MAX_ROLE_TITLES), roleCount: titles.length };
+    }),
+    counts,
+    roleCounts,
+    total: counts[query.tab],
+    page,
+    pageSize,
+  };
+}
+
+/** Role titles a lead row lists before "+N more". */
+const MAX_ROLE_TITLES = 6;
+/** Leads one "copy all" holds. */
+const MAX_LEAD_CONTACTS = 2000;
+
+type RoleIndex = Map<string, { titles: string[]; families: Set<RoleFamily> }>;
+
+/**
+ * What every lead matching `base` is hiring for: its distinct job titles (newest first) and their
+ * role types. A discovered project or post has no job postings; its own title gives its role type.
+ * Titles are classified here rather than in SQL: a dozen patterns over thousands of titles is
+ * fast in JavaScript and slow as Postgres regular expressions.
+ */
+async function roleIndex(base: SQL | undefined): Promise<RoleIndex> {
+  const leads = () =>
+    db
+      .select({ id: opportunities.id, title: sql<string>`${jobPostings.title}` })
+      .from(opportunities)
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId));
+  const [jobs, engine] = await Promise.all([
+    leads()
+      .innerJoin(opportunitySignals, and(eq(opportunitySignals.opportunityId, opportunities.id), sql`${opportunitySignals.role} <> 'negative'`))
+      .innerJoin(jobPostings, eq(jobPostings.signalId, opportunitySignals.signalId))
+      .where(base)
+      .orderBy(sql`coalesce(${jobPostings.postedAt}, ${jobPostings.firstSeenAt}) desc`),
+    db
+      .select({ id: opportunities.id, title: sql<string>`${opportunities.title}` })
+      .from(opportunities)
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .where(and(base, isNotNull(opportunities.category), isNotNull(opportunities.title))),
+  ]);
+
+  const index: RoleIndex = new Map();
+  const entry = (id: string) => index.get(id) ?? index.set(id, { titles: [], families: new Set() }).get(id)!;
+  for (const { id, title } of jobs) {
+    const lead = entry(id);
+    if (lead.titles.some((t) => t.toLowerCase() === title.toLowerCase())) continue;
+    lead.titles.push(title);
+    for (const family of roleFamiliesOf(title)) lead.families.add(family);
+  }
+  for (const { id, title } of engine) for (const family of roleFamiliesOf(title)) entry(id).families.add(family);
+  return index;
+}
+
+/** Leads in `index` hiring for this role type, as a condition. */
+function hiringFor(index: RoleIndex, family: RoleFamily): SQL {
+  const ids = [...index].filter(([, lead]) => lead.families.has(family)).map(([id]) => id);
+  return ids.length > 0 ? inArray(opportunities.id, ids) : sql`false`;
+}
+
+/** Every lead still being worked (open or in progress, not archived), narrowed by a search. Expects `companies` and `pipeline_stages` joined. */
+function leadBase(workspaceId: string, q: string): SQL | undefined {
+  return and(matchesFilters(workspaceId, { ...EMPTY_FILTERS, q }), or(groupCondition("open"), groupCondition("inProgress")));
+}
+
+const leadEmail = sql`coalesce(${personEmail}, ${companyEmail})`;
+const leadPhone = sql`coalesce(${personPhone}, ${companyPhone})`;
+
+/** One contact tab of the Leads page. */
+function leadTab(tab: LeadTab): SQL | undefined {
+  switch (tab) {
+    case "all":
+      return undefined;
+    case "email":
+      return sql`(${leadEmail} is not null)`;
+    case "phone":
+      return sql`(${leadPhone} is not null)`;
+    default:
+      return contactReach(tab);
+  }
+}
+
+/** Every lead the Leads page's tab, role type and search match (best first), with the email and phone to use. */
+export async function listLeadContacts(auth: AuthContext, query: LeadContactsQuery): Promise<LeadContacts> {
+  const base = leadBase(auth.workspaceId, query.q);
+  const role = query.role ? hiringFor(await roleIndex(base), query.role) : undefined;
+  const where = and(base, role, leadTab(query.tab));
+  const rows = await db
+    .select({
+      id: opportunities.id,
+      companyName: companies.canonicalName,
+      title: opportunities.title,
+      contact: people.name,
+      email: sql<string | null>`${leadEmail}`,
+      phone: sql<string | null>`${leadPhone}`,
+    })
+    .from(opportunities)
+    .leftJoin(companies, eq(companies.id, opportunities.companyId))
+    .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+    .leftJoin(people, eq(people.id, opportunities.primaryPersonId))
+    .where(where)
+    .orderBy(...priorityOrder())
+    .limit(MAX_LEAD_CONTACTS + 1);
+  const items = rows.slice(0, MAX_LEAD_CONTACTS).map((r) => ({
+    id: r.id,
+    name: r.companyName ?? r.title ?? "Untitled opportunity",
+    contact: r.contact,
+    email: r.email,
+    phone: r.phone,
+  }));
+  return { total: items.length, truncated: rows.length > MAX_LEAD_CONTACTS, items };
 }
 
 /** Feed order: highest priority first, unscored last, then freshest evidence, then by name (id breaks ties, so pages never overlap). */

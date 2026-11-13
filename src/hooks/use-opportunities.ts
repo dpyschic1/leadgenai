@@ -1,9 +1,9 @@
 "use client";
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { opportunitiesApi } from "@/lib/api/opportunities";
+import { opportunitiesApi, type LeadFilter } from "@/lib/api/opportunities";
 import type { OpportunityDetail } from "@/lib/api/types";
-import type { LeadTab, StatusGroup } from "@/lib/domain/opportunities";
+import type { StatusGroup } from "@/lib/domain/opportunities";
 import type { FeedbackInput } from "@/lib/validation/feedback";
 import { EMPTY_FILTERS, type BulkOpportunitiesValues, type OpportunityFilters, type OpportunitySort, type UpdateOpportunityValues } from "@/lib/validation/opportunities";
 import { FIRST_PAGE, type Pagination } from "@/lib/validation/pagination";
@@ -26,11 +26,11 @@ export function useBulkOpportunities() {
   });
 }
 
-/** One tab and page of the Leads page. */
-export function useLeads(tab: LeadTab, q: string, page: Pagination) {
+/** One tab, role type and page of the Leads page. */
+export function useLeads(filter: LeadFilter, page: Pagination) {
   return useQuery({
-    queryKey: queryKeys.leads(tab, q, page),
-    queryFn: ({ signal }) => opportunitiesApi.leads(tab, q, page, signal),
+    queryKey: queryKeys.leads(filter, page),
+    queryFn: ({ signal }) => opportunitiesApi.leads(filter, page, signal),
     placeholderData: keepPreviousData,
   });
 }

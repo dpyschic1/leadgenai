@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { COUNTRY_CODES } from "@/lib/countries";
 import { FILTER_CATEGORIES } from "@/lib/domain/engine";
-import { CONTACT_REACH, LEAD_TABS, STATUS_GROUP_KEYS, type StatusGroup } from "@/lib/domain/opportunities";
+import { CONTACT_REACH, LEAD_TABS, ROLE_FAMILIES, STATUS_GROUP_KEYS, type StatusGroup } from "@/lib/domain/opportunities";
 import { paginationFields } from "./pagination";
 
 /** Shared by the opportunity pages, the AI search and the route handlers. */
@@ -156,10 +156,17 @@ export type InterpretSearchInput = z.infer<typeof interpretSearchSchema>;
 export type UpdateOpportunityInput = z.input<typeof updateOpportunitySchema>;
 export type UpdateOpportunityValues = z.output<typeof updateOpportunitySchema>;
 
-/** One page of the Leads page: a tab, a search, a page. */
-export const leadListQuerySchema = z.object({
+/** Which leads the Leads page shows: a contact tab, a role type, a search. */
+export const leadFilterFields = {
   q: z.string().trim().max(200).default(""),
   tab: z.enum(LEAD_TABS).default("all"),
-  ...paginationFields,
-});
+  role: z.enum(ROLE_FAMILIES).optional(),
+};
+
+/** One page of the Leads page. */
+export const leadListQuerySchema = z.object({ ...leadFilterFields, ...paginationFields });
 export type LeadListQuery = z.output<typeof leadListQuerySchema>;
+
+/** Every lead the Leads page's filters match, for copying their emails and phones at once. */
+export const leadContactsQuerySchema = z.object(leadFilterFields);
+export type LeadContactsQuery = z.output<typeof leadContactsQuerySchema>;

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import { companyContactPoints, users, workspaces } from "@/db/schema";
 import { companySchema, personSchema } from "@/lib/validation/companies";
-import { leadListQuerySchema, opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
+import { leadContactsQuerySchema, leadListQuerySchema, opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
 import { serviceSchema } from "@/lib/validation/services";
 import { signalSchema } from "@/lib/validation/signals";
 import type { AuthContext } from "@/server/auth/session";
@@ -12,7 +12,7 @@ import { rescoreCompany } from "@/server/scoring/rescore";
 import { registerOwner } from "@/server/services/auth.service";
 import { createCompany, listCompanies } from "@/server/services/companies.service";
 import { exportOpportunities } from "@/server/services/exports.service";
-import { listLeads, listOpportunities, updateOpportunity } from "@/server/services/opportunities.service";
+import { listLeadContacts, listLeads, listOpportunities, updateOpportunity } from "@/server/services/opportunities.service";
 import { listPipeline } from "@/server/services/pipeline.service";
 import { addPerson } from "@/server/services/people.service";
 import { createService, listServices } from "@/server/services/services.service";
@@ -263,7 +263,7 @@ describe("contacts and the Leads page", () => {
 
   it("sorts every active lead by how it can be reached, with a count per tab", async () => {
     const all = await leads({});
-    expect(all.counts).toEqual({ all: 3, person: 1, company: 1, none: 1 });
+    expect(all.counts).toEqual({ all: 3, email: 1, phone: 1, person: 1, company: 1, none: 1 });
     expect(all.total).toBe(3);
 
     const [named] = (await leads({ tab: "person" })).items;
@@ -273,7 +273,14 @@ describe("contacts and the Leads page", () => {
     expect(line).toMatchObject({ company: { name: "Ledgerline" }, companyContact: { phone: "0113 496 0000" } });
     expect((await leads({ tab: "none" })).items.map((i) => i.company?.name)).toEqual(["Medisync Health"]);
     // Search narrows every tab's count.
-    expect((await leads({ q: "ledger" })).counts).toEqual({ all: 1, person: 0, company: 1, none: 0 });
+    expect((await leads({ q: "ledger" })).counts).toEqual({ all: 1, email: 0, phone: 1, person: 0, company: 1, none: 0 });
+  });
+
+  it("lists every matching lead's email and phone for copying", async () => {
+    const withEmail = await listLeadContacts(auth, leadContactsQuerySchema.parse({ tab: "email" }));
+    expect(withEmail.items).toEqual([expect.objectContaining({ name: "Northbridge Legal", contact: "James Whitaker", email: `james-${run}@northbridge.example` })]);
+    const withPhone = await listLeadContacts(auth, leadContactsQuerySchema.parse({ tab: "phone" }));
+    expect(withPhone.items).toEqual([expect.objectContaining({ name: "Ledgerline", email: null, phone: "0113 496 0000" })]);
   });
 
   it("filters the feed and the export to leads someone can be contacted at", async () => {
