@@ -680,7 +680,11 @@ export const boardJobs = pgTable(
     department: text(),
     location: text(),
     url: text().notNull(),
-    /** Plain text, trimmed to the AI analysis limit. */
+    /**
+     * Only what the AI reads and evidence quotes (`jobDigest`): the posting without perks and legal
+     * small print, at most `MAX_JOB_TEXT`, for a job that fits a service; just the links and emails
+     * it names for any other. Null for an undated job past `MAX_JOB_AGE_DAYS`.
+     */
     description: text(),
     postedAt: timestamp({ withTimezone: true }),
     /** When the provider says the job last changed, if it does. */
@@ -796,8 +800,9 @@ export const companyJobBoards = pgTable(
  * it closes, so a role that stays open for months (a staffing signal in itself) can be told apart
  * from a new one, and a job is never analysed twice.
  *
- * Denormalized: title, location, url and description repeat the shared `board_jobs` row (linked by
- * `board_job_id`), so the existing job-board code that reads them here keeps working unchanged.
+ * Denormalized: title, location and url repeat the shared `board_jobs` row (linked by
+ * `board_job_id`), so the workspace keeps its record of a job after the shared row is pruned. The
+ * description is not repeated: it is read from the shared row (`jobText`).
  */
 export const jobPostings = pgTable(
   "job_postings",
@@ -812,7 +817,7 @@ export const jobPostings = pgTable(
     department: text(),
     location: text(),
     url: text().notNull(),
-    /** Plain text, trimmed to the AI analysis limit. */
+    /** Only for jobs saved before the shared pool (no `board_job_id`); otherwise null, the text being in `board_jobs`. */
     description: text(),
     /** When the company published it, if the provider says. */
     postedAt: timestamp({ withTimezone: true }),
@@ -831,6 +836,8 @@ export const jobPostings = pgTable(
     uniqueIndex("job_postings_company_external_idx").on(t.companyId, t.provider, t.externalId),
     index("job_postings_company_closed_idx").on(t.companyId, t.closedAt),
     index("job_postings_signal_idx").on(t.signalId),
+    // "Has this workspace seen this shared job?" is asked for thousands of jobs per match.
+    index("job_postings_board_job_idx").on(t.boardJobId),
     foreignKey({
       name: "job_postings_company_fk",
       columns: [t.companyId, t.workspaceId],

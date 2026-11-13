@@ -35,6 +35,8 @@ export const RATE_LIMITS = {
   sourcesRun: { limit: 30, windowSeconds: 60 * 60 },
   /** Per user: "Refresh from sources" on a company. */
   companyRefresh: { limit: 30, windowSeconds: 60 * 60 },
+  /** Platform-wide: the background clean-up of old history runs at most once an hour. */
+  housekeeping: { limit: 1, windowSeconds: 60 * 60 },
 } as const satisfies Record<string, { limit: number; windowSeconds: number }>;
 
 export type RateLimitRule = keyof typeof RATE_LIMITS;

@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
 import {
+  boardJobs,
   companies,
   companyIdentifiers,
   companyJobBoards,
@@ -28,11 +29,11 @@ import { rateLimit, refundRateLimit } from "@/server/http/rate-limit";
 import { detectBoard } from "@/server/jobs/detect";
 import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
 import { getReferenceData } from "@/server/services/reference-data.service";
-import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
+import { connectDetectedBoard, jobText, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal } from "@/server/services/signals.service";
 import { hiringEmails, jobInCountries, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
-import { categorizeJob } from "@/server/jobs/job-categories";
+import { categorizeJob, refineCategories } from "@/server/jobs/job-categories";
 import { companiesHouse, findCompanyNumber } from "@/server/sources/companies-house";
 import { findWebsite, readWebsite, usableEmails, websiteFindings, type SiteRead } from "@/server/sources/company-website";
 import {
@@ -108,6 +109,7 @@ async function loadCompany(actor: Actor, companyId: string) {
       domain: companies.domain,
       industry: companies.industry,
       identity: companies.identityStatus,
+      sourceSlug: companies.sourceSlug,
       city: companyLocations.city,
       postcode: companyLocations.postalCode,
       country: companyLocations.country,
@@ -648,7 +650,12 @@ async function candidateFromBoard(actor: Actor, company: { id: string; name: str
         ),
       )
       .limit(1),
-    db.select({ description: jobPostings.description }).from(jobPostings).where(eq(jobPostings.companyId, company.id)).limit(50),
+    db
+      .select({ description: jobText })
+      .from(jobPostings)
+      .leftJoin(boardJobs, eq(boardJobs.id, jobPostings.boardJobId))
+      .where(eq(jobPostings.companyId, company.id))
+      .limit(50),
     db
       .select({
         provider: companyJobBoards.provider,
@@ -789,6 +796,12 @@ async function sharedSiteFacts(domain: string, pages: { contentHash: string | nu
   return facts;
 }
 
+/**
+ * Sources that only find technology companies (startups hiring engineers): a healthcare one there
+ * sells software to clinics, it is not a clinic patients book.
+ */
+const SOFTWARE_SOURCES = new Set(["yc_directory", "board_directory", "theirstack"]);
+
 async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
   const company = await loadCompany(actor, job.entityId);
   if (!company?.domain || !(await sourceRunnable(actor.workspaceId, "company_website"))) return { followUps: [], skipped: true };
@@ -911,7 +924,7 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
   // Possible website problems, by fixed rules: recorded only for workspaces selling a fix.
   let signalsCreated = 0;
   const sold = new Set((await loadServices(actor.workspaceId)).flatMap((s) => s.categories));
-  const findings = websiteFindings(company.name, site.checks, company.industry);
+  const findings = websiteFindings(company.name, site.checks, company.industry, { software: SOFTWARE_SOURCES.has(company.sourceSlug ?? "") });
   // A finding this read no longer makes (e.g. booking now found) is withdrawn: an automatic
   // check's claim must stay true. Only the check's own signals go; nothing a person entered.
   const gone = (["outdated_website", "insecure_website", "no_online_booking"] as const).filter((t) => !findings.some((f) => f.signalType === t));
@@ -1099,8 +1112,9 @@ async function scanJobBoard({ job, actor }: JobContext): Promise<JobResult> {
  */
 async function saveHiringEmails(company: { id: string; name: string; domain: string | null }): Promise<void> {
   const posts = await db
-    .select({ url: jobPostings.url, description: jobPostings.description })
+    .select({ url: jobPostings.url, description: jobText })
     .from(jobPostings)
+    .leftJoin(boardJobs, eq(boardJobs.id, jobPostings.boardJobId))
     .where(eq(jobPostings.companyId, company.id))
     .limit(100);
   const descriptions = posts.map((p) => p.description);
@@ -1360,8 +1374,10 @@ async function discoverTheirStack({ actor, ai }: JobContext): Promise<JobResult>
         .where(eq(theirstackJobs.id, post.id));
     }
     const found = signalFromAnalysis(analysis, { url: j.url, occurredOn: j.postedOn, evidenceText: j.description });
-    // Kept only when the AI ties the job to something the workspace sells.
-    const values = found && found.serviceCategories.some((c) => sold.includes(c)) ? found : null;
+    // Kept only when the AI ties the job to something the workspace sells, after the title rules
+    // (a trainee or rotational post, or a role around the work, is never a lead).
+    const refined = found ? refineCategories(j.title, found.serviceCategories) : [];
+    const values = found && refined.some((c) => sold.includes(c)) ? { ...found, serviceCategories: refined } : null;
     const scoredCompany = await db.transaction(async (tx) => {
       // The workspace's own record of the post: provenance, and "looked at" so it isn't offered again.
       const record = {
@@ -1441,7 +1457,8 @@ async function sharedPostsFor(actor: Actor, sold: string[], countries: string[])
     .map((r) => ({ ...r, data: r.data as unknown as TheirStackJob, analysis: r.analysis as unknown as SignalAnalysis | null }))
     .filter((post) => {
       if (countries.length > 0 && !(post.country ? countries.includes(post.country) : jobInCountries(post.data.location, countries))) return false;
-      if (post.analysis) return post.analysis.isSignal && post.analysis.serviceCategories.some((c) => sold.includes(c));
+      // The AI's categories, held to the same title rules as every job (no trainees, no roles around the work).
+      if (post.analysis) return post.analysis.isSignal && refineCategories(post.title, post.analysis.serviceCategories).some((c) => sold.includes(c));
       return categorizeJob({ title: post.title, department: null }).some((c) => sold.includes(c));
     });
 }

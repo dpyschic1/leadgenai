@@ -569,7 +569,13 @@ export type WebsiteFinding = {
  * Possible website problems, found by fixed rules before any AI: no HTTPS, an out-of-support CMS,
  * no online booking where customers expect it. They suggest a need, not an intent to buy. Pure.
  */
-export function websiteFindings(company: string, checks: SiteChecks, industry: string | null): WebsiteFinding[] {
+export function websiteFindings(
+  company: string,
+  checks: SiteChecks,
+  industry: string | null,
+  /** A software company (e.g. a healthcare startup): online booking is not something its customers do on its site. */
+  { software = false }: { software?: boolean } = {},
+): WebsiteFinding[] {
   const findings: WebsiteFinding[] = [];
   if (!checks.secure) {
     findings.push({
@@ -613,6 +619,7 @@ export function websiteFindings(company: string, checks: SiteChecks, industry: s
   }
   // Absence is only worth claiming when enough of the site was read (not a blocked or one-page read).
   if (
+    !software &&
     industry &&
     BOOKING_INDUSTRIES.has(industry) &&
     checks.takesAppointments !== false &&

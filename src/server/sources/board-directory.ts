@@ -1,11 +1,12 @@
 import "server-only";
-import { and, asc, desc, eq, inArray, isNull, lt, lte, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { db, type Tx } from "@/db";
 import { boardJobs, directoryCrawls, jobBoardDirectory } from "@/db/schema";
 import { BOARD_TOKEN_PATTERN, JOB_BOARD_PROVIDERS, type JobBoardProvider } from "@/lib/domain/job-boards";
-import { MAX_SOURCE_TEXT } from "@/lib/validation/signals";
 import { AppError } from "@/server/http/errors";
 import { fetchBoardJobs } from "@/server/jobs/fetch-jobs";
+import { categorizeJob } from "@/server/jobs/job-categories";
+import { CLOSED_JOB_RETENTION_DAYS, isStaleJob, jobDigest, MAX_JOB_AGE_DAYS, repostKey } from "@/server/jobs/job-signal";
 import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { decodeEntities } from "@/server/jobs/html-to-text";
 import type { NormalizedJob } from "@/server/jobs/types";
@@ -41,8 +42,6 @@ const RETRY_FAILED_HOST_MS = 30 * 60 * 1000;
 /** How long a board's cached jobs stay fresh before the next download. */
 export const BOARD_FRESH_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 86_400_000;
-/** Closed jobs are kept this long (to tell long-open roles from new ones), then deleted. */
-const CLOSED_RETENTION_DAYS = 90;
 
 /** The hosts each provider serves public boards on, as archived URLs show them. */
 const BOARD_HOSTS: Record<JobBoardProvider, string[]> = {
@@ -178,7 +177,9 @@ export function workableProfile(body: unknown): { name: string | null; website: 
 /** Adds candidate boards (unverified); a board already known is left as it is. */
 export async function addCandidates(candidates: { provider: JobBoardProvider; boardToken: string; discoveryUrl: string | null }[]): Promise<number> {
   if (candidates.length === 0) return 0;
-  const unique = [...new Map(candidates.map((c) => [`${c.provider}:${c.boardToken}`, c])).values()];
+  const unique = [
+    ...new Map(candidates.map((c) => ({ ...c, boardToken: canonicalToken(c.boardToken) })).map((c) => [`${c.provider}:${c.boardToken}`, c])).values(),
+  ];
   const rows = await db
     .insert(jobBoardDirectory)
     .values(unique.map((c) => ({ provider: c.provider, boardToken: c.boardToken, discoveryUrl: c.discoveryUrl })))
@@ -194,7 +195,8 @@ const trimText = (value: string | null, max: number) => (value ? value.slice(0, 
  * know (404) is marked invalid; an outage is an error, retried later with backoff. Returns the
  * board's status after the check.
  */
-export async function refreshBoard(provider: JobBoardProvider, token: string): Promise<"valid" | "invalid" | "error"> {
+export async function refreshBoard(provider: JobBoardProvider, boardToken: string): Promise<"valid" | "invalid" | "error"> {
+  const token = canonicalToken(boardToken);
   const key = and(eq(jobBoardDirectory.provider, provider), eq(jobBoardDirectory.boardToken, token));
   await db.insert(jobBoardDirectory).values({ provider, boardToken: token }).onConflictDoNothing();
 
@@ -216,13 +218,20 @@ export async function refreshBoard(provider: JobBoardProvider, token: string): P
         nextCheckAt: new Date(Date.now() + (invalid ? 60 * DAY_MS : Math.min(2 ** attempts, 48) * 60 * 60 * 1000)),
       })
       .where(key);
+    // A board that no longer exists has no open jobs.
+    if (invalid) await db.transaction((tx) => closeAndPrune(tx, provider, token));
     return invalid ? "invalid" : "error";
   }
 
   const profile = await boardProfile(provider, token);
   await db.transaction(async (tx) => {
-    for (let start = 0; start < jobs.length; start += 100) {
-      const rows = jobs.slice(start, start + 100).map((job) => ({
+    const stored = await tx
+      .select({ externalId: boardJobs.externalId, title: boardJobs.title, location: boardJobs.location })
+      .from(boardJobs)
+      .where(and(eq(boardJobs.provider, provider), eq(boardJobs.boardToken, token)));
+    const fresh = freshUniqueJobs(jobs, stored);
+    for (let start = 0; start < fresh.length; start += 100) {
+      const rows = fresh.slice(start, start + 100).map((job) => ({
         provider,
         boardToken: token,
         externalId: job.externalId,
@@ -230,7 +239,7 @@ export async function refreshBoard(provider: JobBoardProvider, token: string): P
         department: trimText(job.department, 200),
         location: trimText(job.location, 300),
         url: job.url,
-        description: trimText(job.description, MAX_SOURCE_TEXT),
+        description: jobDigest(job.description, { relevant: categorizeJob(job).length > 0 }),
         postedAt: job.postedAt,
       }));
       await tx
@@ -243,21 +252,16 @@ export async function refreshBoard(provider: JobBoardProvider, token: string): P
             department: sql`excluded.department`,
             location: sql`excluded.location`,
             url: sql`excluded.url`,
-            description: sql`excluded.description`,
+            // Rewritten only when it changed: an unchanged text keeps its stored copy (no new one per refresh).
+            description: sql`case when ${boardJobs.description} is distinct from excluded.description then excluded.description else ${boardJobs.description} end`,
             postedAt: sql`excluded.posted_at`,
             lastSeenAt: sql`now()`,
             closedAt: null,
           },
         });
     }
-    // Jobs gone from the board are closed; long-closed ones are deleted.
-    await tx
-      .update(boardJobs)
-      .set({ closedAt: sql`now()` })
-      .where(and(eq(boardJobs.provider, provider), eq(boardJobs.boardToken, token), isNull(boardJobs.closedAt), lt(boardJobs.lastSeenAt, sql`now()`)));
-    await tx
-      .delete(boardJobs)
-      .where(and(eq(boardJobs.provider, provider), eq(boardJobs.boardToken, token), lt(boardJobs.closedAt, sql`now() - make_interval(days => ${CLOSED_RETENTION_DAYS})`)));
+    // Jobs gone from the board (or now too old, or a repost) are closed; old ones are deleted.
+    await closeAndPrune(tx, provider, token);
     await tx
       .update(jobBoardDirectory)
       .set({
@@ -275,13 +279,70 @@ export async function refreshBoard(provider: JobBoardProvider, token: string): P
   return "valid";
 }
 
+/**
+ * Board names are compared without case: archived links spell the same board "FINNY" and "finny",
+ * and providers answer either. Stored lowercase so one board is never two.
+ */
+export const canonicalToken = (token: string) => token.trim().toLowerCase();
+
+/**
+ * The jobs worth keeping from a board's download: fresh ones (`isStaleJob`), each listed once. A job
+ * listed several times with the same title and place (`repostKey`) is kept as the copy already
+ * stored, else the newest, so a refresh never swaps it for a "new" job. Pure.
+ */
+export function freshUniqueJobs<T extends Pick<NormalizedJob, "externalId" | "title" | "location" | "postedAt">>(
+  jobs: T[],
+  stored: { externalId: string; title: string; location: string | null }[] = [],
+  now = new Date(),
+): T[] {
+  const storedIds = new Set(stored.map((s) => s.externalId));
+  const best = new Map<string, T>();
+  for (const job of jobs) {
+    if (isStaleJob(job.postedAt, now)) continue;
+    const key = repostKey(job);
+    const current = best.get(key);
+    const better =
+      !current ||
+      (storedIds.has(job.externalId) && !storedIds.has(current.externalId)) ||
+      (storedIds.has(job.externalId) === storedIds.has(current.externalId) && (job.postedAt?.getTime() ?? 0) > (current.postedAt?.getTime() ?? 0));
+    if (better) best.set(key, job);
+  }
+  return [...best.values()];
+}
+
+/**
+ * A board's housekeeping after a download: jobs no longer listed are closed; closed jobs past
+ * `CLOSED_JOB_RETENTION_DAYS` and jobs posted more than `MAX_JOB_AGE_DAYS` ago are deleted; an
+ * undated job seen that long ago keeps its row (so it isn't taken for a new job) but not its text.
+ */
+async function closeAndPrune(tx: Tx, provider: JobBoardProvider, token: string): Promise<void> {
+  const board = and(eq(boardJobs.provider, provider), eq(boardJobs.boardToken, token));
+  await tx.update(boardJobs).set({ closedAt: sql`now()` }).where(and(board, isNull(boardJobs.closedAt), lt(boardJobs.lastSeenAt, sql`now()`)));
+  await tx
+    .delete(boardJobs)
+    .where(
+      and(
+        board,
+        or(
+          lt(boardJobs.closedAt, sql`now() - make_interval(days => ${CLOSED_JOB_RETENTION_DAYS})`),
+          lt(boardJobs.postedAt, sql`now() - make_interval(days => ${MAX_JOB_AGE_DAYS})`),
+        ),
+      ),
+    );
+  await tx
+    .update(boardJobs)
+    .set({ description: null })
+    .where(and(board, isNull(boardJobs.postedAt), isNotNull(boardJobs.description), lt(boardJobs.firstSeenAt, sql`now() - make_interval(days => ${MAX_JOB_AGE_DAYS})`)));
+}
+
 export type CachedJob = NormalizedJob & { boardJobId: string };
 
 /**
  * A board's open jobs from the shared cache, downloading them first when the cache is older than
  * `freshWithinMs`. Throws the provider's error when a download is needed and fails.
  */
-export async function boardJobsFor(provider: JobBoardProvider, token: string, freshWithinMs = BOARD_FRESH_MS): Promise<CachedJob[]> {
+export async function boardJobsFor(provider: JobBoardProvider, boardToken: string, freshWithinMs = BOARD_FRESH_MS): Promise<CachedJob[]> {
+  const token = canonicalToken(boardToken);
   const [board] = await db
     .select({ lastFetchedAt: jobBoardDirectory.lastFetchedAt, status: jobBoardDirectory.validationStatus, lastError: jobBoardDirectory.lastError })
     .from(jobBoardDirectory)

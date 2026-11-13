@@ -1,0 +1,1 @@
+CREATE INDEX "job_postings_board_job_idx" ON "job_postings" USING btree ("board_job_id");

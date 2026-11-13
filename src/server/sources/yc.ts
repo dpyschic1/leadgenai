@@ -5,7 +5,7 @@ import { boardJobs, jobBoardDirectory, ycCompanies } from "@/db/schema";
 import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import { candidateTokens } from "@/server/jobs/detect";
 import { boardExists } from "@/server/jobs/fetch-jobs";
-import { refreshBoard } from "./board-directory";
+import { canonicalToken, refreshBoard } from "./board-directory";
 import { readWebsite } from "./company-website";
 import { registrableDomain } from "./http";
 import type { FoundCompany, HealthStatus, SourceAdapter } from "./index";
@@ -305,7 +305,7 @@ export async function detectYcBoards({ limit, deadline }: { limit: number; deadl
     const board = await findYcBoard(company);
     await db
       .update(ycCompanies)
-      .set({ boardProvider: board?.provider ?? null, boardToken: board?.boardToken ?? null, boardCheckedAt: sql`now()` })
+      .set({ boardProvider: board?.provider ?? null, boardToken: board ? canonicalToken(board.boardToken) : null, boardCheckedAt: sql`now()` })
       .where(eq(ycCompanies.id, company.id));
     checked++;
   }

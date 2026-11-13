@@ -222,7 +222,10 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
     .filter((s) => rejectedServices.has(s.id))
     .map((s) => `Not matched to ${s.name}: your team flagged it as the wrong service`);
 
-  const best = pickService(candidates, positives, labels, input.company.industry);
+  const best = pickService(candidates, positives, labels, input.company.industry, input.company.employeeCount);
+  // The only services that fit what the company needs are for companies of another size: not a lead.
+  const needed = new Set(positives.flatMap((s) => s.serviceCategories));
+  if (!best && candidates.some((s) => outsideSize(s, input.company.employeeCount) && s.categories.some((c) => needed.has(c)))) return null;
   const service = best?.service ?? null;
   // The lead signal is the strongest one that needs the matched service, so "why" explains the match
   // (a company matched to a design service leads with its designer job, not its engineering one).
@@ -351,13 +354,28 @@ function recencyFactor(latest: Date, now: Date) {
  * with no overlap at all is never chosen, so the opportunity shows "No matching service" instead
  * of a match that isn't one.
  */
-function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels, industry: string | null = null) {
+/**
+ * Categories every role of a kind gets (any tech job also means "staff augmentation"). They are a
+ * real match, but say less about the need than a specific one (AI / machine learning), so a service
+ * matched only through them ranks below one matched specifically.
+ */
+const GENERIC_CATEGORIES = new Set(["staff_augmentation"]);
+
+/** Whether a known company size is outside the service's target range (unknown never is). Pure. */
+export const outsideSize = (service: Pick<EngineService, "companySizeMin" | "companySizeMax">, employees: number | null) =>
+  employees !== null && ((service.companySizeMin !== null && employees < service.companySizeMin) || (service.companySizeMax !== null && employees > service.companySizeMax));
+
+function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels, industry: string | null = null, employees: number | null = null) {
   const categorised = positives.filter((s) => s.serviceCategories.length > 0);
   let best: { service: EngineService; fit: number; rank: number; reasons: string[] } | null = null;
 
   for (const service of services) {
+    // A known size outside the service's range is not its customer (a 40,000-person company for a
+    // startups-only service).
+    if (outsideSize(service, employees)) continue;
     const offered = new Set(service.categories);
     let weighted = 0;
+    let specific = 0;
     let total = 0;
     const matched = new Set<string>();
     for (const signal of categorised) {
@@ -367,13 +385,16 @@ function pickService(services: EngineService[], positives: EngineSignal[], label
       // Any overlap is a real match (0.6); covering more of what the signal asks for adds up to 0.4.
       const match = overlap.length === 0 ? 0 : 0.6 + 0.4 * (overlap.length / signal.serviceCategories.length);
       weighted += weight * match;
+      if (overlap.some((c) => !GENERIC_CATEGORIES.has(c))) specific += weight * match;
       total += weight;
     }
     const fit = total === 0 ? 0 : (weighted / total) * 100;
     // A service aimed at other industries (a dental service for a care provider) only wins when
-    // nothing aimed at this company fits as well. Ranking only: the fit itself is unchanged.
+    // nothing aimed at this company fits as well; nor does one matched only through generic
+    // categories. Ranking only: the fit itself is unchanged.
     const elsewhere = industry !== null && service.targetIndustries.length > 0 && !service.targetIndustries.includes(industry);
-    const rank = elsewhere ? fit * 0.5 : fit;
+    const specificity = weighted === 0 ? 0 : 0.5 + 0.5 * (specific / weighted);
+    const rank = (elsewhere ? fit * 0.5 : fit) * specificity;
     if (fit > 0 && (!best || rank > best.rank)) {
       best = { service, fit, rank, reasons: [`Matches ${service.name}: ${[...matched].map(labels.category).join(", ")}`] };
     }

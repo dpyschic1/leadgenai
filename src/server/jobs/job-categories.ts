@@ -74,7 +74,7 @@ const PLAIN_ENGINEER = /\b(engineer|developer)\b/;
  * title also says software ("Embedded Software Engineer" stays software).
  */
 const PHYSICAL_ENGINEERING =
-  /\b(mechanical|mechatronics?|electrical|electronics?|civil|structural|geotechnical|chemical|process|manufacturing|industrial|hardware|rf|antenna|analog|asic|fpga|pcb|silicon|semiconductor|photonics?|optical|materials?|metallurg\w*|aerospace|propulsion|avionics|flight test|structures? test|reactor|thermal|hvac|piping|plumbing|power|energy|battery|charging|solar|grid|substation|nuclear|petroleum|mining|environmental|water|wastewater|roadway|transportation|traffic|bridge|construction|facilities|maintenance|field service|packaging|biomedical|controls?|instrumentation|robotics hardware|quality engineer\w*|environmental test|design verification|layout|manufacturing engineer|supplier quality|estimator|surveyor)\b/;
+  /\b(mechanical|mechatronics?|electrical|electronics?|civil|structural|geotechnical|chemical|process|manufacturing|industrial|hardware|rf|antenna|analog|asic|fpga|pcb|silicon|semiconductor|photonics?|optical|materials?|metallurg\w*|aerospace|propulsion|avionics|flight test|structures? test|reactor|thermal|vehicle structures|structures|hvac|piping|plumbing|power|energy|battery|charging|solar|grid|substation|nuclear|petroleum|mining|environmental|water|wastewater|roadway|transportation|traffic|bridge|construction|facilities|maintenance|field service|packaging|biomedical|controls?|instrumentation|robotics hardware|quality engineer\w*|environmental test|design verification|layout|manufacturing engineer|supplier quality|estimator|surveyor)\b/;
 const SOFTWARE_WORDS =
   /\b(software|firmware|embedded|web|full ?stack|front ?end|back ?end|cloud|data|ml|ai|machine learning|deep learning|computer vision|llms?|platform|devops|site reliability|security|mobile|app|application|automation|forward deployed)\b/;
 /** Chip and board design: hardware even when the chip is for AI ("Design Verification Engineer (AI Fabric Switches)"). */
@@ -88,18 +88,49 @@ const SELLING = /\b(sales(?! engineer)|account executive|account manager|busines
  * these on is not buying a service, so they are never a lead. A "Technical Fellow" is a senior engineer.
  */
 const TRAINEE =
-  /\b(interns?|internships?|externs?|externships?|co ?op|student|graduate|new grad|postdoc\w*|post doctoral|(?<!technical |distinguished )fellows?|fellowship|scholars?|apprentices?|apprenticeships?|trainee)\b/;
+  /\b(interns?|internships?|externs?|externships?|co ?op|student|graduate|new grad|postdoc\w*|post doctoral|(?<!technical |distinguished )fellows?|fellowship|scholars?|apprentices?|apprenticeships?|trainee|rotational|rotation program)\b/;
 /**
  * Roles that work around a technology without building it: product, marketing, writing, legal,
  * recruiting, and training AI models by hand (rating, labelling). "Product Manager, AI" or "Data
  * Journalist, AI" doesn't mean the company needs AI built.
  */
-const NOT_BUILDING =
-  /\b(product (manager|management|owner|lead|marketing)|program manager|marketing|marketer|journalist|reporter|writer|editor|copywriter|recruit\w*|talent|counsel|attorney|lawyer|legal|paralegal|policy|communications|evangelist|advocate|developer relations|devrel|community|ai (trainer|tutor|training)|training (specialist|data)|data (annotat\w*|label\w*)|annotat\w*|label(l)?er|label(l)?ing|rater|evaluator|evaluation specialist|transcri\w*)\b/;
-/** A title that names a building role keeps it: "Applied AI Architect, International Policy". */
-const BUILDER = /\b(engineer\w*|developer|architect|programmer)\b/;
+const NOT_BUILDING = new RegExp(
+  "\\b(" +
+    [
+      // Product, marketing, writing, legal, recruiting.
+      "product (manager|management|owner|lead|marketing|strategist|analyst)|program (manager|lead|director)|programs|project (lead|manager)",
+      "marketing|marketer|journalist|reporter|writer|editor|copywriter|storyteller|recruit\\w*|talent|counsel|attorney|lawyer|legal|paralegal",
+      "policy|communications|evangelist|advocate|developer relations|devrel|community",
+      // Finance, people, strategy and management of the business around the technology.
+      "finance|financial|accounting|people|human resources|business partner|strateg(y|ist)|strategic|pricing|incubation|growth",
+      "compliance|governance|risk officer|tech risk|monitoring|evaluation|transformation|adoption|enablement|deployment|engagement manager",
+      // Customers, support and operations.
+      "customer success|success manager|support|client director|account (director|manager|executive)|alliances?|go to market|gtm",
+      "partner manager|ecosystem|discoverability|logistics|clinical|ambulatory",
+      "operations (lead|manager|specialist|administrator)|business operations|administrator|administration|operator|mission control",
+      "business (analyst|systems analyst)|implementation analyst|associate",
+      // Consultancies hiring consultants are selling the same work: competitors, not buyers.
+      "consultant|practice director",
+      // Designers do UI/UX work (its own category), not AI development.
+      "designer",
+      // Making content with AI tools, not building AI: videos, ads, voices.
+      "ugc|presenter|influencer|video (creator|creation|editor|editing|producer|production)|videographer|voice ?over|voice (actor|artist|talent)|ad creation|ads? creat\\w*",
+      // Training AI models by hand.
+      "ai (trainer|tutor|training)|training (specialist|data)|data (annotat\\w*|label\\w*)|annotat\\w*|label(l)?er|label(l)?ing|rater|evaluator|evaluation specialist|transcri\\w*",
+    ].join("|") +
+    ")\\b",
+);
+/** A title that names a building role keeps it: "Applied AI Architect, International Policy", "Senior Growth Data Scientist". */
+const BUILDER = /\b(engineer\w*|developer|architect|programmer|scientist|researcher)\b/;
 /** Never a building role, even when the title also says "engineering" or "developer". */
-const ALWAYS_AROUND = /\b(product (manager|management|owner|lead)|developer relations|devrel|developer advocate)\b/;
+const ALWAYS_AROUND =
+  /\b(product (manager|management|owner|lead)|developer relations|devrel|developer advocate|chief \w+ officer|cfo|coo|cmo|presales|pre sales|field cto|people business partner|manager sales engineering|sales engineering manager|customer success)\b/;
+/**
+ * Language gigs for AI companies ("Generative AI Associate, Turkish Speaking - Flexible Hours",
+ * "Native Emirati Arabic Voice Tester"): people paid to talk to or rate models, never a lead.
+ */
+const LANGUAGE_GIG =
+  /\b(flexible hours|(arabic|chinese|mandarin|cantonese|dutch|french|german|hindi|italian|japanese|korean|polish|portuguese|russian|spanish|swedish|turkish|vietnamese|thai|indonesian|tagalog|urdu|bengali|hebrew|greek|czech|romanian|hungarian|danish|norwegian|finnish|ukrainian|malay|persian|farsi|swahili|emirati|english)( \w+)? (speaking|speaker|speakers)|native( \w+){1,2} (speaker|speakers|tester|voice))\b/;
 /** Works around the technology: selling it, or a non-building role that doesn't also name a building one. */
 const worksAround = (t: string) => SELLING.test(t) || ALWAYS_AROUND.test(t) || (NOT_BUILDING.test(t) && !BUILDER.test(t));
 /** Analysts and data scientists: data work that may involve models, a weaker sign of buying AI work than hiring to build it. */
@@ -120,7 +151,7 @@ const normalize = (text: string | null) =>
 export function categorizeJob(job: { title: string; department: string | null }): string[] {
   const title = normalize(job.title);
   const department = normalize(job.department);
-  if (TRAINEE.test(title)) return [];
+  if (TRAINEE.test(title) || LANGUAGE_GIG.test(title)) return [];
   const found = new Set<string>();
   for (const rule of RULES) if (rule.pattern.test(title)) for (const c of rule.categories) found.add(c);
   // "VP of AI Sales", "Product Manager, AI": working around the technology, not building it.
@@ -140,7 +171,7 @@ export function categorizeJob(job: { title: string; department: string | null })
  */
 export function refineCategories(title: string, categories: string[]): string[] {
   const t = normalize(title);
-  if (TRAINEE.test(t)) return [];
+  if (TRAINEE.test(t) || LANGUAGE_GIG.test(t)) return [];
   if (isPhysical(t)) return categories.filter((c) => !TECH_CATEGORIES.has(c) && c !== "staff_augmentation");
   if (!worksAround(t)) return categories;
   return categories.filter((c) => !TECH_CATEGORIES.has(c) && c !== "staff_augmentation");
@@ -154,7 +185,8 @@ export function isDataScienceOnly(title: string): boolean {
 
 /** Hand-training AI models (rating, labelling, "AI trainer" gigs): work for people, not a project to build. Pure. */
 export function isAiTrainingWork(title: string): boolean {
-  return AI_TRAINING_WORK.test(normalize(title));
+  const t = normalize(title);
+  return AI_TRAINING_WORK.test(t) || LANGUAGE_GIG.test(t);
 }
 
 const CONTRACT = /\b(contract|contractor|freelance|interim|temporary|temp|fixed term|\d+ ?(week|month)s?)\b/;

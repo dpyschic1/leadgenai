@@ -73,6 +73,30 @@ describe("recencyMultiplier (PRD §12 table)", () => {
   });
 });
 
+describe("service choice: size and specificity", () => {
+  const ai = { id: "ai", name: "AI Development", categories: ["ai_ml", "web_development"], targetIndustries: [], targetJobFunctions: [], targetCountries: [], companySizeMin: null, companySizeMax: null };
+  const aug = { id: "aug", name: "Staff Augmentation", categories: ["staff_augmentation", "software_development"], targetIndustries: [], targetJobFunctions: [], targetCountries: [], companySizeMin: null, companySizeMax: 200 };
+  const company = { ...base.company, employeeCount: 40 };
+
+  it("files a company hiring AI engineers under the AI service, not the generic one", () => {
+    const result = score({ company, services: [aug, ai], signals: [hiring({ serviceCategories: ["ai_ml", "staff_augmentation"] })] });
+    expect(result.serviceId).toBe("ai");
+  });
+  it("files a company hiring general developers under staff augmentation", () => {
+    const result = score({ company, services: [ai, aug], signals: [hiring({ serviceCategories: ["software_development", "staff_augmentation"] })] });
+    expect(result.serviceId).toBe("aug");
+  });
+  it("never offers a startups-only service to a company of known larger size", () => {
+    const big = { ...base.company, employeeCount: 40_000 };
+    // Only the size-limited service fits its need: no lead at all.
+    expect(scoreCompany({ ...base, company: big, services: [ai, aug], signals: [hiring({ serviceCategories: ["software_development", "staff_augmentation"] })] })).toBeNull();
+    // Another service with no size limit still fits.
+    expect(score({ company: big, services: [ai, aug], signals: [hiring({ serviceCategories: ["ai_ml", "staff_augmentation"] })] }).serviceId).toBe("ai");
+    // Size unknown: never excluded.
+    expect(score({ company: { ...base.company, employeeCount: null }, services: [aug], signals: [hiring({ serviceCategories: ["software_development"] })] }).serviceId).toBe("aug");
+  });
+});
+
 describe("scoreCompany", () => {
   it("returns null without a positive signal", () => {
     expect(scoreCompany({ ...base, signals: [] })).toBeNull();
@@ -199,11 +223,14 @@ describe("scoreCompany", () => {
   });
 
   it("explains ICP misses, scoring unknown company data as half", () => {
-    const result = score({ company: { ...base.company, industry: "retail", hqCountry: null, employeeCount: 500 } });
+    const result = score({ company: { ...base.company, industry: "retail", hqCountry: null, employeeCount: null } });
     expect(result.factors.icpFit.reasons).toContain("retail isn't a target industry");
     expect(result.factors.icpFit.reasons).toContain("Country unknown");
-    // (industry 0×15 + country 0.5×10 + size 0×15 + buyer 1×10 + compatibility 1×20) / 70
-    expect(result.factors.icpFit.score).toBe(50);
+    expect(result.factors.icpFit.reasons).toContain("Company size unknown");
+    // (industry 0×15 + country 0.5×10 + size 0.5×15 + buyer 1×10 + compatibility 1×20) / 70
+    expect(result.factors.icpFit.score).toBeCloseTo((5 + 7.5 + 10 + 20) / 70 * 100, 0);
+    // A known size outside the only fitting service's range: not a lead (see "service choice").
+    expect(scoreCompany({ ...base, company: { ...base.company, employeeCount: 500 } })).toBeNull();
   });
 
   it("prefers the person behind the lead signal as the contact", () => {

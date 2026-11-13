@@ -1,4 +1,6 @@
 import "server-only";
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
 import { decodeEntities } from "@/server/jobs/html-to-text";
 import { fetchText } from "../http";
 import type { DiscoveredItem, DiscoveryProvider } from "../types";
@@ -7,6 +9,7 @@ import type { DiscoveredItem, DiscoveryProvider } from "../types";
  * SEC EDGAR Form D: the legal notice a US company files when it raises money by selling securities
  * privately. It is first-hand evidence of an actual funding event, which is what this capability
  * needs (a directory listing is not). Funds, SPVs and trusts file Form D too, so they are filtered out.
+ * Only filers that are also hiring, on a job board in the shared pool, are kept (`withOpenRoles`).
  */
 
 const val = (xml: string, tag: string) => xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1]?.trim() ?? null;
@@ -109,6 +112,73 @@ export function parseFormD(xml: string, filing: Filing): DiscoveredItem | null {
   };
 }
 
+/** Legal forms left out when matching a filer to a job board ("ANDROMEDA ROBOTICS, INC." = "Andromeda Robotics"). */
+const LEGAL_FORM = "inc|incorporated|llc|l\\.l\\.c|pbc|corp|corporation|co|company|ltd|limited|plc|lp|llp";
+/** Shorter keys ("Abc") would match unrelated companies. */
+const MIN_KEY_LENGTH = 5;
+const MAX_ROLES = 5;
+
+/** A company name without its legal form, case or punctuation: how a filer is matched to a job board's name. Pure. */
+export function companyKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(new RegExp(`\\b(${LEGAL_FORM})\\b\\.?`, "g"), "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+type OpenRoles = { titles: string[]; categories: string[] };
+
+/**
+ * The open roles of the filers' own job boards in the shared pool, matched by name (the board's own
+ * name for the company), with their service categories. A name that fits two boards is left out:
+ * it could be either company.
+ */
+export async function openRolesByName(names: string[]): Promise<Map<string, OpenRoles>> {
+  const keys = [...new Set(names.map(companyKey).filter((k) => k.length >= MIN_KEY_LENGTH))];
+  const result = new Map<string, OpenRoles>();
+  if (keys.length === 0) return result;
+  const rows = await db.execute<{ key: string; board: string; title: string; categories: string[] | null }>(sql`
+    select k.key, k.provider || ':' || k.board_token as board, j.title,
+      array_agg(c.category_slug) filter (where c.category_slug is not null) as categories
+    from (
+      select d.provider, d.board_token,
+        regexp_replace(regexp_replace(lower(d.board_name), ${`\\m(${LEGAL_FORM})\\M\\.?`}, '', 'g'), '[^a-z0-9]+', '', 'g') as key
+      from job_board_directory d
+      where d.validation_status = 'valid' and d.board_name is not null
+    ) k
+    join board_jobs j on j.provider = k.provider and j.board_token = k.board_token and j.closed_at is null
+    left join board_job_categories c on c.board_job_id = j.id
+    where k.key in (${sql.join(keys.map((k) => sql`${k}`), sql`, `)})
+    group by k.key, k.provider, k.board_token, j.id
+    order by coalesce(j.posted_at, j.first_seen_at) desc`);
+  const boards = new Map<string, Set<string>>();
+  for (const r of rows) boards.set(r.key, (boards.get(r.key) ?? new Set()).add(r.board));
+  for (const r of rows) {
+    if ((boards.get(r.key)?.size ?? 0) > 1) continue;
+    const roles = result.get(r.key) ?? { titles: [], categories: [] };
+    const categories = r.categories ?? [];
+    if (categories.length > 0 && roles.titles.length < MAX_ROLES && !roles.titles.includes(r.title)) roles.titles.push(r.title);
+    for (const c of categories) if (!roles.categories.includes(c)) roles.categories.push(c);
+    result.set(r.key, roles);
+  }
+  return result;
+}
+
+/**
+ * Raising money alone says nothing about needing outside work; raising and hiring for it does (the
+ * same rule as Y Combinator startups). A filing is kept only when the company's own job board has
+ * open roles, listed with them and their service categories: the runner keeps it only when a role
+ * fits a service the workspace sells. Pure.
+ */
+export function withOpenRoles(item: DiscoveredItem, roles: OpenRoles | undefined): DiscoveredItem | null {
+  if (!roles || roles.titles.length === 0) return null;
+  return {
+    ...item,
+    title: `${item.title} and is hiring: ${roles.titles.slice(0, 3).join(", ")}`.slice(0, 300),
+    metadata: { ...item.metadata, roles: roles.titles, jobCategories: roles.categories },
+  };
+}
+
 export const secFormD: DiscoveryProvider = {
   slug: "sec_form_d",
   name: "SEC EDGAR (Form D)",
@@ -116,18 +186,19 @@ export const secFormD: DiscoveryProvider = {
   async discover({ signal }) {
     const feed = await fetchText("https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=D&count=100&output=atom", { signal });
     const filings = parseFeed(feed).filter((f) => !isVehicleName(f.name)).slice(0, 30);
-    const items: DiscoveredItem[] = [];
+    const parsed: DiscoveredItem[] = [];
     for (const filing of filings) {
       // SEC allows 10 requests a second; one every 250 ms stays well under.
       await new Promise((r) => setTimeout(r, 250));
       try {
         const xml = await fetchText(filing.indexUrl.replace(/[^/]*$/, "primary_doc.xml"), { signal });
         const item = parseFormD(xml, filing);
-        if (item) items.push(item);
+        if (item) parsed.push(item);
       } catch {
         // One unreadable filing must not hide the rest.
       }
     }
-    return items;
+    const roles = await openRolesByName(parsed.map((i) => i.companyName ?? ""));
+    return parsed.flatMap((item) => withOpenRoles(item, roles.get(companyKey(item.companyName ?? ""))) ?? []);
   },
 };

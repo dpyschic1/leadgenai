@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { sources } from "@/db/schema";
 import type { IngestionJobKind } from "@/lib/domain/sources";
 import { AppError } from "@/server/http/errors";
+import { rateLimit } from "@/server/http/rate-limit";
 import { collectFromArchive, validateDueBoards } from "@/server/sources/board-directory";
 import { HANDLERS, jobContext } from "./handlers";
 import { detectYcBoards } from "@/server/sources/yc";
@@ -119,6 +120,37 @@ async function runSharedStep(deadline: number): Promise<void> {
   );
 }
 
+/** Finished background jobs are kept this long (the newest of each kind per workspace always stays). */
+export const JOB_HISTORY_DAYS = 14;
+/** Audit entries the system wrote (no person behind them) are kept this long; people's actions always stay. */
+export const SYSTEM_AUDIT_DAYS = 90;
+
+/**
+ * Keeps history from growing forever, at most once an hour: finished background jobs past
+ * `JOB_HISTORY_DAYS` (except the newest of each kind per workspace, which schedules the next run
+ * and shows "last run" in Settings) and system audit entries past `SYSTEM_AUDIT_DAYS`. Returns
+ * whether it ran.
+ */
+export async function housekeeping(): Promise<boolean> {
+  try {
+    await rateLimit("housekeeping", "platform");
+  } catch (error) {
+    if (error instanceof AppError && error.code === "RATE_LIMITED") return false;
+    throw error;
+  }
+  await db.execute(sql`
+    delete from ingestion_jobs j
+    where j.status in ('done', 'skipped', 'failed')
+      and j.finished_at < now() - make_interval(days => ${JOB_HISTORY_DAYS})
+      and exists (
+        select 1 from ingestion_jobs n
+        where n.workspace_id = j.workspace_id and n.kind = j.kind and n.status = j.status and n.finished_at > j.finished_at)`);
+  await db.execute(sql`
+    delete from audit_logs
+    where actor_id is null and created_at < now() - make_interval(days => ${SYSTEM_AUDIT_DAYS})`);
+  return true;
+}
+
 /** One shared step: skipped past the deadline, and a failure never stops the others. */
 async function shared(name: string, step: () => Promise<unknown>, deadline = Infinity): Promise<void> {
   if (Date.now() >= deadline) return;
@@ -143,6 +175,7 @@ export async function runTick({ workspaceId, budgetMs = DEFAULT_BUDGET_MS }: { w
     } catch (error) {
       console.error("[engine] due capabilities failed", error);
     }
+    await shared("housekeeping", housekeeping);
   }
 
   // Lanes run side by side, each claiming jobs until the budget is used: one takes jobs in the

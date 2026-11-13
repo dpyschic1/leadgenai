@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { boardFromUrl, boardsFromIndexPage, cleanBoardName, hiringEmails, jobInCountries, nameFromBoardTitle, siteOf, sitesInJobPosts, workableProfile } from "./board-directory";
+import {
+  boardFromUrl,
+  boardsFromIndexPage,
+  canonicalToken,
+  cleanBoardName,
+  freshUniqueJobs,
+  hiringEmails,
+  jobInCountries,
+  nameFromBoardTitle,
+  siteOf,
+  sitesInJobPosts,
+  workableProfile,
+} from "./board-directory";
 import { finalizeFacts } from "@/server/ai/website-extract";
 import { formationSignal, newLocationSignal, signalFromAnalysis } from "@/server/ingestion/found-signal";
 import type { SignalAnalysis } from "@/lib/api/types";
@@ -19,6 +31,7 @@ import {
 import { isAllowed, parseRobots } from "./http";
 import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
 import { boardDomainGuesses, npiSteps } from "@/server/ingestion/handlers";
+import { boardFitsDomain } from "@/server/ingestion/resolve";
 import { boardFitsCompany, toYcCompany, toYcRow, ycBoardTokens, ycCountry, ycIndustry } from "./yc";
 import { boardScore, rankBoards, sizeFit } from "@/server/ingestion/shared-jobs";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
@@ -540,6 +553,8 @@ describe("website checks (no AI)", () => {
     expect(noBooking({})).toBe(true);
     expect(noBooking({ pagesChecked: ["https://smiles.example/"] })).toBe(false);
     expect(noBooking({ takesAppointments: false }, "healthcare")).toBe(false);
+    // A healthcare software startup (found through its hiring) talks about clinics but isn't one.
+    expect(websiteFindings("Rhem Labs", checks({}), "healthcare", { software: true }).some((f) => f.signalType === "no_online_booking")).toBe(false);
     expect(takesAppointments("Book a check-up with our hygienist. Appointments at our practice for every treatment.")).toBe(true);
     expect(takesAppointments("Home care and live-in care. Our carers and care workers support you at home. Book a consultation.")).toBe(false);
   });
@@ -596,6 +611,38 @@ describe("email patterns", () => {
 });
 
 describe("job-board discovery", () => {
+  it("tells a job board belongs to a website when its name fits the domain", () => {
+    expect(boardFitsDomain("base-power", "basepowercompany.com")).toBe(true);
+    expect(boardFitsDomain("tango", "tangocare.com")).toBe(true);
+    expect(boardFitsDomain("fal-ai", "fal.ai")).toBe(true);
+    expect(boardFitsDomain("acme", "zenith.com")).toBe(false);
+    expect(boardFitsDomain("ab", "abc.com")).toBe(false); // too short to tell
+  });
+
+  it("stores a board once, whatever case its link uses", () => {
+    expect(canonicalToken(" FINNY ")).toBe(canonicalToken("finny"));
+  });
+
+  it("keeps each fresh job once: no reposts, nothing older than 60 days", () => {
+    const now = new Date("2026-11-13T00:00:00Z");
+    const job = (externalId: string, title: string, location: string | null, posted: string | null) => ({
+      externalId,
+      title,
+      location,
+      postedAt: posted ? new Date(posted) : null,
+    });
+    const jobs = [
+      job("1", "Backend Engineer", "Austin, TX", "2026-11-01"),
+      job("2", "backend engineer", "Austin, TX", "2026-11-10"), // the same job, reposted
+      job("3", "Backend Engineer", "Boston, MA", "2026-11-01"), // another place: its own job
+      job("4", "Designer", null, "2026-08-01"), // too old
+      job("5", "Designer", null, null), // undated: kept
+    ];
+    expect(freshUniqueJobs(jobs, [], now).map((j) => j.externalId)).toEqual(["2", "3", "5"]);
+    // The copy already stored stays, so a refresh never swaps it for a "new" job.
+    expect(freshUniqueJobs(jobs, [{ externalId: "1", title: "Backend Engineer", location: "Austin, TX" }], now).map((j) => j.externalId)).toEqual(["1", "3", "5"]);
+  });
+
   it("takes the board name from an archived board URL, and rejects provider pages and junk", () => {
     expect(boardFromUrl("https://job-boards.greenhouse.io/0x/jobs/7302322002")).toEqual({ provider: "greenhouse", boardToken: "0x" });
     expect(boardFromUrl("https://boards.greenhouse.io/embed/job_board?for=AcmeCo")).toEqual({ provider: "greenhouse", boardToken: "acmeco" });

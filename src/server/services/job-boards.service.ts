@@ -1,13 +1,12 @@
 import "server-only";
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { auditLogs, companies, companyJobBoards, jobPostings } from "@/db/schema";
+import { auditLogs, boardJobs, companies, companyJobBoards, jobPostings } from "@/db/schema";
 import type { JobBoardProvider } from "@/lib/domain/job-boards";
-import { MAX_SOURCE_TEXT } from "@/lib/validation/signals";
 import type { Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
 import { MAX_JOBS_PER_BOARD } from "@/server/jobs/fetch-jobs";
-import { BOARD_FRESH_MS, boardJobsFor, jobInCountries, type CachedJob } from "@/server/sources/board-directory";
+import { BOARD_FRESH_MS, boardJobsFor, canonicalToken, jobInCountries, type CachedJob } from "@/server/sources/board-directory";
 import { matchReason, jobCategories, sharedAnalyses } from "@/server/ingestion/shared-jobs";
 import { categorizeJob, ruleJobSignal } from "@/server/jobs/job-categories";
 import {
@@ -31,9 +30,6 @@ import { insertDetectedSignal } from "./signals.service";
  * rule-based signal that `analyzeSharedJobs` upgrades in the background. The caller re-scores.
  */
 
-/** Why a job was skipped without the AI: it is outside every country the workspace sells to. */
-export const OUTSIDE_REGIONS = "Outside the countries your services target";
-
 /** What one sync of a board did. */
 export type JobFetchResult = {
   /** Jobs open on the board now. */
@@ -56,6 +52,12 @@ const MAX_NEW_SIGNALS_PER_FETCH = 5;
 const UPSERT_CHUNK = 100;
 
 type JobRow = typeof jobPostings.$inferSelect;
+
+/**
+ * A workspace job's text: the shared job's (stored once for every workspace), else its own for the
+ * few jobs saved before the shared pool. Select it with a left join on `boardJobs`.
+ */
+export const jobText = sql<string | null>`coalesce(${boardJobs.description}, ${jobPostings.description})`;
 type BoardRow = typeof companyJobBoards.$inferSelect;
 
 /**
@@ -70,11 +72,11 @@ export async function connectDetectedBoard(
   return db.transaction(async (tx) => {
     const inserted = await tx
       .insert(companyJobBoards)
-      .values({ companyId, workspaceId: actor.workspaceId, provider: board.provider, boardToken: board.boardToken, autoDetected: true })
+      .values({ companyId, workspaceId: actor.workspaceId, provider: board.provider, boardToken: canonicalToken(board.boardToken), autoDetected: true })
       .onConflictDoNothing()
       .returning({ companyId: companyJobBoards.companyId });
     if (inserted.length === 0) return false;
-    await audit(tx, actor, "job_board.detected", companyId, { provider: board.provider, boardToken: board.boardToken });
+    await audit(tx, actor, "job_board.detected", companyId, { provider: board.provider, boardToken: canonicalToken(board.boardToken) });
     return true;
   });
 }
@@ -106,30 +108,29 @@ export async function syncCompanyJobs(
     throw error;
   }
 
-  const { added, closed } = await storeJobs(auth, companyId, board, fetched);
-
   const ref = await getReferenceData();
   const names = new Map(ref.serviceCategories.map((c) => [c.slug, c.name]));
   const sold = [...new Set(services.flatMap((s) => s.categories))];
-  let skipped = 0;
+  const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
   let signalsCreated = 0;
 
-  // Jobs outside the countries the workspace sells to are skipped.
-  const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
-  const pendingNow = await openJobs(auth, companyId, eq(jobPostings.triage, "pending"), MAX_JOBS_PER_BOARD);
-  const outside = pendingNow.filter((job) => !jobInCountries(job.location, countries)).map((job) => job.id);
-  if (outside.length > 0) {
-    skipped += outside.length;
-    await db.update(jobPostings).set({ triage: "skipped", triageReason: OUTSIDE_REGIONS }).where(inArray(jobPostings.id, outside));
-  }
+  // Stage 1, no AI: only jobs that fit are stored for the workspace: in a country it sells to, in a
+  // service category it sells (shared, from the title rules or the AI's reading), and not ruled out
+  // by the AI. The rest stay only in the shared pool; deciding again on the next sync is free.
+  const [categoriesByJob, analyses] = await Promise.all([jobCategories(fetched.map((j) => j.boardJobId)), sharedAnalyses(fetched.map((j) => j.boardJobId))]);
+  const fits = fetched.filter(
+    (job) =>
+      jobInCountries(job.location, countries) &&
+      analyses.get(job.boardJobId)?.isSignal !== false &&
+      (categoriesByJob.get(job.boardJobId) ?? []).some((c) => sold.includes(c)),
+  );
+  let skipped = fetched.length - fits.length;
+  const { added, closed } = await storeJobs(auth, companyId, board, fits);
 
-  // Stage 1, no AI: a job is relevant when its service categories (shared, from the title rules or
-  // the AI's reading) include one the workspace sells, and the AI hasn't ruled it out.
-  const untriaged = pendingNow.filter((job) => !outside.includes(job.id));
-  const boardJobIds = untriaged.flatMap((job) => (job.boardJobId ? [job.boardJobId] : []));
-  const [categoriesByJob, analyses] = await Promise.all([jobCategories(boardJobIds), sharedAnalyses(boardJobIds)]);
+  // New jobs are marked relevant, with why (a job saved before this rule is checked the same way).
+  const pendingNow = await openJobs(auth, companyId, eq(jobPostings.triage, "pending"), MAX_JOBS_PER_BOARD);
   await db.transaction(async (tx) => {
-    for (const job of untriaged) {
+    for (const job of pendingNow) {
       const found = job.boardJobId ? (categoriesByJob.get(job.boardJobId) ?? []) : categorizeJob(job);
       const ruledOut = job.boardJobId ? analyses.get(job.boardJobId)?.isSignal === false : false;
       const relevant = !ruledOut && found.some((c) => sold.includes(c));
@@ -201,6 +202,11 @@ export async function syncCompanyJobs(
 /**
  * Saves the board's current jobs: new ones are added, known ones refreshed, and jobs no longer on
  * the board are marked closed. One transaction, so `now()` is the same instant throughout.
+ *
+ * The job's text isn't copied here: it lives once in the shared `board_jobs` row and is read
+ * through `board_job_id`. A closed job this workspace skipped is deleted (nothing was made from it,
+ * and the shared pool no longer offers it); one that became a signal, or whose signal the team
+ * deleted, stays as the workspace's record.
  */
 async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: CachedJob[]) {
   return db.transaction(async (tx) => {
@@ -215,7 +221,7 @@ async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: 
         department: job.department?.slice(0, 200) ?? null,
         location: job.location?.slice(0, 300) ?? null,
         url: job.url,
-        description: job.description?.slice(0, MAX_SOURCE_TEXT) ?? null,
+        description: null,
         postedAt: job.postedAt,
         boardJobId: job.boardJobId,
       }));
@@ -229,7 +235,7 @@ async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: 
             department: sql`excluded.department`,
             location: sql`excluded.location`,
             url: sql`excluded.url`,
-            description: sql`excluded.description`,
+            description: null,
             postedAt: sql`excluded.posted_at`,
             boardJobId: sql`excluded.board_job_id`,
             lastSeenAt: sql`now()`,
@@ -253,6 +259,18 @@ async function storeJobs(auth: Actor, companyId: string, board: BoardRow, jobs: 
         ),
       )
       .returning({ id: jobPostings.id });
+    await tx
+      .delete(jobPostings)
+      .where(
+        and(
+          eq(jobPostings.companyId, companyId),
+          eq(jobPostings.workspaceId, auth.workspaceId),
+          isNotNull(jobPostings.closedAt),
+          eq(jobPostings.triage, "skipped"),
+          isNull(jobPostings.signalId),
+          or(isNull(jobPostings.triageReason), ne(jobPostings.triageReason, SIGNAL_DELETED_REASON)),
+        ),
+      );
     return { added, closed: closedRows.length };
   });
 }
@@ -297,11 +315,12 @@ async function relevantRoles(auth: Actor, companyId: string): Promise<RoleGroup[
   return [...groups.values()];
 }
 
-/** Open jobs matching `where`, newest first. */
+/** Open jobs matching `where`, newest first, with their text from the shared job. */
 function openJobs(auth: Actor, companyId: string, where: ReturnType<typeof and>, limit: number): Promise<JobRow[]> {
   return db
-    .select()
+    .select({ ...getTableColumns(jobPostings), description: jobText })
     .from(jobPostings)
+    .leftJoin(boardJobs, eq(boardJobs.id, jobPostings.boardJobId))
     .where(and(eq(jobPostings.companyId, companyId), eq(jobPostings.workspaceId, auth.workspaceId), isNull(jobPostings.closedAt), where))
     .orderBy(desc(sql`coalesce(${jobPostings.postedAt}, ${jobPostings.firstSeenAt})`), asc(jobPostings.id))
     .limit(limit);

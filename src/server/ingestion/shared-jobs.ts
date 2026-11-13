@@ -8,7 +8,7 @@ import { analyzeSignal } from "@/server/ai/signal-analysis";
 import { systemActor, type Actor } from "@/server/auth/actor";
 import { AppError } from "@/server/http/errors";
 import { categorizeJob, refineCategories, ruleJobSignal } from "@/server/jobs/job-categories";
-import { jobSignalValues, jobSourceText, MAX_JOB_TEXT, rejectionReason, roleKey } from "@/server/jobs/job-signal";
+import { jobSignalValues, jobSourceText, MAX_JOB_AGE_DAYS, MAX_JOB_TEXT, rejectionReason, roleKey } from "@/server/jobs/job-signal";
 import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { rescoreAfterCompanyChange } from "@/server/scoring/rescore";
 import { getReferenceData } from "@/server/services/reference-data.service";
@@ -37,8 +37,6 @@ import { resolveCompany } from "./resolve";
 const CATEGORIZE_BATCH = 2000;
 /** Rows per insert statement. */
 const INSERT_CHUNK = 500;
-/** Matching only looks at jobs posted (or first seen) within this many days. */
-const MATCH_MAX_AGE_DAYS = 90;
 /** Candidate jobs read per matching run, newest first, before the country check. */
 const MATCH_CANDIDATES = 5000;
 /** Companies matched per run; more follow a minute later. */
@@ -276,7 +274,7 @@ export async function matchWorkspaceJobs(
     join board_job_categories c on c.board_job_id = j.id and c.category_slug in (${sql.join(categories.map((c) => sql`${c}`), sql`, `)})
     left join job_analyses a on a.board_job_id = j.id
     where j.closed_at is null
-      and coalesce(j.posted_at, j.first_seen_at) > now() - make_interval(days => ${MATCH_MAX_AGE_DAYS})
+      and coalesce(j.posted_at, j.first_seen_at) > now() - make_interval(days => ${MAX_JOB_AGE_DAYS})
       and (a.board_job_id is null or a.is_signal or a.model = ${FAILED_MODEL})
       and not exists (select 1 from job_postings p where p.workspace_id = ${actor.workspaceId} and p.board_job_id = j.id)
       ${only ? sql`and (j.provider, j.board_token) in (${sql.join(only.map((b) => sql`(${b.provider}::job_board_provider, ${b.boardToken})`), sql`, `)})` : sql``}
@@ -398,7 +396,8 @@ async function recordMatchedJobs(
           department: job.department,
           location: job.location,
           url: job.url,
-          description: job.description,
+          // The text stays in the shared job (read through board_job_id), not copied per workspace.
+          description: null,
           // Raw SQL rows carry timestamps as strings.
           postedAt: job.posted_at ? new Date(job.posted_at) : null,
           boardJobId: job.id,

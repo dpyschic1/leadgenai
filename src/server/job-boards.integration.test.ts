@@ -23,7 +23,7 @@ import { searchJobs, type TheirStackJob } from "@/server/sources/theirstack";
 import type { NormalizedJob } from "@/server/jobs/types";
 import { registerOwner } from "@/server/services/auth.service";
 import { createCompany } from "@/server/services/companies.service";
-import { connectDetectedBoard, OUTSIDE_REGIONS, syncCompanyJobs } from "@/server/services/job-boards.service";
+import { connectDetectedBoard, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { createService } from "@/server/services/services.service";
 import { deleteSignal, listCompanySignals } from "@/server/services/signals.service";
 
@@ -68,6 +68,8 @@ let owner: AuthContext;
 let other: AuthContext;
 let companyId: string;
 
+/** Posted 10 days ago: fresh, whenever the tests run (older than 60 days isn't kept). */
+const POSTED = new Date(Date.now() - 10 * 86_400_000);
 const job = (externalId: string, title: string): NormalizedJob => ({
   externalId,
   title,
@@ -75,7 +77,7 @@ const job = (externalId: string, title: string): NormalizedJob => ({
   location: "London",
   url: `https://jobs.lever.co/acme-${run}/${externalId}`,
   description: `${title}: we are growing the team.`,
-  postedAt: new Date("2026-10-01T09:00:00Z"),
+  postedAt: POSTED,
 });
 
 /** Fake AI: a "Data Engineer" post turns out not to be a signal on a closer read. */
@@ -175,7 +177,7 @@ describe("job-board sync", () => {
     await expectCode(syncCompanyJobs(systemActor(owner.workspaceId), companyId), "NOT_FOUND");
   });
 
-  it("records relevant jobs as signals at once, with no AI, and explains the skipped ones", async () => {
+  it("records relevant jobs as signals at once, with no AI, and doesn't store the others", async () => {
     expect(await connectDetectedBoard(systemActor(owner.workspaceId), companyId, { provider: "lever", boardToken: `acme-${run}` })).toBe(true);
     // A board already set is never replaced by a later detection.
     expect(await connectDetectedBoard(systemActor(owner.workspaceId), companyId, { provider: "ashby", boardToken: "other" })).toBe(false);
@@ -189,10 +191,13 @@ describe("job-board sync", () => {
     const byTitle = new Map(jobs.map((j) => [j.title, j]));
     expect(byTitle.get("React Engineer")).toMatchObject({ triage: "relevant", triageReason: "Matches your Staff augmentation services" });
     expect(byTitle.get("React Engineer")?.signalId).not.toBeNull();
-    expect(byTitle.get("Office Manager")).toMatchObject({ triage: "skipped", triageReason: "No match with your services", signalId: null });
+    // A job that fits none of the workspace's services stays only in the shared pool.
+    expect(byTitle.has("Office Manager")).toBe(false);
+    // Its text is read from the shared job, not copied.
+    expect(byTitle.get("React Engineer")?.description).toBeNull();
 
     const react = (await listCompanySignals(owner, companyId)).find((s) => s.evidence?.sourceUrl === `https://jobs.lever.co/acme-${run}/1`);
-    expect(react).toMatchObject({ signalType: "engineering_hiring", source: "provider", occurredOn: "2026-10-01", serviceCategories: ["staff_augmentation"] });
+    expect(react).toMatchObject({ signalType: "engineering_hiring", source: "provider", occurredOn: POSTED.toISOString().slice(0, 10), serviceCategories: ["staff_augmentation"] });
   });
 
   it("closes jobs that left the board and records new ones", async () => {
@@ -331,13 +336,10 @@ describe("matching shared jobs to workspaces", () => {
     expect(company.canonicalName.toLowerCase()).toBe(token("relevant").replace(/-/g, " "));
     expect(analyze).not.toHaveBeenCalled();
 
-    // Only the UK engineering job matched; the sync stores the whole board and sorts the rest.
+    // Only the UK engineering job matched, and only it is stored for the workspace: the office job
+    // (no service) and the US one (outside its countries) stay in the shared pool.
     const postings = await db.select().from(jobPostings).where(eq(jobPostings.companyId, company.id));
-    expect(postings.map((p) => [p.title, p.triage, p.triage === "skipped" ? p.triageReason : null]).sort()).toEqual([
-      ["Office Manager", "skipped", "No match with your services"],
-      ["Platform Engineer", "skipped", OUTSIDE_REGIONS],
-      ["React Engineer", "relevant", null],
-    ]);
+    expect(postings.map((p) => [p.title, p.triage])).toEqual([["React Engineer", "relevant"]]);
     expect(postings.every((p) => p.boardJobId !== null)).toBe(true);
 
     const [signal] = await listCompanySignals(uk, company.id);

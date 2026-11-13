@@ -16,6 +16,7 @@ import { identityColumns } from "@/lib/domain/people";
 import type { CompanyIdScheme, SourceSlug } from "@/lib/domain/sources";
 import type { Actor } from "@/server/auth/actor";
 import type { FoundCompany, FoundPerson, SourceRef } from "@/server/sources";
+import { boardFromUrl } from "@/server/sources/board-directory";
 
 /**
  * Entity resolution (FR-ENT-001..003): a found company is matched to an existing one by registry
@@ -57,7 +58,25 @@ export async function saveSourceRecord(
   return { id: row.id, changed: true, isNew: true };
 }
 
-/** The existing company a found one refers to, if any. */
+/**
+ * Whether a job board's name is the website's company: "base-power" and basepowercompany.com,
+ * "tango" and tangocare.com, "fal-ai" and fal.ai. Letters and digits only; the shorter of the two
+ * must be at least 3 long and start the other. Pure.
+ */
+export function boardFitsDomain(token: string, domain: string): boolean {
+  const board = token.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const site = (domain.toLowerCase().replace(/^www\./, "").split(".")[0] ?? "").replace(/[^a-z0-9]/g, "");
+  const shorter = board.length <= site.length ? board : site;
+  return shorter.length >= 3 && (board.startsWith(site) || site.startsWith(board));
+}
+
+/** The job board a source record is about: a board's own record, or a job post that links to one. */
+function boardOfRecord(record: FoundCompany["record"]): string | null {
+  const data = record.data as { boardToken?: unknown } | undefined;
+  if (typeof data?.boardToken === "string") return data.boardToken.toLowerCase();
+  return record.url ? (boardFromUrl(record.url)?.boardToken ?? null) : null;
+}
+
 /** "LS1 4AP" and "ls14ap" compare equal. */
 export const normalizePostcode = (postcode: string | null | undefined) => postcode?.replace(/\s+/g, "").toUpperCase() || null;
 
@@ -89,6 +108,29 @@ async function matchCompany(tx: Tx, workspaceId: string, found: FoundCompany): P
   }
 
   const sameName = and(eq(companies.workspaceId, workspaceId), sql`lower(${companies.canonicalName}) = lower(${found.name})`);
+
+  // The same company seen through its job board and through another source (a job post with its
+  // website): the same name, and the board is that website's (its name fits the domain, or the
+  // post links to the board). Only when exactly one company fits.
+  const foundBoard = boardOfRecord(found.record);
+  if (found.domain || foundBoard) {
+    const named = await tx
+      .select({
+        id: companies.id,
+        domain: companies.domain,
+        boards: sql<string[]>`array(select lower(b.board_token) from company_job_boards b where b.company_id = ${companies.id})`,
+      })
+      .from(companies)
+      .where(sameName)
+      .limit(5);
+    const linked = named.filter(
+      (c) =>
+        (foundBoard !== null && c.boards.includes(foundBoard)) ||
+        (found.domain !== null && c.domain === null && c.boards.some((token) => boardFitsDomain(token, found.domain!))) ||
+        (foundBoard !== null && c.domain !== null && boardFitsDomain(foundBoard, c.domain)),
+    );
+    if (linked.length === 1) return { ...none, companyId: linked[0].id };
+  }
   // The same source's own earlier record of this name (e.g. a buyer seen in a previous tender).
   const [own] = await tx
     .select({ id: companies.id })
@@ -150,11 +192,21 @@ export async function resolveCompany(
       entityId: companyId,
       metadata: { source: found.record.sourceSlug, externalId: found.record.externalId },
     });
-  } else if (found.industry) {
-    await tx
-      .update(companies)
-      .set({ industry: found.industry })
-      .where(and(eq(companies.id, companyId), isNull(companies.industry)));
+  } else {
+    if (found.industry) {
+      await tx
+        .update(companies)
+        .set({ industry: found.industry })
+        .where(and(eq(companies.id, companyId), isNull(companies.industry)));
+    }
+    // A company known only from its job board learns its website from the other source; its
+    // identity moves up from provisional with it.
+    if (found.domain) {
+      await tx
+        .update(companies)
+        .set({ domain: found.domain, ...(found.identity && found.identity !== "provisional" ? { identityStatus: found.identity } : {}) })
+        .where(and(eq(companies.id, companyId), isNull(companies.domain), eq(companies.identityStatus, "provisional")));
+    }
   }
 
   for (const identifier of found.identifiers) {

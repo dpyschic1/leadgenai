@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseFreelancerProject } from "./freelancer";
 import { parseHnHit } from "./hackernews";
 import { parseAtom, parseRedditEntry } from "./reddit";
-import { countryOf, isVehicleName, parseFeed, parseFormD } from "./sec-form-d";
+import { companyKey, countryOf, isVehicleName, parseFeed, parseFormD, withOpenRoles } from "./sec-form-d";
 import { batchStart } from "./yc-batches";
 
 const terms = ["mvp", "website", "redesign", "developer"];
@@ -135,6 +135,19 @@ describe("SEC Form D", () => {
     const parsed = parseFeed(feed);
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toMatchObject({ name: "Acme Robotics Inc.", accession: "0001-26-000009", filedOn: "2026-11-10" });
+  });
+  it("keeps a filer only when it is also hiring, listed with its roles", () => {
+    const item = parseFormD(doc(), filing)!;
+    expect(withOpenRoles(item, undefined)).toBeNull(); // raising money alone is no evidence of need
+    expect(withOpenRoles(item, { titles: [], categories: [] })).toBeNull();
+    const hiring = withOpenRoles(item, { titles: ["AI Engineer"], categories: ["ai_ml", "staff_augmentation"] })!;
+    expect(hiring.title).toBe("Bloodless Diagnostics Inc. filed a Form D for $1,200,000 and is hiring: AI Engineer");
+    expect(hiring.metadata.jobCategories).toEqual(["ai_ml", "staff_augmentation"]);
+  });
+  it("matches a filer to a job board by name, without its legal form", () => {
+    expect(companyKey("ANDROMEDA ROBOTICS, INC.")).toBe(companyKey("Andromeda Robotics"));
+    expect(companyKey("Clearwood, PBC")).toBe("clearwood");
+    expect(companyKey("THIRD EYE MECHATRONICS LLC")).toBe("thirdeyemechatronics");
   });
   it("maps issuer states and provinces to countries", () => {
     expect(countryOf("CA", "CALIFORNIA")).toBe("US");

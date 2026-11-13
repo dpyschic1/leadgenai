@@ -2,7 +2,158 @@ import { describe, expect, it } from "vitest";
 import type { SignalAnalysis } from "@/lib/api/types";
 import { candidateTokens } from "./detect";
 import { categorizeJob, isAiTrainingWork, isDataScienceOnly, refineCategories, ruleJobSignal } from "./job-categories";
-import { jobSignalValues, jobSourceText, MIN_AUTO_CONFIDENCE, openDays, rejectionReason, roleKey } from "./job-signal";
+import {
+  contactHints,
+  isStaleJob,
+  jobDigest,
+  jobSignalValues,
+  jobSourceText,
+  MAX_JOB_TEXT,
+  MIN_AUTO_CONFIDENCE,
+  openDays,
+  rejectionReason,
+  repostKey,
+  roleKey,
+} from "./job-signal";
+
+describe("AI roles that are building it, and roles around it (real titles)", () => {
+  const ai = (title: string) => categorizeJob({ title, department: null }).includes("ai_ml");
+  it("keeps roles that build AI", () => {
+    for (const title of [
+      "AI Engineer",
+      "Applied AI Engineer",
+      "Senior Machine Learning Engineer, Agentic Systems",
+      "Senior Growth Data Scientist",
+      "AI Enablement Engineer",
+      "Software Engineer, AI Data - Anaheim, CA, USA",
+      "Forward Deployed AI Engineer",
+      "Staff AI Builder",
+      "Senior Software Engineer, AI Financial Partner",
+      "Associate AI Engineer, Physical AI",
+      "Engineering Manager, AI Platform",
+      "Head of Applied AI",
+      "Director, AI/ML Engineering",
+      "AI Automation Specialist",
+    ])
+      expect(ai(title), title).toBe(true);
+  });
+  it("drops finance, people, strategy, customer, operations and content roles", () => {
+    for (const title of [
+      "Chief Financial Officer, The AI Access Initiative",
+      "Sr People Business Partner — AI-Powered People Strategy",
+      "Strategic Finance Lead, R&D and AI Infrastructure",
+      "AI Deployment Strategist",
+      "Head of AI Deployment",
+      "Customer Success Manager, AI Products",
+      "AI Agent Support Specialist",
+      "Director, AI Compliance",
+      "AI Program Lead",
+      "Cloud AI Adoption Manager",
+      "Mission Control Specialist, AI Operator",
+      "Systems & AI Operations Administrator",
+      "ML Storyteller",
+      "AI Video Creator",
+      "VP of Presales Solutions Architecture - AI Infrastructure",
+      "Senior Manager, Sales Engineering — AI / GPU Cloud",
+      "Enterprise AI Business Analyst",
+      "Generative AI Associate",
+      "Generative AI Consultant",
+      "Practice Director - Cloud AI, Digital Innovations",
+      "Customer Success Manager (AI Success Architect)",
+      "Staff Product Designer, Search and Conversational AI",
+      "Senior Partner Manager, Data & AI Security",
+      "Clinical AI Specialist (Remote)",
+    ])
+      expect(ai(title), title).toBe(false);
+  });
+  it("drops rotational trainee programs and mechanical structures work", () => {
+    expect(categorizeJob({ title: "Associate Software Engineer - Rotational Program", department: null })).toEqual([]);
+    expect(categorizeJob({ title: "Vehicle Structures Engineer II", department: "Engineering" })).toEqual([]);
+    expect(refineCategories("Associate Software Engineer (Rotational Program)", ["software_development", "staff_augmentation"])).toEqual([]);
+  });
+  it("drops language gigs for AI companies", () => {
+    expect(categorizeJob({ title: "Generative AI Associate Turkish Speaking - Flexible Hours", department: null })).toEqual([]);
+    expect(isAiTrainingWork("Native Emirati Arabic Voice Tester for AI Agent QA")).toBe(true);
+    expect(categorizeJob({ title: "Project Perseus | Speech & Voice AI Analyst - English (UK) Speakers", department: null })).toEqual([]);
+  });
+  it("drops freelance projects that make content with AI rather than build it", () => {
+    expect(ai("UGC Presenter Freelancer")).toBe(false);
+    expect(ai("Futuristic AI Ad Creation")).toBe(false);
+    expect(ai("Internal AI Debugging Assistant")).toBe(true);
+    expect(ai("AI-Powered Web and Mobile Platform Development")).toBe(true);
+  });
+});
+
+describe("jobDigest", () => {
+  const posting = [
+    "About Acme:",
+    "Acme builds payment software for clinics.",
+    "What You’ll Do:",
+    "•",
+    "Build our new patient booking app in React Native.",
+    "• Own the API that connects clinics to insurers.",
+    "Benefits",
+    "• Unlimited PTO",
+    "• 401(k) matching",
+    "Requirements:",
+    "• 5+ years with TypeScript.",
+    "Acme is an Equal Opportunity Employer. All applicants are considered without regard to race, color, religion.",
+    "Questions? Write to careers@acme.com or see https://www.acme.com/careers and acme.io.",
+  ].join("\n");
+
+  it("keeps the company, role, duties and requirements, and drops perks and legal small print", () => {
+    const digest = jobDigest(posting, { relevant: true })!;
+    expect(digest).toContain("Acme builds payment software for clinics.");
+    expect(digest).toContain("• Build our new patient booking app in React Native."); // a lone bullet joined to its line
+    expect(digest).toContain("• 5+ years with TypeScript.");
+    expect(digest).not.toContain("PTO");
+    expect(digest).not.toContain("Equal Opportunity");
+  });
+
+  it("keeps the emails and sites a posting names, even from the parts it drops", () => {
+    const digest = jobDigest(posting, { relevant: true })!;
+    expect(digest).toContain("Questions? Write to careers@acme.com"); // a kept line already carries them
+    const legalOnly = "Role: build our app.\nWe are an Equal Opportunity Employer; apply via jobs@acme.com.";
+    expect(jobDigest(legalOnly, { relevant: true })).toBe("Role: build our app.\nLinks: jobs@acme.com");
+  });
+
+  it("stores only the links of a job that fits no service", () => {
+    // acme.com is already named by the email address.
+    expect(jobDigest(posting, { relevant: false })).toBe("Links: careers@acme.com · acme.io");
+    expect(jobDigest("Drive our delivery van.", { relevant: false })).toBeNull();
+    expect(jobDigest(null, { relevant: true })).toBeNull();
+  });
+
+  it("stays within what the AI reads, and digesting a digest changes nothing", () => {
+    const long = Array.from({ length: 200 }, (_, i) => `• Duty number ${i} described in a full sentence of some length.`).join("\n");
+    const digest = jobDigest(`${long}\nApply at hiring@acme.com`, { relevant: true })!;
+    expect(digest.length).toBeLessThanOrEqual(MAX_JOB_TEXT);
+    expect(digest).toContain("hiring@acme.com");
+    expect(jobDigest(digest, { relevant: true })).toBe(digest);
+  });
+});
+
+describe("contactHints", () => {
+  it("finds emails, site addresses and bare domains once each", () => {
+    expect(contactHints("Mail jobs@acme.com, visit https://www.acme.com/x or acme.com, try beta.acme.ai.")).toEqual([
+      "jobs@acme.com",
+      "beta.acme.ai",
+    ]);
+  });
+});
+
+describe("job freshness and reposts", () => {
+  const now = new Date("2026-11-13T00:00:00Z");
+  it("calls a job stale once posted more than 60 days ago; undated jobs never are", () => {
+    expect(isStaleJob(new Date("2026-10-01T00:00:00Z"), now)).toBe(false);
+    expect(isStaleJob(new Date("2026-09-01T00:00:00Z"), now)).toBe(true);
+    expect(isStaleJob(null, now)).toBe(false);
+  });
+  it("treats the same title and place as one job, whatever the case or spacing", () => {
+    expect(repostKey({ title: "Senior  Backend Engineer", location: "New York, NY" })).toBe(repostKey({ title: "senior backend engineer", location: "new york, ny " }));
+    expect(repostKey({ title: "Backend Engineer", location: "Austin" })).not.toBe(repostKey({ title: "Backend Engineer", location: "Boston" }));
+  });
+});
 
 const now = new Date("2026-11-03T12:00:00Z");
 const job = {
