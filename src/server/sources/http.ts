@@ -20,6 +20,19 @@ const ROBOTS_TTL_MS = 60 * 60 * 1000;
 
 export class FetchBlockedError extends Error {}
 
+/**
+ * A same-site fetch was redirected to another site. Not followed; carries where it pointed (`to`)
+ * and every URL on the way (`hops`, first is the one asked for), so a caller can record a move.
+ */
+export class OffSiteRedirectError extends FetchBlockedError {
+  constructor(
+    readonly to: string,
+    readonly hops: string[],
+  ) {
+    super(`Redirected off-site to ${new URL(to).hostname}`);
+  }
+}
+
 /** `body` is the text; `bytes` the raw download, for files (e.g. a zip). */
 export type FetchedPage = { url: string; status: number; contentType: string; body: string; bytes: Buffer };
 
@@ -144,10 +157,12 @@ export async function politeGet(
   let current = new URL(url);
   // Redirects may move between the company's own hosts (toasttab.com → pos.toasttab.com), never off it.
   const site = registrableDomain(current.hostname);
+  const hops: string[] = [];
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (!/^https?:$/.test(current.protocol)) throw new FetchBlockedError(`Unsupported protocol ${current.protocol}`);
-    if (sameSite && registrableDomain(current.hostname) !== site) throw new FetchBlockedError(`Redirected off-site to ${current.hostname}`);
+    if (sameSite && registrableDomain(current.hostname) !== site) throw new OffSiteRedirectError(current.toString(), hops);
+    hops.push(current.toString());
     await assertPublicHost(current.hostname);
     if (sameSite && !(await robotsAllow(current))) throw new FetchBlockedError(`robots.txt disallows ${current.pathname}`);
     await throttle(siteOf(current.hostname));

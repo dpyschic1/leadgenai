@@ -240,6 +240,43 @@ company's **Sources** card. Adapters live in `src/server/sources/`, the job queu
   evaluation and evidence need, link to each original posting, honour Ashby's "not listed" flag,
   and delete closed jobs after 90 days.
 
+### Web Scraping & Discovery Engine (shared collection layer)
+
+A separate engine (`src/server/collection/`) that collects public items **once for every
+workspace** into global tables. It is independent of the Company Discovery Engine and the LeadGen
+Engine; they don't read from it yet.
+
+- **Collectors** (`collectors/`) implement one contract (`types.ts`) and only read their source; the
+  runner stores, deduplicates, categorizes and logs. A source runs only when its `sources` row is
+  `approved` (Phase 0 review, migration `0036`).
+- **Tables:** `collection_targets` (what to collect, cursor, schedule, lease), `collection_runs` (the
+  collection log), `collected_items` (original URL, page read from, extraction method, first/last
+  seen, closed, content hash, dedupe key, `duplicate_of`), `collected_item_categories`.
+- **HTTP** goes through `politeGet` (robots.txt, one request a second per site, public addresses
+  only) plus a hard block on sites whose terms forbid automated collection (LinkedIn, Indeed,
+  Google Search, Glassdoor…; `collection/fetch.ts`), a request budget and a deadline per run.
+- **Load:** at most 8 targets are collected at once across every call and server instance (leases
+  counted in the database, claims serialized by an advisory lock); a site is one target, so one run
+  at a time reads it, one request a second.
+- **Freshness:** a target's interval halves when something changed and doubles when nothing did
+  (6 h to 7 days); a complete run closes items it no longer finds; an item past its stated expiry
+  (`valid_through`) is closed on the next call; failures back off 1, 4, 16, 64 minutes. Closed items
+  go after 14 days and items older than 60 days are pruned.
+- **Duplicates:** items sharing a dedupe key form a group whose original is the earliest-seen open
+  item (the earliest item when all are closed); the rest point at it. The group is recomputed
+  whenever a member is added, changes, closes, reopens or is pruned.
+- **Websites that moved:** a home page redirecting to another domain is followed (at most two moves)
+  only to a public website: never an IP address, a local host, a parked domain, a blocked platform,
+  or back to a domain already passed (a loop); the new site's own fetch keeps every network check.
+  The old target keeps the original URL and redirect history and is switched off; the new domain
+  becomes a target once (`params.movedFrom`), so a domain change never makes a duplicate.
+- **Scheduler:** `POST /api/v1/internal/collect` with `Authorization: Bearer <CRON_SECRET>`, every
+  few minutes (a second cron-job.org job beside the tick). The local dev ticker calls it too.
+- **First collector, `career_pages`:** schema.org JobPosting markup on a company's own careers
+  page (home page link or sitemap, then job pages). Targets come from US YC companies and websites
+  already read. A careers page that links to a job board we already read is skipped; one that needs
+  a browser is flagged (`cursor.needsRender`), not rendered.
+
 Settings (`.env` locally, Vercel Environment Variables in production):
 
 - `COMPANIES_HOUSE_API_KEY`: free key from developer.company-information.service.gov.uk

@@ -49,6 +49,7 @@ import {
   SOURCE_AUTHORIZATIONS,
 } from "@/lib/domain/sources";
 import { CAPABILITIES, OPPORTUNITY_CATEGORIES, RUN_STATUSES, VERIFICATION_STATUSES } from "@/lib/domain/engine";
+import { COLLECTED_ITEM_KINDS, EXTRACTION_METHODS } from "@/lib/domain/collection";
 import { MEMBER_ROLES } from "@/lib/domain/members";
 import { STAGE_KINDS } from "@/lib/domain/pipeline";
 import {
@@ -1624,3 +1625,154 @@ export const siteReads = pgTable("site_reads", {
   factsFrom: text(),
   factsAt: timestamp({ withTimezone: true }),
 });
+
+// ---------------------------------------------------------------------------
+// Web Scraping & Discovery Engine (shared, global: no workspace_id). Collected once for every
+// workspace; independent of the two engines above, which will read from it later.
+// ---------------------------------------------------------------------------
+
+export const collectedItemKind = pgEnum("collected_item_kind", COLLECTED_ITEM_KINDS);
+export const extractionMethod = pgEnum("extraction_method", EXTRACTION_METHODS);
+
+/**
+ * What to collect and when: one row per collector input (a company domain, a feed, a query). The
+ * runner leases due rows with SKIP LOCKED, so parallel calls never collect the same target twice.
+ * `cursor` is the collector's own progress (pagination, the careers page it found).
+ */
+export const collectionTargets = pgTable(
+  "collection_targets",
+  {
+    id: id(),
+    sourceSlug: text()
+      .notNull()
+      .references(() => sources.slug),
+    /** What the collector reads, e.g. a domain ("acme.com"). Unique per source. */
+    targetKey: text().notNull(),
+    params: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    cursor: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    enabled: boolean().notNull().default(true),
+    /** Higher goes first among due targets. */
+    priority: integer().notNull().default(0),
+    /** Adapts to how often the target changes (shorter when it did, longer when it didn't). */
+    intervalMinutes: integer().notNull(),
+    nextRunAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /** Set while a run holds the target; a lease past its time (the run died) is taken again. */
+    leasedUntil: timestamp({ withTimezone: true }),
+    lastRunAt: timestamp({ withTimezone: true }),
+    lastSuccessAt: timestamp({ withTimezone: true }),
+    consecutiveFailures: integer().notNull().default(0),
+    lastError: text(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("collection_targets_key_idx").on(t.sourceSlug, t.targetKey),
+    index("collection_targets_due_idx").on(t.enabled, t.nextRunAt),
+    check("collection_targets_interval_chk", sql`${t.intervalMinutes} between 15 and 43200`),
+  ],
+);
+
+/** One collection of one target: the collection log (requests made, what changed, the error). */
+export const collectionRuns = pgTable(
+  "collection_runs",
+  {
+    id: id(),
+    targetId: uuid()
+      .notNull()
+      .references(() => collectionTargets.id, { onDelete: "cascade" }),
+    startedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp({ withTimezone: true }),
+    /** Null while running; `partial` when the run stopped before reading everything. */
+    status: runStatus(),
+    /** The run read the whole target, so an item it did not see again has closed. */
+    complete: boolean().notNull().default(false),
+    requests: integer().notNull().default(0),
+    fetched: integer().notNull().default(0),
+    created: integer().notNull().default(0),
+    updated: integer().notNull().default(0),
+    unchanged: integer().notNull().default(0),
+    duplicates: integer().notNull().default(0),
+    closed: integer().notNull().default(0),
+    error: text(),
+    /** The collector's notes, e.g. why nothing was collected. */
+    details: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [index("collection_runs_target_idx").on(t.targetId, t.startedAt)],
+);
+
+/**
+ * One public item (a job, a post…) as collected, deduplicated by source + the source's own id.
+ * Keeps its evidence: the original URL, the page it was read from, how it was extracted, and when
+ * it was first and last seen. Only what matching and evidence need is stored (`body` is a digest).
+ */
+export const collectedItems = pgTable(
+  "collected_items",
+  {
+    id: id(),
+    sourceSlug: text()
+      .notNull()
+      .references(() => sources.slug),
+    /** The source's own id for the item: the deduplication key within the source. */
+    externalId: text().notNull(),
+    kind: collectedItemKind().notNull(),
+    /** The item's original URL, as the source gives it. */
+    url: text().notNull(),
+    /** The URL without tracking parameters, fragments or a trailing slash: the same page from any link. */
+    canonicalUrl: text().notNull(),
+    extraction: extractionMethod().notNull(),
+    /** The page or feed the item was read from (evidence), when that is not `url` itself. */
+    fetchedUrl: text(),
+    title: text().notNull(),
+    /** A digest of the text: the full text only for a job that fits a service category (`jobDigest`). */
+    body: text(),
+    companyName: text(),
+    /** Registrable domain of the company's own website. */
+    companyDomain: text(),
+    location: text(),
+    country: countryCode(),
+    remote: boolean(),
+    postedAt: timestamp({ withTimezone: true }),
+    /** When the source says the item expires (a job's `validThrough`). */
+    validThrough: timestamp({ withTimezone: true }),
+    firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /** When the stored content last changed (`content_hash`). */
+    lastChangedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /** Set when a complete run of its target no longer finds it. */
+    closedAt: timestamp({ withTimezone: true }),
+    /** Hash of the stored fields: a different hash on a later visit means the item changed. */
+    contentHash: text().notNull(),
+    /** The same item from any source or listing (company domain + title + location, else the URL), hashed. */
+    dedupeKey: text().notNull(),
+    /** The earlier item this one repeats (same dedupe key); null for an original. */
+    duplicateOf: uuid(),
+    /** The target that last saw it, so a complete run of that target can close what is gone. */
+    lastTargetId: uuid().references(() => collectionTargets.id, { onDelete: "set null" }),
+    /** Source-specific facts worth keeping (employment type, salary). Never matched on. */
+    data: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [
+    uniqueIndex("collected_items_external_idx").on(t.sourceSlug, t.externalId),
+    index("collected_items_dedupe_idx").on(t.dedupeKey),
+    index("collected_items_company_idx").on(t.companyDomain),
+    index("collected_items_kind_posted_idx").on(t.kind, t.postedAt),
+    index("collected_items_target_idx").on(t.lastTargetId),
+    check("collected_items_country_chk", sql`${t.country} is null or ${t.country} ~ '^[A-Z]{2}$'`),
+    foreignKey({ name: "collected_items_duplicate_fk", columns: [t.duplicateOf], foreignColumns: [t.id] }).onDelete("set null"),
+  ],
+);
+
+/** The service categories a collected item points to, so engines find relevant items with one query. */
+export const collectedItemCategories = pgTable(
+  "collected_item_categories",
+  {
+    itemId: uuid()
+      .notNull()
+      .references(() => collectedItems.id, { onDelete: "cascade" }),
+    categorySlug: text()
+      .notNull()
+      .references(() => serviceCategories.slug),
+    /** rule or ai. */
+    method: text().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.itemId, t.categorySlug] }), index("collected_item_categories_category_idx").on(t.categorySlug)],
+);
