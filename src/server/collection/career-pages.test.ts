@@ -4,7 +4,8 @@ import { careerPages } from "./collectors/career-pages";
 import { createFetcher, fetchHome, moveDestination } from "./fetch";
 
 /**
- * Websites that redirect to another domain, through the real polite fetch with the network
+ * The careers collector over the network: websites that redirect to another domain, and careers
+ * pages without markup, through the real polite fetch with the network
  * replaced: DNS answers from `ADDRESSES`, and each URL answers from `ROUTES` (robots.txt is absent,
  * so it allows everything). Every test uses its own host names, because the fetch keeps one request
  * a second per site across the whole file; tests that cross several sites get a longer timeout.
@@ -151,4 +152,37 @@ describe("following a website to its new domain", () => {
     expect(result).toMatchObject({ items: [], complete: true, cursor: { jobBoard: "ashby:jbco" } });
     expect(result.movedTo).toBeUndefined();
   });
+});
+
+describe("collecting a careers page without markup", () => {
+  it("reads the listing's job links, each job's own page, and never a job board elsewhere", async () => {
+    const jobPosting = JSON.stringify({ "@type": "JobPosting", title: "Staff Engineer", identifier: "SE-1", datePosted: "2026-11-10" });
+    ROUTES["https://hx-co.com/careers"] = html(`
+      <a href="/careers/staff-engineer"><span>Staff Engineer</span><span>Austin, TX · Full-time</span></a>
+      <a href="/careers/growth-marketer"><span>Growth Marketer</span><span>Remote (US)</span></a>
+      <a href="https://www.ycombinator.com/companies/hx/jobs/abc-founding-designer"><strong>Founding Designer</strong><span>$120K–$150K</span></a>`);
+    ROUTES["https://hx-co.com/careers/staff-engineer"] = html(`<script type="application/ld+json">${jobPosting}</script><h1>Staff Engineer</h1>`);
+    ROUTES["https://hx-co.com/careers/growth-marketer"] = html(`<main><h1>Growth Marketer</h1><h2>About the role</h2>
+      <p>In this role you will run our paid campaigns.</p><h2>Requirements</h2><p>3+ years of experience with paid social. Apply today.</p></main>`);
+
+    const result = await careerPages.collect({
+      target: { id: "t", sourceSlug: "career_pages", targetKey: "hx-co.com", params: {}, cursor: { careersUrl: "https://hx-co.com/careers" }, intervalMinutes: 1440 },
+      now: new Date("2026-11-17T12:00:00Z"),
+      deadline: Date.now() + 60_000,
+      fetcher: fetcher(),
+    });
+
+    expect(result.complete).toBe(true);
+    const byTitle = Object.fromEntries(result.items.map((i) => [i.title, i]));
+    expect(Object.keys(byTitle).sort()).toEqual(["Founding Designer", "Growth Marketer", "Staff Engineer"]);
+    // The job's own page had markup: that is the item, not its card.
+    expect(byTitle["Staff Engineer"]).toMatchObject({ extraction: "json_ld", externalId: "hx-co.com:SE-1" });
+    // No markup: the card's facts with the description from the job's own page.
+    expect(byTitle["Growth Marketer"]).toMatchObject({ extraction: "html", url: "https://hx-co.com/careers/growth-marketer", location: "Remote (US)", remote: true });
+    expect(byTitle["Growth Marketer"].text).toContain("run our paid campaigns");
+    expect(byTitle["Founding Designer"]).toMatchObject({ extraction: "html", data: { applyUrl: "https://www.ycombinator.com/companies/hx/jobs/abc-founding-designer" } });
+
+    const fetched = vi.mocked(fetch).mock.calls.map(([input]) => input.toString());
+    expect(fetched.some((u) => u.includes("ycombinator.com"))).toBe(false);
+  }, 20_000);
 });

@@ -8,24 +8,32 @@ import { extractLinks, jobBoardFromHtml, parseJsonLd, sitemapLinks } from "@/ser
 import { boardFromUrl } from "@/server/sources/board-directory";
 import { OffSiteRedirectError, registrableDomain } from "@/server/sources/http";
 import { CollectionBudgetError, fetchHome, isBlockedUrl, type Fetcher } from "../fetch";
+import { jobCardsFrom, jobPageFrom, listingBody } from "./html-jobs";
 import { canonicalUrl, countryCodeOf, domainOf, parseDate } from "../normalize";
 import type { CollectedItemInput, CollectContext, CollectResult, Collector } from "../types";
 
 /**
- * Jobs on a company's own careers pages, from their schema.org JobPosting markup: the structured
- * data employers publish so Google for Jobs lists them, and the original of most jobs that LinkedIn
- * and Indeed show. One target per company domain.
+ * Jobs on a company's own careers pages: the original of most jobs that LinkedIn and Indeed show.
+ * One target per company domain.
  *
  * 1. Find the careers page (home page links, else the sitemap), once; it is kept in the cursor.
  * 2. Read it and up to two more listing pages, then the job pages it links to (capped per run).
- * 3. Each JobPosting becomes an item. Expired and stale jobs are left out.
+ * 3. Each schema.org JobPosting (the markup employers publish for Google for Jobs) becomes an item;
+ *    expired and stale jobs are left out. Without markup, jobs are read from the HTML
+ *    (`html-jobs.ts`): the job links on the listing, with each job's own page for its description.
  * A company whose careers page links to a job board the Company Discovery Engine already reads
  * (Greenhouse, Lever, Ashby…) is skipped, so nothing is collected twice. A page that only a browser
  * can render is flagged in the cursor (`needsRender`), not rendered.
  */
 
-const CAREERS_PATH = /\/(careers?|jobs|join-us|join|work-with-us|open-positions|openings|vacancies|positions)(\/|$)/i;
-const CAREERS_TEXT = /\b(careers?|jobs|join (us|our team)|open (positions|roles)|we('|’)re hiring|work (with|at) us|vacancies)\b/i;
+/** A careers page's path. Not `/join`: on startup sites that is usually a waitlist or sign-up. */
+const CAREERS_PATH = /\/(careers?|jobs|join-us|work-with-us|open-positions|openings|vacancies|positions)(\/|$)/i;
+/**
+ * Link text that names the careers page itself, as the whole (short) text: "Careers", "Join us",
+ * "We're hiring", "Work at Acme". Not "How to work with us" (a page for customers) or any text that
+ * only mentions jobs.
+ */
+const CAREERS_TEXT = /^(careers?|jobs|join (us|our team|the team)|open (positions|roles)|current openings|we('|’)re hiring!?|hiring|vacancies|work (at|for) [\w .&'-]{2,30})$/i;
 /** A link that is a file, an application form or a feed, never a job page. */
 const NOT_A_JOB_PAGE = /(\.(pdf|jpe?g|png|gif|svg|webp|zip|docx?|xml)$)|\/(apply|login|signin|feed|rss)(\/|$)/i;
 
@@ -49,7 +57,7 @@ export function careersUrlFrom(links: { url: string; text: string }[], domain: s
   const candidates = links
     .filter((l) => sameSite(l.url, domain) && !NOT_A_JOB_PAGE.test(new URL(l.url).pathname))
     .map((l) => ({ url: l.url, path: new URL(l.url).pathname, text: l.text }))
-    .filter((l) => CAREERS_PATH.test(l.path) || CAREERS_TEXT.test(l.text));
+    .filter((l) => CAREERS_PATH.test(l.path) || CAREERS_TEXT.test(l.text.trim()));
   // A path that says careers beats link text that does; then the shortest (the index, not one job).
   candidates.sort((a, b) => Number(CAREERS_PATH.test(b.path)) - Number(CAREERS_PATH.test(a.path)) || a.path.length - b.path.length);
   return candidates[0]?.url ?? null;
@@ -93,7 +101,8 @@ export function jobPageLinks(html: string, pageUrl: string, careersUrl: string, 
 
 /** A page whose content only appears once scripts run: little text and an app root element. Pure. */
 export function looksClientRendered(html: string): boolean {
-  const text = htmlToText(html.replace(/<(noscript|nav|header|footer)\b[\s\S]*?<\/\1>/gi, ""));
+  const text = htmlToText(listingBody(html));
+  if (/\b(javascript is required|requires javascript|enable javascript|turn on javascript)\b/i.test(text)) return true;
   return text.length < 400 && /<div[^>]+id\s*=\s*["'](root|app|__next|__nuxt|svelte|main-app)["']/i.test(html);
 }
 
@@ -237,6 +246,8 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
   const cursor: Json = { ...target.cursor };
   delete cursor.needsRender;
   const items: CollectedItemInput[] = [];
+  /** Jobs read from the listing's HTML, by external id, until their own pages are read. */
+  const cards = new Map<string, CollectedItemInput>();
   let complete = true;
 
   try {
@@ -280,9 +291,13 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
       if (page && page.status < 400) pages.push(page);
     }
     for (const page of pages) items.push(...jobPostingsFrom(page.body, page.url, domain, now));
+    // No markup on the listing: the jobs it links to, read from its HTML (see html-jobs.ts).
+    if (items.length === 0) for (const page of pages) for (const card of jobCardsFrom(page.body, page.url, domain)) cards.set(card.externalId, card);
 
     const read = new Set(items.map((i) => canonicalUrl(i.url)));
-    const jobPages = [...new Set(pages.flatMap((p) => jobPageLinks(p.body, p.url, careersUrl!, domain)))].filter((u) => !read.has(canonicalUrl(u)));
+    // Cards that link to the job's own page on this site: that page is read for the description.
+    const linked = [...cards.values()].filter((c) => c.externalId === canonicalUrl(c.url) && c.fetchedUrl !== null).map((c) => c.url);
+    const jobPages = [...new Set([...pages.flatMap((p) => jobPageLinks(p.body, p.url, careersUrl!, domain)), ...linked])].filter((u) => !read.has(canonicalUrl(u)));
     if (jobPages.length > MAX_JOB_PAGES) complete = false;
     for (const url of jobPages.slice(0, MAX_JOB_PAGES)) {
       if (!fetcher.canFetch()) {
@@ -296,12 +311,35 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
           if (page.status !== 404 && page.status !== 410) complete = false;
           continue;
         }
-        items.push(...jobPostingsFrom(page.body, page.url, domain, now));
+        const marked = jobPostingsFrom(page.body, page.url, domain, now);
+        // A card for its own page is keyed by that page's canonical URL (its external id).
+        const key = canonicalUrl(url);
+        if (marked.length > 0) {
+          // The job's own page has markup: that is the job, not its card on the listing.
+          items.push(...marked);
+          cards.delete(key);
+          continue;
+        }
+        const own = jobPageFrom(page.body, page.url, domain);
+        const card = cards.get(key);
+        if (own && card) {
+          cards.set(key, { ...card, text: own.text, location: card.location ?? own.location, country: card.country ?? own.country, remote: card.remote ?? own.remote, data: { ...own.data, ...card.data } });
+        } else if (own) {
+          cards.set(key, own);
+        }
       } catch (error) {
         if (error instanceof CollectionBudgetError) throw error;
         complete = false;
       }
     }
+
+    // The careers link went straight to one job's page.
+    if (items.length === 0 && cards.size === 0 && /\/[^/]+\/[^/]+/.test(new URL(listing.url).pathname)) {
+      const own = jobPageFrom(listing.body, listing.url, domain);
+      if (own) cards.set(own.externalId, own);
+    }
+    items.push(...cards.values());
+    cards.clear();
 
     if (items.length === 0 && looksClientRendered(listing.body)) {
       // Phase 4 renders these in a browser; until then nothing is closed on their account.
@@ -311,11 +349,11 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
       items,
       cursor: { ...cursor, jobs: items.length },
       complete,
-      ...(items.length === 0 ? { intervalMinutes: MAX_COLLECT_INTERVAL_MINUTES, note: "No JobPosting markup on the careers pages" } : {}),
+      ...(items.length === 0 ? { intervalMinutes: MAX_COLLECT_INTERVAL_MINUTES, note: "No jobs found on the careers pages" } : {}),
     };
   } catch (error) {
     if (!(error instanceof CollectionBudgetError)) throw error;
-    return { items, cursor, complete: false, note: "Stopped at the run's request budget or time" };
+    return { items: [...items, ...cards.values()], cursor, complete: false, note: "Stopped at the run's request budget or time" };
   }
 }
 

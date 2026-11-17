@@ -272,10 +272,17 @@ Engine; they don't read from it yet.
   becomes a target once (`params.movedFrom`), so a domain change never makes a duplicate.
 - **Scheduler:** `POST /api/v1/internal/collect` with `Authorization: Bearer <CRON_SECRET>`, every
   few minutes (a second cron-job.org job beside the tick). The local dev ticker calls it too.
-- **First collector, `career_pages`:** schema.org JobPosting markup on a company's own careers
-  page (home page link or sitemap, then job pages). Targets come from US YC companies and websites
-  already read. A careers page that links to a job board we already read is skipped; one that needs
-  a browser is flagged (`cursor.needsRender`), not rendered.
+- **First collector, `career_pages`:** jobs on a company's own careers page (home page link or
+  sitemap, then job pages). Targets come from US YC companies and websites already read. A careers
+  page that links to a job board we already read is skipped; one that needs a browser is flagged
+  (`cursor.needsRender`), not rendered.
+  - *Markup first:* schema.org JobPosting (extraction `json_ld`).
+  - *Else HTML* (`collectors/html-jobs.ts`, extraction `html`): each link on the listing that points
+    at a job (its own page, a `?job_id=`/`#job` anchor, or a job board such as YC's or an ATS) and
+    whose title reads as a role, with its facts (place, contract, pay); then each job's own page for
+    the description, accepted only when it reads as one (and never template placeholder text). Team
+    bios, quotes, menus, footers and filters are not jobs. Job boards elsewhere are linked
+    (`data.applyUrl`), never fetched.
 
 Settings (`.env` locally, Vercel Environment Variables in production):
 
