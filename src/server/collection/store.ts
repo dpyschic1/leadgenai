@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { collectedItemCategories, collectedItems } from "@/db/schema";
 import { CLOSED_JOB_RETENTION_DAYS, MAX_JOB_AGE_DAYS } from "@/server/jobs/job-signal";
-import { normalizeItem } from "./normalize";
+import { canonicalUrl, contentHash, normalizeItem, type NormalizedItem } from "./normalize";
 import type { CollectedItemInput } from "./types";
 
 /**
@@ -24,7 +24,13 @@ export async function storeItems(sourceSlug: string, targetId: string | null, fo
   const known = new Map(
     (
       await db
-        .select({ externalId: collectedItems.externalId, contentHash: collectedItems.contentHash, dedupeKey: collectedItems.dedupeKey, closedAt: collectedItems.closedAt })
+        .select({
+          externalId: collectedItems.externalId,
+          contentHash: collectedItems.contentHash,
+          dedupeKey: collectedItems.dedupeKey,
+          closedAt: collectedItems.closedAt,
+          body: collectedItems.body,
+        })
         .from(collectedItems)
         .where(and(eq(collectedItems.sourceSlug, sourceSlug), inArray(collectedItems.externalId, items.map((i) => i.externalId))))
     ).map((row) => [row.externalId, row]),
@@ -35,8 +41,11 @@ export async function storeItems(sourceSlug: string, targetId: string | null, fo
   // Groups whose original may now be a different item: new or changed items (their old key too)
   // and items that were closed and are open again.
   const regroup = new Set<string>();
-  for (const item of items) {
-    const previous = known.get(item.externalId);
+  for (const found of items) {
+    const previous = known.get(found.externalId);
+    // No text this time means its page wasn't read this run (a budget, a listing-only visit), not
+    // that the job lost its description: the stored one stays.
+    const item = found.body === null && previous?.body ? withBody(found, previous.body) : found;
     const before = previous?.contentHash;
     const changed = before === undefined || before !== item.contentHash;
     if (changed || previous?.closedAt) regroup.add(item.dedupeKey);
@@ -77,6 +86,8 @@ export async function storeItems(sourceSlug: string, targetId: string | null, fo
           closedAt: null,
           ...(changed
             ? {
+                // A source can re-read what an item is (a post first taken for a job).
+                kind: item.kind,
                 url: item.url,
                 canonicalUrl: item.canonicalUrl,
                 extraction: item.extraction,
@@ -117,6 +128,12 @@ export async function storeItems(sourceSlug: string, targetId: string | null, fo
     counts.duplicates = duplicates;
   }
   return counts;
+}
+
+/** The item with this body, its content hash recomputed to match. */
+function withBody(item: NormalizedItem, body: string): NormalizedItem {
+  const next = { ...item, body };
+  return { ...next, contentHash: contentHash(next) };
 }
 
 /** Replaces the title-rule categories of these items (AI categories, added later, are kept). */
@@ -161,6 +178,17 @@ export async function closeMissing(targetId: string, runStartedAt: Date, now = n
     .update(collectedItems)
     .set({ closedAt: now })
     .where(and(eq(collectedItems.lastTargetId, targetId), isNull(collectedItems.closedAt), lt(collectedItems.lastSeenAt, runStartedAt)))
+    .returning({ dedupeKey: collectedItems.dedupeKey });
+  await regroupDuplicates(rows.map((r) => r.dedupeKey));
+  return rows.length;
+}
+
+/** Closes this target's open items at these URLs: another collector now collects them. Returns how many. */
+export async function closeHandedOver(targetId: string, urls: string[], now = new Date()): Promise<number> {
+  const rows = await db
+    .update(collectedItems)
+    .set({ closedAt: now })
+    .where(and(eq(collectedItems.lastTargetId, targetId), isNull(collectedItems.closedAt), inArray(collectedItems.canonicalUrl, [...new Set(urls.map(canonicalUrl))])))
     .returning({ dedupeKey: collectedItems.dedupeKey });
   await regroupDuplicates(rows.map((r) => r.dedupeKey));
   return rows.length;

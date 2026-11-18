@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FetchBlockedError, OffSiteRedirectError, politeGet } from "@/server/sources/http";
 import { careerPages } from "./collectors/career-pages";
+import { ripplingBoards } from "./collectors/hosted-boards";
 import { createFetcher, fetchHome, moveDestination } from "./fetch";
 
 /**
@@ -184,5 +185,68 @@ describe("collecting a careers page without markup", () => {
 
     const fetched = vi.mocked(fetch).mock.calls.map(([input]) => input.toString());
     expect(fetched.some((u) => u.includes("ycombinator.com"))).toBe(false);
+  }, 20_000);
+});
+
+describe("jobs on Gem and Rippling boards", () => {
+  const run = (collector: typeof careerPages, targetKey: string, cursor: Record<string, unknown> = {}, params: Record<string, unknown> = {}) =>
+    collector.collect({
+      target: { id: "t", sourceSlug: collector.slug, targetKey, params, cursor, intervalMinutes: 1440 },
+      now: new Date("2026-11-18T12:00:00Z"),
+      deadline: Date.now() + 60_000,
+      fetcher: fetcher(),
+    });
+
+  it("a careers page linking its jobs to Gem hands the board to the Gem collector", async () => {
+    ROUTES["https://gb-co.com/careers"] = html(`
+      <a href="https://jobs.gem.com/gbco/AAA"><span>Robotics Engineer</span><span>In office</span></a>
+      <a href="https://jobs.gem.com/gbco/BBB"><span>Data Operations Lead</span></a>`);
+    const result = await run(careerPages, "gb-co.com", { careersUrl: "https://gb-co.com/careers" });
+    expect(result.items).toEqual([]);
+    expect(result.discovered).toEqual([{ sourceSlug: "gem_board", targetKey: "gbco", params: { company: "gb-co.com", foundOn: "https://jobs.gem.com/gbco/AAA" } }]);
+    expect(result.cursor.hostedBoards).toEqual(["gem_board:gbco"]);
+    expect(result.handedOver).toEqual(["https://jobs.gem.com/gbco/AAA", "https://jobs.gem.com/gbco/BBB"]);
+  });
+
+  it("a home page with no careers page but a Rippling board link hands the board over", async () => {
+    ROUTES["https://rb-co.com/"] = html(`<a href="/about">About</a><a href="https://ats.rippling.com/rb-co/jobs">We're hiring</a>`);
+    const result = await run(careerPages, "rb-co.com");
+    expect(result.discovered?.map((d) => [d.sourceSlug, d.targetKey])).toEqual([["rippling_board", "rb-co"]]);
+  });
+
+  it("reads a Rippling board, and each job's own page only once", async () => {
+    const page = (props: unknown) => html(`<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props })}</script>`);
+    ROUTES["https://ats.rippling.com/rp-co/jobs"] = page({
+      pageProps: {
+        dehydratedState: {
+          queries: [
+            {
+              queryKey: ["board", "rp-co", "job-posts"],
+              state: {
+                data: {
+                  totalPages: 1,
+                  items: [
+                    { id: "old", name: "Platform Engineer", url: "https://ats.rippling.com/rp-co/jobs/old", locations: [{ city: "Austin", stateCode: "TX", countryCode: "US", workplaceType: "ON_SITE" }] },
+                    { id: "new", name: "Account Executive", url: "https://ats.rippling.com/rp-co/jobs/new", department: { name: "Sales" }, locations: [{ countryCode: "US", workplaceType: "REMOTE" }] },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    ROUTES["https://ats.rippling.com/rp-co/jobs/new"] = page({
+      pageProps: { apiData: { jobPost: { description: { role: "<p>Sell our product.</p>" }, createdOn: "2026-11-01T00:00:00Z", employmentType: { id: "Salaried, full-time" } } } },
+    });
+    const result = await run(ripplingBoards, "rp-co", { posted: { old: "2026-10-01T00:00:00Z" } }, { company: "rp-co.com" });
+    expect(result.complete).toBe(true);
+    const [old, fresh] = result.items;
+    expect(old).toMatchObject({ externalId: "old", title: "Platform Engineer", location: "Austin, TX, US", country: "US", remote: false, text: null, companyDomain: "rp-co.com" });
+    expect(old.postedAt?.toISOString()).toBe("2026-10-01T00:00:00.000Z");
+    expect(fresh).toMatchObject({ externalId: "new", text: "Sell our product.", country: "US", remote: true, data: { departments: ["Sales"], employmentType: ["Salaried, full-time"] } });
+    expect(result.cursor).toEqual({ posted: { old: "2026-10-01T00:00:00Z", new: "2026-11-01T00:00:00Z" } });
+    const fetched = vi.mocked(fetch).mock.calls.map(([input]) => input.toString());
+    expect(fetched).not.toContain("https://ats.rippling.com/rp-co/jobs/old");
   }, 20_000);
 });

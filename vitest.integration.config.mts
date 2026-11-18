@@ -12,6 +12,8 @@ export default defineConfig({
       ...loadEnv({ quiet: true }).parsed,
       // Paid APIs stay off in tests, whatever .env holds: a test tick must never spend real credits.
       THEIRSTACK_API_KEY: "",
+      // Free but limited to a few calls a day: tests never use it.
+      SAM_GOV_API_KEY: "",
     },
     testTimeout: 30_000,
     hookTimeout: 60_000,

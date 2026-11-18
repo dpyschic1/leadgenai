@@ -29,6 +29,11 @@ export type CollectedItemInput = {
   postedAt: Date | null;
   validThrough: Date | null;
   data: Record<string, unknown>;
+  /**
+   * Service categories the source itself states (e.g. a tender's industry code). Without them, a
+   * job's or post's title rules decide (`categorizeJob`).
+   */
+  categories?: string[];
 };
 
 export type CollectTarget = {
@@ -63,12 +68,25 @@ export type CollectResult = {
    * target with its redirect history, switches it off, and collects the new domain as its own target.
    */
   movedTo?: { domain: string; moves: DomainMove[] };
+  /**
+   * Targets this run found for other collectors (e.g. a company's job board on Gem, linked from its
+   * careers page). The runner adds each once, with this target's priority.
+   */
+  discovered?: { sourceSlug: string; targetKey: string; params: Record<string, unknown> }[];
+  /**
+   * URLs of jobs this target no longer collects because another collector now does (e.g. a job on
+   * a Gem board, collected from the board). Their items from this target close at once, even when
+   * the run is not complete: they are known to be collected elsewhere, not gone.
+   */
+  handedOver?: string[];
 };
 
 export type Collector = {
   slug: CollectorSlug;
   access: CollectorAccess;
   defaultIntervalMinutes: number;
+  /** False when a required setting (an API key) is missing: its targets then wait, they never fail. */
+  configured?: () => boolean;
   collect(context: CollectContext): Promise<CollectResult>;
   /** Adds the targets this collector should read (idempotent). Returns how many were new. */
   seed?(): Promise<number>;

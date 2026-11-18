@@ -57,6 +57,18 @@ export function domainOf(value: string | null | undefined): string | null {
   }
 }
 
+/**
+ * The countries a text names (`countriesNamedIn`), current ISO codes only: the shared helper also
+ * returns obsolete ones whose names overlap ("Germany" → DE and DD, East Germany), which would make
+ * every German place ambiguous. Pure.
+ */
+export function countriesIn(text: string): string[] {
+  const named = countriesNamedIn(text).filter((code) => (COUNTRY_CODES as readonly string[]).includes(code));
+  // "REMOTE (US)", "US only": the capitalised abbreviation, never the word "us".
+  if (!named.includes("US") && /(^|[^A-Za-z])(US|USA|U\.S\.)([^A-Za-z]|$)/.test(text)) named.push("US");
+  return named;
+}
+
 /** An ISO code from a country as sources write it ("US", "USA", "United States"); null when unclear. Pure. */
 export function countryCodeOf(value: string | null | undefined): string | null {
   const text = value?.trim();
@@ -65,7 +77,7 @@ export function countryCodeOf(value: string | null | undefined): string | null {
   if (upper === "UK") return "GB";
   if (upper === "USA") return "US";
   if (/^[A-Z]{2}$/.test(upper)) return (COUNTRY_CODES as readonly string[]).includes(upper) ? upper : null;
-  const named = countriesNamedIn(text);
+  const named = countriesIn(text);
   return named.length === 1 ? named[0] : null;
 }
 
@@ -78,12 +90,13 @@ export function parseDate(value: unknown): Date | null {
 
 /**
  * The stored form of an item. A job's text is kept in full (as `jobDigest` trims it) only when its
- * title fits a service category; otherwise just the links and emails it names. Pure.
+ * title fits a service category; otherwise just the links and emails it names. Categories are the
+ * ones the source states, else the title rules' for a job or a post. Pure.
  */
 export function normalizeItem(item: CollectedItemInput): NormalizedItem {
-  const { text, ...rest } = item;
+  const { text, categories: stated, ...rest } = item;
   const title = item.title.replace(/\s+/g, " ").trim().slice(0, 300);
-  const categories = item.kind === "job" ? categorizeJob({ title, department: null }) : [];
+  const categories = stated ?? (item.kind === "job" || item.kind === "post" ? categorizeJob({ title, department: null }) : []);
   const body = item.kind === "job" ? jobDigest(text, { relevant: categories.length > 0 }) : (text?.trim().slice(0, 3000) ?? null) || null;
   const canonical = canonicalUrl(item.url);
   const companyDomain = item.companyDomain ? domainOf(item.companyDomain) : null;

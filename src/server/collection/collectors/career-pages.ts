@@ -8,6 +8,7 @@ import { extractLinks, jobBoardFromHtml, parseJsonLd, sitemapLinks } from "@/ser
 import { boardFromUrl } from "@/server/sources/board-directory";
 import { OffSiteRedirectError, registrableDomain } from "@/server/sources/http";
 import { CollectionBudgetError, fetchHome, isBlockedUrl, type Fetcher } from "../fetch";
+import { hostedBoardOf } from "./hosted-boards";
 import { jobCardsFrom, jobPageFrom, listingBody } from "./html-jobs";
 import { canonicalUrl, countryCodeOf, domainOf, parseDate } from "../normalize";
 import type { CollectedItemInput, CollectContext, CollectResult, Collector } from "../types";
@@ -206,7 +207,27 @@ export function jobPostingsFrom(html: string, pageUrl: string, domain: string, n
 /** Nothing to collect here for a long while; earlier items of the target are closed. */
 const idle = (cursor: Json, note: string): CollectResult => ({ items: [], cursor, complete: true, intervalMinutes: IDLE_COLLECT_INTERVAL_MINUTES, note });
 
-type FoundCareers = { careersUrl: string | null; jobBoard: string | null; moved?: NonNullable<CollectResult["movedTo"]> };
+type FoundCareers = { careersUrl: string | null; jobBoard: string | null; moved?: NonNullable<CollectResult["movedTo"]>; boardLinks?: string[] };
+
+/**
+ * Hands the jobs on Gem and Rippling boards to their own collectors: each board this company links
+ * to becomes a target of that collector (with this company), and is listed in the cursor.
+ */
+function withBoards(result: CollectResult, links: Iterable<string>, domain: string): CollectResult {
+  const boards = new Map<string, NonNullable<CollectResult["discovered"]>[number]>();
+  for (const url of links) {
+    const board = hostedBoardOf(url);
+    const key = board && `${board.sourceSlug}:${board.token}`;
+    if (board && key && !boards.has(key)) boards.set(key, { sourceSlug: board.sourceSlug, targetKey: board.token, params: { company: domain, foundOn: url } });
+  }
+  if (boards.size === 0) return result;
+  return {
+    ...result,
+    cursor: { ...result.cursor, hostedBoards: [...boards.keys()] },
+    discovered: [...boards.values()],
+    handedOver: [...links].filter((url) => hostedBoardOf(url)),
+  };
+}
 
 /** Most redirects kept in a target's history. */
 const MAX_REDIRECT_HISTORY = 10;
@@ -230,14 +251,17 @@ async function findCareersPage(domain: string, fetcher: Fetcher): Promise<FoundC
   if (moves.length > 0) return { careersUrl: null, jobBoard: null, moved: { domain: current, moves } };
   const board = jobBoardFromHtml(home.body);
   if (board) return { careersUrl: null, jobBoard: `${board.provider}:${board.boardToken}` };
-  const fromHome = careersUrlFrom(extractLinks(home.body, home.url), domain);
-  if (fromHome || !fetcher.canFetch()) return { careersUrl: fromHome, jobBoard: null };
+  const homeLinks = extractLinks(home.body, home.url);
+  const fromHome = careersUrlFrom(homeLinks, domain);
+  // Without a careers page of its own, the home page may link straight to its job board.
+  const boardLinks = homeLinks.map((l) => l.url).filter((u) => hostedBoardOf(u));
+  if (fromHome || !fetcher.canFetch()) return { careersUrl: fromHome, jobBoard: null, boardLinks };
   try {
     const sitemap = await fetcher.get(`${new URL(home.url).origin}/sitemap.xml`);
-    return { careersUrl: sitemap.status < 400 ? careersUrlFrom(sitemapLinks(sitemap.body), domain) : null, jobBoard: null };
+    return { careersUrl: sitemap.status < 400 ? careersUrlFrom(sitemapLinks(sitemap.body), domain) : null, jobBoard: null, boardLinks };
   } catch (error) {
     if (error instanceof CollectionBudgetError) throw error;
-    return { careersUrl: null, jobBoard: null }; // no sitemap, or robots.txt disallows it
+    return { careersUrl: null, jobBoard: null, boardLinks }; // no sitemap, or robots.txt disallows it
   }
 }
 
@@ -256,7 +280,10 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
       const found = await findCareersPage(domain, fetcher);
       if (found.moved) return moved(cursor, found.moved, now);
       if (found.jobBoard) return idle({ ...cursor, jobBoard: found.jobBoard }, "Jobs are on a job board the Company Discovery Engine reads");
-      if (!found.careersUrl) return idle(cursor, "No careers page found");
+      if (!found.careersUrl) {
+        const onBoard = found.boardLinks?.length ? "Jobs are on a Gem or Rippling board, collected there" : "No careers page found";
+        return withBoards(idle(cursor, onBoard), found.boardLinks ?? [], domain);
+      }
       careersUrl = found.careersUrl;
       cursor.careersUrl = careersUrl;
     }
@@ -270,6 +297,7 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
       // website having moved, or careers hosted elsewhere (kept for later collectors, not followed).
       const board = boardFromUrl(error.to);
       if (board) return idle({ ...cursor, jobBoard: `${board.provider}:${board.boardToken}` }, "Jobs are on a job board the Company Discovery Engine reads");
+      if (hostedBoardOf(error.to)) return withBoards(idle(cursor, "Jobs are on a Gem or Rippling board, collected there"), [error.to], domain);
       delete cursor.careersUrl;
       const found = await findCareersPage(domain, fetcher);
       if (found.moved) return moved(cursor, found.moved, now);
@@ -293,6 +321,13 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
     for (const page of pages) items.push(...jobPostingsFrom(page.body, page.url, domain, now));
     // No markup on the listing: the jobs it links to, read from its HTML (see html-jobs.ts).
     if (items.length === 0) for (const page of pages) for (const card of jobCardsFrom(page.body, page.url, domain)) cards.set(card.externalId, card);
+    // Jobs on a Gem or Rippling board are collected from the board itself (full list, text, dates).
+    const boardLinks = new Set<string>();
+    for (const [key, card] of cards) {
+      if (!hostedBoardOf(card.url)) continue;
+      boardLinks.add(card.url);
+      cards.delete(key);
+    }
 
     const read = new Set(items.map((i) => canonicalUrl(i.url)));
     // Cards that link to the job's own page on this site: that page is read for the description.
@@ -342,16 +377,21 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
     items.push(...cards.values());
     cards.clear();
 
+    if (items.length === 0 && boardLinks.size > 0) return withBoards(idle(cursor, "Jobs are on a Gem or Rippling board, collected there"), boardLinks, domain);
     if (items.length === 0 && looksClientRendered(listing.body)) {
       // Phase 4 renders these in a browser; until then nothing is closed on their account.
       return { items, cursor: { ...cursor, needsRender: true }, complete: false, intervalMinutes: IDLE_COLLECT_INTERVAL_MINUTES, note: "Careers page needs a browser to render" };
     }
-    return {
-      items,
-      cursor: { ...cursor, jobs: items.length },
-      complete,
-      ...(items.length === 0 ? { intervalMinutes: MAX_COLLECT_INTERVAL_MINUTES, note: "No jobs found on the careers pages" } : {}),
-    };
+    return withBoards(
+      {
+        items,
+        cursor: { ...cursor, jobs: items.length },
+        complete,
+        ...(items.length === 0 ? { intervalMinutes: MAX_COLLECT_INTERVAL_MINUTES, note: "No jobs found on the careers pages" } : {}),
+      },
+      boardLinks,
+      domain,
+    );
   } catch (error) {
     if (!(error instanceof CollectionBudgetError)) throw error;
     return { items: [...items, ...cards.values()], cursor, complete: false, note: "Stopped at the run's request budget or time" };

@@ -1,9 +1,8 @@
 import "server-only";
 import { decodeEntities, htmlToText } from "@/server/jobs/html-to-text";
 import { repostKey } from "@/server/jobs/job-signal";
-import { countriesNamedIn } from "@/server/sources/board-directory";
 import { registrableDomain } from "@/server/sources/http";
-import { canonicalUrl } from "../normalize";
+import { canonicalUrl, countriesIn } from "../normalize";
 import type { CollectedItemInput } from "../types";
 
 /**
@@ -41,6 +40,9 @@ const NOT_A_TITLE = /^(careers?|jobs|open (roles|positions)|all (roles|jobs|posi
 /** Hosts where a company's own jobs live (job boards and ATSs); a link there is a job link. */
 const JOB_HOSTS =
   /(^|\.)(ycombinator\.com|workatastartup\.com|ashbyhq\.com|greenhouse\.io|lever\.co|workable\.com|smartrecruiters\.com|breezy\.hr|bamboohr\.com|rippling\.com|rippling-ats\.com|myworkdayjobs\.com|icims\.com|jobvite\.com|recruitee\.com|teamtailor\.com|personio\.(de|com)|dover\.com|gem\.com|pinpointhq\.com|applytojob\.com|jazzhr\.com|wellfound\.com|homerun\.co|join\.com)$/i;
+
+/** Whether a host is a job board or ATS (a link there is about jobs, not the company's own website). Pure. */
+export const isJobHost = (host: string) => JOB_HOSTS.test(host);
 
 const JOB_PATH = /\/(careers?|jobs?|positions?|openings?|roles?|vacanc(y|ies)|join-us|hiring|apply)\/[^/]+/i;
 const JOB_QUERY = /[?&](job|position|role|opening|gh_jid|posting|req)(_?id)?=/i;
@@ -92,7 +94,7 @@ export function isJobTitle(text: string): boolean {
  */
 function isPlace(text: string): boolean {
   if (/\$|€|£|\d+\s*(k|years?|yrs?|%)\b/i.test(text) || isSummary(text)) return false;
-  return /\b(remote|hybrid|on-?site|in[- ]office)\b/i.test(text) || /\b[A-Z][a-zA-Z .'-]+,\s*[A-Z]{2}\b/.test(text) || countriesNamedIn(text).length > 0;
+  return /\b(remote|hybrid|on-?site|in[- ]office)\b/i.test(text) || /\b[A-Z][a-zA-Z .'-]+,\s*[A-Z]{2}\b/.test(text) || countriesIn(text).length > 0;
 }
 
 /** A sentence about the role (a one-line description on its card), not a short fact. */
@@ -105,7 +107,7 @@ const PAY = /[$€£]\s?\d/;
  * Facts after a title: where, what kind of contract, what pay; a sentence among them is the role's
  * summary (kept as its text until the job's own page gives the description).
  */
-function factsOf(parts: string[]): { location: string | null; remote: boolean | null; summary: string | null; data: Record<string, unknown> } {
+export function factsOf(parts: string[]): { location: string | null; remote: boolean | null; summary: string | null; data: Record<string, unknown> } {
   const summary = parts.find(isSummary) ?? null;
   parts = parts.filter((p) => !isSummary(p));
   const places = parts.filter(isPlace);
@@ -123,8 +125,8 @@ function factsOf(parts: string[]): { location: string | null; remote: boolean | 
   };
 }
 
-const countryOf = (location: string | null) => {
-  const named = location ? countriesNamedIn(location) : [];
+export const countryOf = (location: string | null) => {
+  const named = location ? countriesIn(location) : [];
   return named.length === 1 ? named[0] : null;
 };
 

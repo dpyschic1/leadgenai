@@ -151,6 +151,21 @@ describe("storing collected items", () => {
     expect((await original("a"))[0].duplicateOf).toBeNull();
   });
 
+  it("re-reads what an item is when its source says so (a post first taken for a job)", async () => {
+    await storeItems(SOURCE, null, [job()]);
+    await storeItems(SOURCE, null, [job({ kind: "post", companyName: null })]);
+    const [row] = await db.select().from(collectedItems).where(eq(collectedItems.sourceSlug, SOURCE));
+    expect(row.kind).toBe("post");
+  });
+
+  it("keeps a stored description when the job comes back without its text", async () => {
+    await storeItems(SOURCE, null, [job({ text: "Build our React web app with TypeScript." })]);
+    const counts = await storeItems(SOURCE, null, [job({ text: null })], new Date(Date.now() + 60_000));
+    expect(counts).toMatchObject({ unchanged: 1, updated: 0 });
+    const [row] = await db.select().from(collectedItems).where(eq(collectedItems.sourceSlug, SOURCE));
+    expect(row.body).toContain("React web app");
+  });
+
   it("closes an item as soon as its stated expiry passes", async () => {
     await storeItems(SOURCE, null, [job({ validThrough: new Date(Date.now() + 1_000) }), job({ externalId: "acme.test:2", title: "Designer", validThrough: new Date(Date.now() + 86_400_000) })]);
     expect(await expireItems(new Date(Date.now() + 60_000))).toBe(1);
@@ -277,6 +292,51 @@ describe("running targets", () => {
     const claimed = await Promise.all([claimTarget([SOURCE]), claimTarget([SOURCE])]);
     expect(claimed.filter(Boolean)).toHaveLength(1);
     expect([busy[0].id, waiting.id]).toContain(claimed.find(Boolean)!.id);
+  });
+
+  it("adds the targets a run found for other collectors once, with its priority", async () => {
+    COLLECTORS[OTHER] = { ...fake, slug: OTHER as Collector["slug"] };
+    try {
+      const finder = await addTarget();
+      await db.update(collectionTargets).set({ priority: 1 }).where(eq(collectionTargets.id, finder.id));
+      const board = `board-${crypto.randomUUID()}`;
+      const discovered = [
+        { sourceSlug: OTHER, targetKey: board, params: { company: finder.targetKey } },
+        { sourceSlug: "no_such_collector", targetKey: board, params: {} },
+      ];
+      next = { items: [], cursor: {}, complete: true, discovered };
+      await runTarget({ ...finder, priority: 1 } as never, Date.now() + 30_000);
+      await runTarget({ ...finder, priority: 1 } as never, Date.now() + 30_000);
+      const added = await db.select().from(collectionTargets).where(eq(collectionTargets.targetKey, board));
+      expect(added).toHaveLength(1);
+      expect(added[0]).toMatchObject({ sourceSlug: OTHER, priority: 1, params: { company: finder.targetKey } });
+    } finally {
+      delete COLLECTORS[OTHER];
+    }
+  });
+
+  it("closes the jobs a run handed to another collector, even when the run is partial", async () => {
+    const target = await addTarget();
+    next = { items: [job(), job({ externalId: "gem-card", title: "Designer", url: "https://jobs.gem.com/acme/AAA" })], cursor: {}, complete: true };
+    await runTarget(target, Date.now() + 30_000);
+    next = { items: [job()], cursor: {}, complete: false, handedOver: ["https://jobs.gem.com/acme/AAA"] };
+    await runTarget(target, Date.now() + 30_000);
+    const rows = await db.select().from(collectedItems).where(eq(collectedItems.sourceSlug, SOURCE));
+    expect(rows.find((r) => r.externalId === "gem-card")?.closedAt).not.toBeNull();
+    expect(rows.find((r) => r.externalId === "acme.test:1")?.closedAt).toBeNull();
+  });
+
+  it("leaves the targets of a collector missing its key waiting, never failed", async () => {
+    COLLECTORS[SOURCE] = { ...fake, configured: () => false };
+    try {
+      const target = await addTarget();
+      const summary = await runDueTargets({ deadline: Date.now() + 30_000, only: [SOURCE] });
+      expect(summary.runs).toBe(0);
+      const [after] = await db.select().from(collectionTargets).where(eq(collectionTargets.id, target.id));
+      expect(after).toMatchObject({ consecutiveFailures: 0, lastRunAt: null, leasedUntil: null });
+    } finally {
+      COLLECTORS[SOURCE] = fake;
+    }
   });
 
   it("never runs a restricted source", async () => {

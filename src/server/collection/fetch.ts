@@ -29,7 +29,7 @@ export class CollectionBudgetError extends Error {}
 
 export type Fetcher = {
   /** GETs a page (robots.txt checked, same-site redirects only). Throws FetchBlockedError or CollectionBudgetError. */
-  get(url: string): Promise<FetchedPage>;
+  get(url: string, options?: { timeoutMs?: number }): Promise<FetchedPage>;
   /** Whether another request fits in the run's budget and time. */
   canFetch(): boolean;
   readonly requests: number;
@@ -46,11 +46,12 @@ export function createFetcher({ maxRequests, deadline }: { maxRequests: number; 
       return requests;
     },
     canFetch,
-    async get(url) {
+    async get(url, { timeoutMs }: { timeoutMs?: number } = {}) {
       if (isBlockedUrl(url)) throw new FetchBlockedError(`Collection never fetches ${safeHost(url)}`);
       if (!canFetch()) throw new CollectionBudgetError("Request budget or time used up");
       requests++;
-      return politeGet(url);
+      // A known large answer (a whole discussion thread) may take longer than a page.
+      return politeGet(url, timeoutMs ? { timeoutMs } : {});
     },
   };
 }

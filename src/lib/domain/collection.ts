@@ -21,7 +21,7 @@ export type CollectorAccess = (typeof COLLECTOR_ACCESS)[number];
  * Collector slugs, each a row in `sources` (seeded by migration; only `approved` ones run). Kept
  * apart from `SOURCE_SLUGS` so they never show in a workspace's Data sources settings.
  */
-export const COLLECTOR_SLUGS = ["career_pages"] as const;
+export const COLLECTOR_SLUGS = ["career_pages", "gem_board", "rippling_board", "hacker_news", "sam_gov"] as const;
 export type CollectorSlug = (typeof COLLECTOR_SLUGS)[number];
 
 /** Shortest and longest time between two collections of one target. */

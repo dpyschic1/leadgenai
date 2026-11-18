@@ -8,8 +8,8 @@ import { rateLimit } from "@/server/http/rate-limit";
 import { FetchBlockedError } from "@/server/sources/http";
 import { COLLECTORS } from "./collectors";
 import { createFetcher } from "./fetch";
-import { closeMissing, expireItems, pruneCollection, storeItems } from "./store";
-import type { CollectTarget } from "./types";
+import { closeHandedOver, closeMissing, expireItems, pruneCollection, storeItems } from "./store";
+import type { CollectResult, CollectTarget } from "./types";
 
 /**
  * Runs the Web Scraping & Discovery Engine: claims due targets of approved sources, runs their
@@ -114,6 +114,27 @@ async function recordMove(target: CollectTarget, domain: string, intervalMinutes
     .onConflictDoNothing();
 }
 
+/**
+ * Targets a run found for other collectors: each added once (an existing one is left as it is),
+ * with the finding target's priority. Only for collectors that exist.
+ */
+async function addDiscovered(target: CollectTarget, found: NonNullable<CollectResult["discovered"]>): Promise<void> {
+  for (const d of found) {
+    const collector = COLLECTORS[d.sourceSlug];
+    if (!collector) continue;
+    await db
+      .insert(collectionTargets)
+      .values({
+        sourceSlug: d.sourceSlug,
+        targetKey: d.targetKey,
+        intervalMinutes: collector.defaultIntervalMinutes,
+        params: d.params,
+        priority: sql`(select priority from collection_targets where id = ${target.id})`,
+      })
+      .onConflictDoNothing();
+  }
+}
+
 /** Collects one claimed target: runs its collector, stores the items, logs the run, schedules the next. */
 export async function runTarget(target: CollectTarget, callDeadline: number): Promise<{ ok: boolean; created: number; updated: number; closed: number }> {
   const collector = COLLECTORS[target.sourceSlug];
@@ -125,8 +146,9 @@ export async function runTarget(target: CollectTarget, callDeadline: number): Pr
     if (!collector) throw new Error(`No collector for ${target.sourceSlug}`);
     const result = await collector.collect({ target, now: startedAt, deadline: Math.min(callDeadline, startedAt.getTime() + MAX_RUN_MS), fetcher });
     if (result.movedTo) await recordMove(target, result.movedTo.domain, collector.defaultIntervalMinutes);
+    if (result.discovered?.length) await addDiscovered(target, result.discovered);
     const counts = await storeItems(target.sourceSlug, target.id, result.items, startedAt);
-    const closed = result.complete ? await closeMissing(target.id, startedAt) : 0;
+    const closed = (result.complete ? await closeMissing(target.id, startedAt) : 0) + (result.handedOver?.length ? await closeHandedOver(target.id, result.handedOver) : 0);
     const intervalMinutes = result.intervalMinutes ?? nextInterval(target.intervalMinutes, counts.created + counts.updated + closed > 0);
     const finishedAt = new Date();
     await db
@@ -185,6 +207,8 @@ export async function runTarget(target: CollectTarget, callDeadline: number): Pr
 /** Runs due targets in parallel lanes until the deadline; `only` limits it to some sources. */
 export async function runDueTargets({ deadline, only = Object.keys(COLLECTORS) }: { deadline: number; only?: string[] }): Promise<Omit<CollectionSummary, "seeded" | "pruned">> {
   const summary = { runs: 0, failed: 0, created: 0, updated: 0, closed: 0 };
+  // A collector missing its setting (an API key) is left out: its targets wait, they don't fail.
+  only = only.filter((slug) => COLLECTORS[slug]?.configured?.() ?? true);
   const lane = async () => {
     // Don't start a target that has less than ~a third of a run left.
     while (Date.now() < deadline - MAX_RUN_MS / 3) {

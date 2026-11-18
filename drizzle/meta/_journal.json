@@ -260,6 +260,20 @@
       "when": 1794930754904,
       "tag": "0036_collection_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1795018719701,
+      "tag": "0037_hosted_job_boards",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1795020775649,
+      "tag": "0038_buyer_request_sources",
+      "breakpoints": true
     }
   ]
 }

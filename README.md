@@ -284,6 +284,46 @@ Engine; they don't read from it yet.
     bios, quotes, menus, footers and filters are not jobs, nor are links to job areas, searches or
     filters ("…Opportunities", "Support Services", `?jobFamily=`). Job boards elsewhere are linked
     (`data.applyUrl`), never fetched; a job's address there is its id.
+- **Gem and Rippling boards** (`collectors/hosted-boards.ts`, sources `gem_board`, `rippling_board`):
+  ATSs where startups post that the Company Discovery Engine doesn't read. A careers page (or a
+  home page without one) that links its jobs to a Gem or Rippling board hands them over: the board
+  becomes a target of its collector (`params.company`), the page's own cards for those jobs close at
+  once (`handedOver`), and the board gives the full list with dates, places and descriptions.
+  - *Gem:* the public Job Board API Gem documents (`api.gem.com/job_board/v0/{board}/job_posts/`).
+  - *Rippling:* the public board pages' data (`ats.rippling.com/{board}/jobs`, 20 jobs a page) and
+    each new job's own page for its description, read once (dates kept in the cursor).
+  - Jobs first posted more than 60 days ago are left out, as everywhere (`isStaleJob`).
+  - Phase 0 (migration `0037`): Dover is not collected (its jobs load from `/api/`, disallowed by its
+    robots.txt); BambooHR's careers feed is undocumented and waits for a decision (`pending_review`).
+  - First run (2026-11-18): 12 boards found on the careers pages already read, 48 open jobs from 8
+    companies with dates and places, replacing title-only cards; Gem and Rippling sometimes answer
+    slower than the 10 s limit, and the normal backoff retries them.
+- A job that comes back without its text (its page not read this run) keeps the stored description.
+- **Hacker News** (`collectors/hacker-news.ts`, source `hacker_news`, public HN Search API, no key),
+  three targets, twice a day:
+  - `who-is-hiring`: the monthly "Ask HN: Who is hiring?" thread, read whole in one request. Each
+    company's post with the "Company | Role | Place | …" header is a job (company, first role, place,
+    pay, contract); the company's website is one its header states, else the first link that isn't
+    a job board, code host, form, video or profile. Posts without a role (a PhD, "Shepherd | ONSITE")
+    are left out; last month's posts close when the new thread arrives.
+  - `seeking-freelancer`: SEEKING FREELANCER posts (in that thread or the hiring one) are buyer
+    requests (kind `post`, intent high), with the work they name as categories.
+  - `ask-hn-requests`: Ask HN posts whose title asks to hire an agency or developer (the LeadGen
+    Engine's `readIntent`, imported, unchanged).
+  - First run (2026-11-18): 243 posts in the November thread → 157 jobs (99 with the company's
+    website, 83 with a country, 55 in the US, 96 fitting a service category) and 1 buyer request;
+    a manual review of 30 found company and role right in all 30. The November freelancer thread had
+    only SEEKING WORK posts (freelancers), so no requests; Ask HN found none in 60 days.
+- **SAM.gov** (`collectors/sam-gov.ts`, source `sam_gov`): US federal contract opportunities through
+  GSA's Get Opportunities Public API. Needs `SAM_GOV_API_KEY` (free: SAM.gov → Account Details →
+  Public API Key); without it the target waits, it never fails. A personal key may allow only about
+  10 calls a day, so it runs once a day and makes at most 3 calls (1,000 notices each) for
+  everything posted since its last run. Keeps open solicitations, presolicitations and
+  sources-sought notices in IT, web, design and marketing NAICS codes (`SAM_NAICS`), or whose title
+  names such work, as tenders (kind `tender`): agency, place, deadline, set-aside. Contracting
+  officers' names and emails are not kept. Not yet run live (no key).
+- Countries in text: current ISO codes only (the shared `countriesNamedIn` also returns obsolete DD
+  for "Germany"), and "US"/"USA" in capitals is the United States.
 - **Targets from Overture Maps** (`npm run collect:overture`, `src/server/collection/overture-seed.ts`):
   US businesses with their own website in 30 of Overture's real `basic_category` values (tier 1:
   offices, professional, technical, financial, legal, design and media firms; tier 2: clinics,

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { careersUrlFrom, jobPageLinks, jobPostingsFrom, listingPageLinks, looksClientRendered } from "./collectors/career-pages";
+import { askRequest, freelancerRequest, hiringPost, newestThread } from "./collectors/hacker-news";
+import { gemJobs, hostedBoardOf, ripplingJob, ripplingList } from "./collectors/hosted-boards";
+import { samDate, samTenders } from "./collectors/sam-gov";
 import { jobCardsFrom, jobPageFrom } from "./collectors/html-jobs";
 import { pickBatch, seedCandidates, seedDomain, seedPlacesSql, type SeedPlace } from "./overture-seed";
 import { isBlockedUrl } from "./fetch";
-import { canonicalUrl, countryCodeOf, dedupeKey, domainOf, normalizeItem, parseDate } from "./normalize";
+import { canonicalUrl, countriesIn, countryCodeOf, dedupeKey, domainOf, normalizeItem, parseDate } from "./normalize";
 import { nextInterval, retryDelayMinutes } from "./runner";
 import type { CollectedItemInput } from "./types";
 
@@ -450,5 +453,264 @@ describe("jobs from careers-page HTML: patterns from the Overture pilot", () => 
     const html = `<main><h1>Family Medicine Physician</h1><p>Location: Austin, TX Job Type: Full-Time</p>
       <h2>About the role</h2><p>In this role you will see patients. Requirements: board certified, 3+ years of experience. Apply today.</p></main>`;
     expect(jobPageFrom(html, "https://acme.com/jobs/physician", "acme.com")?.location).toBe("Austin, TX");
+  });
+});
+
+describe("Gem and Rippling job boards", () => {
+  it("knows a Gem or Rippling board from a job link, and nothing else", () => {
+    expect(hostedBoardOf("https://jobs.gem.com/ultra/am9icG9zdDoEoy3YKd")).toEqual({ sourceSlug: "gem_board", token: "ultra" });
+    expect(hostedBoardOf("https://ats.rippling.com/solv-health/jobs/d41ab491")).toEqual({ sourceSlug: "rippling_board", token: "solv-health" });
+    expect(hostedBoardOf("https://jobs.gem.com/")).toBeNull();
+    expect(hostedBoardOf("https://app.dover.com/apply/Conduit/fcede910")).toBeNull();
+    expect(hostedBoardOf("https://www.ycombinator.com/companies/x/jobs/1")).toBeNull();
+    expect(hostedBoardOf("not a url")).toBeNull();
+  });
+
+  it("reads a Gem board's posts", () => {
+    const [job] = gemJobs(
+      [
+        {
+          id: "am9icG9zdDpI7",
+          title: "Robotics Application Engineer - Hardware",
+          absolute_url: "https://jobs.gem.com/ultra/am9icG9zdDpI7",
+          content: "<h1>About Ultra</h1><p>Robots.</p>",
+          content_plain: "About Ultra\nRobots.",
+          first_published_at: "2026-04-16T22:28:51.373Z",
+          created_at: "2026-04-16T21:12:46.658Z",
+          location: { name: "New York, United States" },
+          location_type: "in_office",
+          employment_type: "full_time",
+          departments: [{ name: "Hardware" }],
+        },
+        { id: "x", title: "", absolute_url: "https://jobs.gem.com/ultra/x" },
+      ],
+      "ultra.tech",
+      new Date("2026-05-01T00:00:00Z"),
+    );
+    expect(job).toMatchObject({
+      externalId: "am9icG9zdDpI7",
+      url: "https://jobs.gem.com/ultra/am9icG9zdDpI7",
+      extraction: "api",
+      title: "Robotics Application Engineer - Hardware",
+      text: "About Ultra\nRobots.",
+      companyDomain: "ultra.tech",
+      location: "New York, United States",
+      country: "US",
+      remote: false,
+      data: { employmentType: ["FULL_TIME"], workplace: "in_office", departments: ["Hardware"] },
+    });
+    expect(job.postedAt?.toISOString()).toBe("2026-04-16T22:28:51.373Z");
+    expect(() => gemJobs({ message: "Forbidden" }, null)).toThrow();
+  });
+
+  const nextPage = (props: unknown) => `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props })}</script></html>`;
+
+  it("reads a Rippling board page's jobs and page count, and a job page's description", () => {
+    const list = nextPage({
+      pageProps: {
+        dehydratedState: {
+          queries: [
+            { queryKey: ["board", "acme", "locations"], state: { data: { items: [{ name: "Italy" }], totalPages: 1 } } },
+            {
+              queryKey: ["board", "acme", "job-posts", true, { page: 0 }],
+              state: { data: { items: [{ id: "j1", name: "Platform Engineer", url: "https://ats.rippling.com/acme/jobs/j1" }], page: 0, totalPages: 2 } },
+            },
+          ],
+        },
+      },
+    });
+    expect(ripplingList(list)).toEqual({ jobs: [{ id: "j1", name: "Platform Engineer", url: "https://ats.rippling.com/acme/jobs/j1" }], totalPages: 2 });
+    expect(() => ripplingList("<html></html>")).toThrow();
+
+    const job = nextPage({
+      pageProps: {
+        apiData: {
+          jobPost: {
+            name: "Platform Engineer",
+            description: { company: "<p>About Acme.</p>", role: "<p>You will run our platform.</p>" },
+            createdOn: "2026-10-12T07:04:49.977000-07:00",
+            employmentType: { label: "SALARIED_FT", id: "Salaried, full-time" },
+          },
+        },
+      },
+    });
+    expect(ripplingJob(job)).toEqual({ text: "You will run our platform.\nAbout Acme.", createdOn: "2026-10-12T07:04:49.977000-07:00", employmentType: "Salaried, full-time" });
+  });
+});
+
+describe("Gem posts older than the freshness limit", () => {
+  it("leaves out posts first published more than 60 days ago", () => {
+    const post = (id: string, published: string) => ({ id, title: "Engineer", absolute_url: `https://jobs.gem.com/acme/${id}`, first_published_at: published });
+    const now = new Date("2026-11-18T12:00:00Z");
+    expect(gemJobs([post("fresh", "2026-10-01T00:00:00Z"), post("stale", "2026-04-16T00:00:00Z")], "acme.com", now).map((j) => j.externalId)).toEqual(["fresh"]);
+  });
+});
+
+describe("Hacker News", () => {
+  const comment = (id: number, text: string) => ({ id, author: "someone", created_at_i: 1_793_000_000, text });
+
+  it("finds the newest thread, the busiest one when a month has two", () => {
+    const stories = [
+      { objectID: "1", title: "Ask HN: Freelancer? Seeking freelancer? (October 2026)", created_at_i: 100, num_comments: 22 },
+      { objectID: "2", title: "Ask HN: Freelancer? Seeking freelancer? (November 2026)", created_at_i: 300, num_comments: 2 },
+      { objectID: "3", title: "Ask HN: Freelancer? Seeking freelancer? (November 2026)", created_at_i: 200, num_comments: 22 },
+      { objectID: "4", title: "Ask HN: Who is hiring? (November 2026)", created_at_i: 400, num_comments: 377 },
+    ];
+    expect(newestThread(stories, /^Ask HN: Freelancer\? Seeking freelancer\? \(/)?.objectID).toBe("3");
+    expect(newestThread(stories, /^Ask HN: Who is hiring\? \(/)?.objectID).toBe("4");
+    expect(newestThread([], /x/)).toBeNull();
+  });
+
+  it("reads a Who is hiring post as a job: company, role, place, website", () => {
+    const job = hiringPost(
+      comment(
+        11,
+        'Synteq | Growth Lead &amp; Systems Administrator | Austin, TX | REMOTE (US) | Full-time<p>We build things. <a href="https:&#x2F;&#x2F;synteq.io&#x2F;careers">synteq.io</a> Apply: <a href="https:&#x2F;&#x2F;jobs.ashbyhq.com&#x2F;synteq">here</a>',
+      ),
+      "50338728",
+    );
+    expect(job).toMatchObject({
+      externalId: "11",
+      kind: "job",
+      url: "https://news.ycombinator.com/item?id=11",
+      title: "Growth Lead & Systems Administrator",
+      companyName: "Synteq",
+      companyDomain: "synteq.io",
+      location: "Austin, TX; REMOTE (US)",
+      country: "US",
+      remote: true,
+      data: expect.objectContaining({ employmentType: ["FULL_TIME"], thread: "50338728", applyUrl: "https://jobs.ashbyhq.com/synteq" }),
+    });
+    expect(job?.text).toContain("We build things.");
+  });
+
+  it("finds the role wherever the header puts it, plural or not", () => {
+    expect(hiringPost(comment(12, "We The Flywheel | Remote | Brand Identity Designer (AI-agent team) | Hourly"), "t")?.title).toBe("Brand Identity Designer (AI-agent team)");
+    expect(hiringPost(comment(13, "MixRank (YC S11) | Software Engineers | 100% Remote (Global) | Full-Time"), "t")).toMatchObject({ companyName: "MixRank", title: "Software Engineers" });
+    expect(hiringPost(comment(14, "United Risk | Early-Career AI Engineers – Full-Stack (10 openings) | New York, NY"), "t")?.title).toBe("Early-Career AI Engineers – Full-Stack");
+  });
+
+  it("leaves out posts without the header or without a role in it", () => {
+    expect(hiringPost(comment(15, "Shepherd (Series B) | ONSITE | San Francisco, CA"), "t")).toBeNull();
+    expect(hiringPost(comment(16, "Cambridge | PhD in AI / Earth Observation | ONSITE | UK only"), "t")).toBeNull();
+    expect(hiringPost(comment(17, "UPDATE (Nov 13): We're no longer taking applications for these roles."), "t")).toBeNull();
+  });
+
+  it("reads SEEKING FREELANCER posts as buyer requests, with the work they name", () => {
+    const request = freelancerRequest(comment(20, "SEEKING FREELANCER | Remote (US)<p>Need a React developer to rebuild our customer portal."), "t");
+    expect(request).toMatchObject({ kind: "post", title: "SEEKING FREELANCER | Remote (US)", remote: true, data: { intent: "high", author: "someone" } });
+    expect(request?.categories).toContain("software_development");
+    expect(freelancerRequest(comment(21, "SEEKING WORK | Python, Django | Remote"), "t")).toBeNull();
+  });
+
+  it("reads Ask HN posts that ask to hire someone, not discussions or link posts", () => {
+    expect(askRequest({ objectID: "30", title: "Ask HN: Looking for an agency to build our MVP", created_at_i: 1_793_000_000 })).toMatchObject({ kind: "post", data: { intent: "high" } });
+    expect(askRequest({ objectID: "31", title: "Ask HN: What's your favourite editor?" })).toBeNull();
+    expect(askRequest({ objectID: "32", title: "Ask HN: Looking for an agency", url: "https://example.com" })).toBeNull();
+  });
+});
+
+describe("SAM.gov", () => {
+  const notice = (overrides: Record<string, unknown> = {}) => ({
+    noticeId: "abc123",
+    title: "Agency Website Redesign and Hosting",
+    solicitationNumber: " 47QTCA26Q0001 ",
+    fullParentPathName: "GENERAL SERVICES ADMINISTRATION.FEDERAL ACQUISITION SERVICE.IT CENTER",
+    postedDate: "2026-11-17",
+    type: "Combined Synopsis/Solicitation",
+    responseDeadLine: "2026-12-05T17:00:00-05:00",
+    naicsCode: "541511",
+    typeOfSetAsideDescription: "Total Small Business Set-Aside (FAR 19.5)",
+    active: "Yes",
+    uiLink: "https://sam.gov/opp/abc123/view",
+    placeOfPerformance: { city: { name: "Washington" }, state: { code: "DC" }, country: { code: "USA" } },
+    ...overrides,
+  });
+  const NOW = new Date("2026-11-18T12:00:00Z");
+
+  it("reads open notices for our kind of work as tenders", () => {
+    const [tender] = samTenders([notice()], NOW);
+    expect(tender).toMatchObject({
+      externalId: "abc123",
+      kind: "tender",
+      url: "https://sam.gov/opp/abc123/view",
+      title: "Agency Website Redesign and Hosting",
+      companyName: "GENERAL SERVICES ADMINISTRATION",
+      location: "Washington, DC",
+      country: "US",
+      categories: ["software_development", "web_development"],
+      data: { solicitationNumber: "47QTCA26Q0001", naicsCode: "541511", setAside: "Total Small Business Set-Aside (FAR 19.5)", noticeType: "Combined Synopsis/Solicitation" },
+    });
+    expect(tender.validThrough?.toISOString()).toBe("2026-12-05T22:00:00.000Z");
+    expect(JSON.stringify(tender)).not.toMatch(/pointOfContact|@/);
+  });
+
+  it("keeps other codes only when the title names our work, and leaves out awards, expired and closed notices", () => {
+    expect(samTenders([notice({ naicsCode: "236220", title: "Historic Office Renovation" })], NOW)).toEqual([]);
+    expect(samTenders([notice({ naicsCode: "611710", title: "Mobile App Development for Veterans" })], NOW)[0]?.categories).toContain("mobile_development");
+    expect(samTenders([notice({ type: "Award Notice" })], NOW)).toEqual([]);
+    expect(samTenders([notice({ responseDeadLine: "2026-11-01T17:00:00-05:00" })], NOW)).toEqual([]);
+    expect(samTenders([notice({ active: "No" })], NOW)).toEqual([]);
+  });
+
+  it("writes dates the way the API takes them", () => {
+    expect(samDate(new Date("2026-01-05T00:00:00Z"))).toBe("01/05/2026");
+  });
+});
+
+describe("Hacker News hiring posts: patterns from the first run", () => {
+  const comment = (id: number, text: string) => ({ id, author: "a", created_at_i: 1_793_000_000, text });
+
+  it("never takes a code host, video, form or profile for the company's website", () => {
+    const html = (link: string, own = "") =>
+      `Acme | Senior Engineer | REMOTE (US)<p><a href="${link}">x</a>${own ? ` <a href="${own}">site</a>` : ""}`;
+    for (const link of ["https://github.com/acme/repo", "https://youtu.be/abc", "https://www.linkedin.com/company/acme", "https://forms.gle/xyz", "https://acme.notion.site/jobs"]) {
+      expect(hiringPost(comment(1, html(link)), "t")?.companyDomain, link).toBeNull();
+    }
+    expect(hiringPost(comment(2, html("https://github.com/acme", "https://www.acme.dev/careers")), "t")?.companyDomain).toBe("acme.dev");
+  });
+
+  it("finds the company when the header opens with a place", () => {
+    expect(hiringPost(comment(3, "Cologne, Germany | UMH | Product Engineer | Full-time | ONSITE (part remote)"), "t")).toMatchObject({ companyName: "UMH", title: "Product Engineer" });
+  });
+
+  it("reads a SEEKING FREELANCER post in the hiring thread as a request, not a company's job", () => {
+    expect(freelancerRequest(comment(4, "SEEKING FREELANCER | Devops Engineer | Remote - UK or EU"), "t")?.kind).toBe("post");
+  });
+});
+
+describe("countries in text", () => {
+  it("reads Germany as DE, not also as the obsolete DD", () => {
+    expect(countriesIn("Cologne, Germany")).toEqual(["DE"]);
+    expect(countryCodeOf("Germany")).toBe("DE");
+  });
+});
+
+describe("Hacker News hiring posts: websites", () => {
+  const comment = (id: number, text: string) => ({ id, author: "a", created_at_i: 1_793_000_000, text });
+
+  it("takes the website the header states, and never a short link or app-hosting address", () => {
+    expect(hiringPost(comment(1, "Clad (YC W23) | Software Engineer | New York, NY | withclad.com"), "t")?.companyDomain).toBe("withclad.com");
+    expect(hiringPost(comment(2, 'GovStar | https://govstar.us | Remote (US) | Security Engineer<p><a href="https://github.com/x">x</a>'), "t")).toMatchObject({ companyDomain: "govstar.us", title: "Security Engineer" });
+    for (const link of ["https://grnh.se/abc", "https://me.vercel.app/", "https://acme.netlify.app/jobs"]) {
+      expect(hiringPost(comment(3, `Acme | Senior Engineer | REMOTE<p><a href="${link}">x</a>`), "t")?.companyDomain, link).toBeNull();
+    }
+  });
+});
+
+describe("countries: the US abbreviation", () => {
+  it("reads US and USA in capitals, never the word us", () => {
+    expect(countriesIn("REMOTE (US)")).toEqual(["US"]);
+    expect(countriesIn("Remote, USA only")).toEqual(["US"]);
+    expect(countriesIn("Join us remotely")).toEqual([]);
+    expect(countriesIn("REMOTE (US, Budapest)")).toEqual(["US"]);
+  });
+
+  it("never takes a job platform for a hiring company's website", () => {
+    const post = (link: string) => ({ id: 9, created_at_i: 1_793_000_000, text: `Acme | Lead Software Engineer | REMOTE (US)<p><a href="${link}">apply</a>` });
+    for (const link of ["https://jpmc.fa.oraclecloud.com/hcmUI/x", "https://devitjobs.com/jobs/1", "https://www.welcometothejungle.com/en/companies/acme"]) {
+      expect(hiringPost(post(link), "t")?.companyDomain, link).toBeNull();
+    }
+    expect(hiringPost(post("https://x.com"), "t")?.country).toBe("US");
   });
 });
