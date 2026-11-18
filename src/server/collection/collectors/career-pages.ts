@@ -296,7 +296,8 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
 
     const read = new Set(items.map((i) => canonicalUrl(i.url)));
     // Cards that link to the job's own page on this site: that page is read for the description.
-    const linked = [...cards.values()].filter((c) => c.externalId === canonicalUrl(c.url) && c.fetchedUrl !== null).map((c) => c.url);
+    // (Never a job on a board elsewhere or a ?job_id= view of the listing: those carry an applyUrl.)
+    const linked = [...cards.values()].filter((c) => !c.data.applyUrl && c.fetchedUrl !== null && sameSite(c.url, domain)).map((c) => c.url);
     const jobPages = [...new Set([...pages.flatMap((p) => jobPageLinks(p.body, p.url, careersUrl!, domain)), ...linked])].filter((u) => !read.has(canonicalUrl(u)));
     if (jobPages.length > MAX_JOB_PAGES) complete = false;
     for (const url of jobPages.slice(0, MAX_JOB_PAGES)) {

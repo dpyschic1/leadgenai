@@ -17,7 +17,20 @@ import type { CollectedItemInput } from "../types";
 
 /** Words a job title contains: the role itself. */
 const ROLE =
-  /\b(engineer|developer|programmer|designer|manager|lead|head of|director|vp|vice president|chief|cto|cfo|coo|analyst|scientist|specialist|associate|representative|rep|intern|internship|architect|consultant|coordinator|administrator|marketer|writer|copywriter|editor|recruiter|officer|executive|technician|researcher|strategist|counsel|attorney|lawyer|paralegal|accountant|controller|bookkeeper|nurse|assistant|operator|agent|advocate|generalist|founding|member of technical staff|product owner|scrum master|devops|sre|tester|producer|instructor|teacher|mechanic|electrician|machinist|welder|driver|partner|owner|hacker|artist|animator|photographer|scientist|physician|therapist|pharmacist|clinician|dentist|hygienist|planner|buyer|trader|underwriter|auditor|economist|statistician|ops|bdr|sdr|account executive|customer success|support)\b/i;
+  /\b(engineer|developer|programmer|designer|manager|lead|head of|director|vp|vice president|chief|cto|cfo|coo|analyst|scientist|specialist|associate|representative|rep|intern|internship|architect|consultant|coordinator|administrator|marketer|writer|copywriter|editor|recruiter|officer|executive|technician|researcher|strategist|counsel|attorney|lawyer|paralegal|accountant|controller|bookkeeper|nurse|assistant|operator|agent|advocate|generalist|founding|member of technical staff|product owner|scrum master|devops|sre|tester|producer|instructor|teacher|mechanic|electrician|machinist|welder|driver|partner|owner|hacker|artist|animator|photographer|scientist|physician|therapist|pharmacist|clinician|dentist|hygienist|planner|buyer|trader|underwriter|auditor|economist|statistician|ops|bdr|sdr|account executive)\b/i;
+
+/**
+ * A title naming a group of jobs or an area of work, not one job: "Early Career and Internship
+ * Opportunities", "Executive leaders", "Support Services", "Engineering roles".
+ */
+const GROUP_TITLE = /\b(opportunities|careers|positions|openings|jobs|roles|services|teams|areas|programs|leaders|leadership)\s*$/i;
+
+/**
+ * A link to a list of jobs rather than one: a search or a filter on a job board, or a careers page
+ * about an area of work ("career-areas", "life at", departments, teams).
+ */
+const LIST_PATH = /\/(search|career-areas?|areas?-of-work|departments?|teams?|life-at[^/]*|job-families|categories)(\/|$)/i;
+const LIST_QUERY = /[?&](jobfamily|job_family|category|department|team|location|q|keywords?|ss|search|filter)\w*=/i;
 
 /** Link text that names no role: the title is the heading above it. */
 const GENERIC_LINK = /^(view|see|open|read|learn|apply|details|more|view role|view job|see role|see details|apply now|learn more|read more|→|›|»)\b/i;
@@ -46,6 +59,7 @@ export function jobLinkTarget(href: string, pageUrl: string, domain: string): { 
     return null;
   }
   if (!/^https?:$/.test(url.protocol)) return null;
+  if (LIST_PATH.test(url.pathname) || LIST_QUERY.test(url.search)) return null;
   const sameSite = registrableDomain(url.hostname) === domain;
   if (sameSite) {
     if (JOB_PATH.test(url.pathname)) return { url: url.toString(), ownPage: true };
@@ -69,7 +83,7 @@ export function isJobTitle(text: string): boolean {
   const title = text.trim();
   if (title.length < 3 || title.length > 100 || NOT_A_TITLE.test(title)) return false;
   if (title.split(/\s+/).length > 12 || /[.?!]$/.test(title) || title.includes("?")) return false;
-  return ROLE.test(title);
+  return ROLE.test(title) && !GROUP_TITLE.test(title);
 }
 
 /**
@@ -153,10 +167,17 @@ export function jobCardsFrom(html: string, pageUrl: string, domain: string): Col
     const nextTitle = following.findIndex(isJobTitle);
     const after = rest.length > 0 ? rest : nextTitle === -1 ? following : following.slice(0, nextTitle);
     const { location, remote, summary, data } = factsOf(after);
-    const externalId = target.ownPage ? canonicalUrl(target.url) : `${canonicalUrl(pageUrl)}#${repostKey({ title, location })}`;
     // A link to a place on this page (a tab, an anchor) is no separate address to apply at.
     const elsewhere = canonicalUrl(target.url) !== canonicalUrl(pageUrl);
-    if (items.has(externalId)) continue;
+    // The job's own address is its id, on this site or a job board; jobs only shown on this page
+    // are told apart by title and place.
+    const externalId = elsewhere ? canonicalUrl(target.url) : `${canonicalUrl(pageUrl)}#${repostKey({ title, location })}`;
+    const seen = items.get(externalId);
+    if (seen) {
+      // The same job linked twice (a card and its title link): one job, with what either told.
+      items.set(externalId, { ...seen, location: seen.location ?? location, country: seen.country ?? countryOf(location), remote: seen.remote ?? remote, text: seen.text ?? summary, data: { ...data, ...seen.data } });
+      continue;
+    }
     items.set(externalId, {
       externalId,
       kind: "job",
@@ -205,7 +226,8 @@ export function jobPageFrom(html: string, pageUrl: string, domain: string): Coll
   const text = htmlToText(main.replace(/<(script|style|svg|noscript|nav|header|footer|form)\b[\s\S]*?<\/\1>/gi, " "));
   if (PLACEHOLDER.test(text) || DESCRIPTION_CUES.filter((cue) => cue.test(text)).length < 3) return null;
   // Facts only from what the page labels or states in short lines near the top; no page chrome.
-  const labelled = text.match(/\blocations?\s*:\s*([^\n]{2,80})/i)?.[1]?.trim() ?? null;
+  // The location line, up to the next label on it ("… Job Type: Full-Time").
+  const labelled = text.match(/\blocations?\s*:\s*([^\n]{2,80})/i)?.[1]?.split(/\b(job type|type|employment|salary|department|schedule)\s*:/i)[0].trim() || null;
   const top = text.split("\n").slice(0, 8);
   const { location, remote, data } = factsOf(labelled ? labelled.split(/\s[·|•]\s/) : top.filter(isPlace));
   const employment = top.find((l) => l.length <= 80 && EMPLOYMENT.test(l))?.match(EMPLOYMENT)?.[1];

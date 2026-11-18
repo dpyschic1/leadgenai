@@ -107,7 +107,8 @@ async function recordMove(target: CollectTarget, domain: string, intervalMinutes
       sourceSlug: target.sourceSlug,
       targetKey: domain,
       intervalMinutes,
-      params: { movedFrom: target.targetKey },
+      // Keeps where the target came from (e.g. its Overture place and attribution), and notes the move.
+      params: sql`(select params from collection_targets where id = ${target.id}) || ${JSON.stringify({ movedFrom: target.targetKey })}::jsonb`,
       priority: sql`(select priority from collection_targets where id = ${target.id})`,
     })
     .onConflictDoNothing();

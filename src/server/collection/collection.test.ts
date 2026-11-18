@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { careersUrlFrom, jobPageLinks, jobPostingsFrom, listingPageLinks, looksClientRendered } from "./collectors/career-pages";
 import { jobCardsFrom, jobPageFrom } from "./collectors/html-jobs";
+import { pickBatch, seedCandidates, seedDomain, seedPlacesSql, type SeedPlace } from "./overture-seed";
 import { isBlockedUrl } from "./fetch";
 import { canonicalUrl, countryCodeOf, dedupeKey, domainOf, normalizeItem, parseDate } from "./normalize";
 import { nextInterval, retryDelayMinutes } from "./runner";
@@ -259,7 +260,8 @@ describe("jobs from careers-page HTML (no markup)", () => {
       location: null, // a bare city name is not read as a place
       data: { salaryText: "$110K–$160K", applyUrl: "https://www.ycombinator.com/companies/acme/jobs/X1-full-stack-engineer" },
     });
-    expect(job.externalId).toBe(`${PAGE}#full-stack engineer|`);
+    // Its address on the job board is its id.
+    expect(job.externalId).toBe("https://ycombinator.com/companies/acme/jobs/X1-full-stack-engineer");
   });
 
   it("reads tabs of open roles, and not the filled ones shown without a link", () => {
@@ -336,5 +338,117 @@ describe("jobs from careers-page HTML (no markup)", () => {
     const job = jobPageFrom(html, "https://acme.com/careers/ae", "acme.com");
     expect(job?.text?.startsWith("Account Executive")).toBe(true);
     expect(job?.text).not.toContain("Book a demo");
+  });
+});
+
+describe("careers-page targets from Overture places", () => {
+  const place = (overrides: Partial<SeedPlace> = {}): SeedPlace => ({
+    id: "p1",
+    name: "Acme Legal",
+    category: "attorney_or_law_firm",
+    confidence: 0.9,
+    websites: ["https://www.acmelegal.com/contact"],
+    city: "Austin",
+    region: "TX",
+    postcode: "78701",
+    datasets: ["meta", "Foursquare"],
+    ...overrides,
+  });
+
+  it("takes the business's own website, never a platform, a social profile or a government site", () => {
+    expect(seedDomain(["https://www.acmelegal.com/contact"])).toBe("acmelegal.com");
+    expect(seedDomain(["acme-co.wixsite.com/home", "https://www.facebook.com/acme"])).toBeNull();
+    expect(seedDomain(["https://www.facebook.com/acme", "https://acme.co"])).toBe("acme.co");
+    expect(seedDomain(["https://linktr.ee/acme"])).toBeNull();
+    expect(seedDomain(["https://www.austintexas.gov/department/x"])).toBeNull();
+    expect(seedDomain(["http://10.0.0.1/"])).toBeNull();
+    expect(seedDomain(null)).toBeNull();
+  });
+
+  it("keeps seeded categories with a usable website, one per domain, and skips existing targets", () => {
+    const { candidates, stats } = seedCandidates(
+      [
+        place(),
+        place({ id: "p2", name: "Acme Legal (Downtown)", confidence: 0.95 }), // the same firm's other office
+        place({ id: "p3", category: "restaurant", websites: ["https://tacos.com"] }),
+        place({ id: "p4", category: "technical_service", websites: ["https://acme.wixsite.com/it"] }),
+        place({ id: "p5", category: "corporate_or_business_office", confidence: 0.5, websites: ["https://lowconf.com"] }),
+        place({ id: "p6", category: "dental_clinic", websites: ["https://smiles.com"] }),
+        place({ id: "p7", category: "corporate_or_business_office", websites: ["https://known.com"] }),
+      ],
+      new Set(["known.com"]),
+    );
+    expect(stats).toEqual({ places: 7, inCategories: 5, withDomain: 4, domains: 3, alreadyTargets: 1, candidates: 2 });
+    expect(candidates.map((c) => [c.domain, c.tier, c.places, c.place.id])).toEqual([
+      ["acmelegal.com", 1, 2, "p2"],
+      ["smiles.com", 2, 1, "p6"],
+    ]);
+  });
+
+  it("picks a batch tier 1 first, categories taking turns, capped per category", () => {
+    const candidate = (domain: string, category: string, tier: 1 | 2) => ({ domain, tier, places: 1, place: place({ id: domain, category }) });
+    const all = [
+      ...["a1", "a2", "a3", "a4"].map((d) => candidate(`${d}.com`, "attorney_or_law_firm", 1)),
+      ...["f1", "f2"].map((d) => candidate(`${d}.com`, "financial_service", 1)),
+      ...["h1", "h2"].map((d) => candidate(`${d}.com`, "health_care", 2)),
+    ];
+    expect(pickBatch(all, { limit: 5, perCategory: 3 }).map((c) => c.domain)).toEqual(["a1.com", "f1.com", "a2.com", "f2.com", "a3.com"]);
+    expect(pickBatch(all, { limit: 10, perCategory: 1 }).map((c) => c.domain)).toEqual(["a1.com", "f1.com", "h1.com"]);
+  });
+
+  it("spreads each category's share over the areas read", () => {
+    const candidate = (domain: string, area: string, confidence: number) => ({ domain, tier: 1 as const, places: 1, place: place({ id: domain, area, confidence }) });
+    const all = [candidate("b1.com", "boston", 0.99), candidate("b2.com", "boston", 0.98), candidate("b3.com", "boston", 0.97), candidate("d1.com", "denver", 0.8)];
+    expect(pickBatch(all, { limit: 2, perCategory: 2 }).map((c) => c.domain)).toEqual(["b1.com", "d1.com"]);
+  });
+
+  it("reads each area in its own scan, US places with a website in the seeded categories only", () => {
+    const query = seedPlacesSql("2026-10-21.0", [{ name: "austin", box: [-97.8, 30.22, -97.68, 30.34] }, { name: "denver", box: [-105.05, 39.68, -104.92, 39.8] }], "out.json");
+    expect(query.match(/read_parquet\('s3:\/\/overturemaps-us-west-2\/release\/2026-10-21\.0\//g)).toHaveLength(2);
+    expect(query).toContain("bbox.xmin BETWEEN -97.8 AND -97.68 AND bbox.ymin BETWEEN 30.22 AND 30.34");
+    expect(query).toContain("UNION ALL");
+    expect(query).toContain("addresses[1].country = 'US'");
+    expect(query).toContain("'attorney_or_law_firm'");
+    expect(query).not.toContain("'restaurant'");
+  });
+});
+
+describe("jobs from careers-page HTML: patterns from the Overture pilot", () => {
+  const PAGE = "https://acme.com/careers";
+  const cards = (html: string) => jobCardsFrom(html, PAGE, "acme.com");
+
+  it("doesn't read links to job areas, searches or filters as jobs", () => {
+    const html = `
+      <a href="/us-en/careers/life-at-acme/leadership-careers">Executive leaders</a>
+      <a href="https://campus-us-acme.icims.com/jobs/search?ss=1">Early Career and Internship Opportunities</a>
+      <a href="/company/careers/medical-staff">Medical Support Staff</a>
+      <a href="https://acme.wd1.myworkdayjobs.com/External_Careers?jobFamily=5323a40849ab1">Customer Service &amp; Support</a>
+      <a href="https://acme.wd1.myworkdayjobs.com/External_Careers?jobFamily=7a1b">Operations Support</a>
+      <a href="/careers/career-areas/support-services">Support Services</a>
+      <a href="/careers/teams/engineering">Engineering Manager</a>`;
+    expect(cards(html)).toEqual([]);
+  });
+
+  it("still reads single jobs whose titles name support or a team", () => {
+    const titles = cards(`
+      <a href="/careers/technical-support-engineer">Technical Support Engineer</a>
+      <a href="/careers/customer-success-manager">Customer Success Manager</a>
+      <a href="/careers/chief-of-staff">Chief of Staff</a>`).map((j) => j.title);
+    expect(titles).toEqual(["Technical Support Engineer", "Customer Success Manager", "Chief of Staff"]);
+  });
+
+  it("reads a job linked twice on a job board as one job, with the facts either link gave", () => {
+    const job = "https://ats.rippling.com/acme/jobs/5df9fe65";
+    const found = cards(`
+      <div class="card"><a href="${job}"><h3>Platform Engineer</h3></a>
+        <a href="${job}"><span>Platform Engineer</span><span>Remote (United States)</span></a></div>`);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ externalId: "https://ats.rippling.com/acme/jobs/5df9fe65", location: "Remote (United States)", remote: true });
+  });
+
+  it("reads a location line up to the next label on it", () => {
+    const html = `<main><h1>Family Medicine Physician</h1><p>Location: Austin, TX Job Type: Full-Time</p>
+      <h2>About the role</h2><p>In this role you will see patients. Requirements: board certified, 3+ years of experience. Apply today.</p></main>`;
+    expect(jobPageFrom(html, "https://acme.com/jobs/physician", "acme.com")?.location).toBe("Austin, TX");
   });
 });

@@ -281,8 +281,47 @@ Engine; they don't read from it yet.
     at a job (its own page, a `?job_id=`/`#job` anchor, or a job board such as YC's or an ATS) and
     whose title reads as a role, with its facts (place, contract, pay); then each job's own page for
     the description, accepted only when it reads as one (and never template placeholder text). Team
-    bios, quotes, menus, footers and filters are not jobs. Job boards elsewhere are linked
-    (`data.applyUrl`), never fetched.
+    bios, quotes, menus, footers and filters are not jobs, nor are links to job areas, searches or
+    filters ("…Opportunities", "Support Services", `?jobFamily=`). Job boards elsewhere are linked
+    (`data.applyUrl`), never fetched; a job's address there is its id.
+- **Targets from Overture Maps** (`npm run collect:overture`, `src/server/collection/overture-seed.ts`):
+  US businesses with their own website in 30 of Overture's real `basic_category` values (tier 1:
+  offices, professional, technical, financial, legal, design and media firms; tier 2: clinics,
+  trades, industry and logistics). Platform and social sites (Wix, Squarespace, Facebook…),
+  government sites and franchise-agent pages are not a business's own website; a chain's branches
+  are one domain. Read offline with DuckDB from Overture's public bucket, a few map areas at a time;
+  nothing of Overture is stored except each chosen domain as a target, with its place, release and
+  attribution in `params.overture` (kept when the website moves). Seeded in batches (categories and
+  areas taking turns) whose first runs are spread over hours. The existing Overture contact lookup
+  (`scripts/overture.ts`) is unchanged.
+
+  ```sh
+  duckdb -c "$(npm run -s collect:overture -- sql places.json austin=-97.80,30.22,-97.68,30.34)"
+  npm run collect:overture -- seed places.json --limit 300 --per-category 15 --spread-hours 24 [--dry-run]
+  ```
+
+**Seed populations compared** (2026-11-18, Overture release 2026-10-21.0; same collector, 8 runs at
+once, one request a second per site):
+
+| | YC trial (US YC startups) | Overture pilot (5 metro cores) |
+| --- | --- | --- |
+| Pool | ~4,800 US YC companies | 18.4 M US places; 11.7 M with a website (confidence ≥ 0.7). Austin, Denver, Columbus, Boston, Charlotte cores: 107,978 → 45,894 in seeded categories → 33,264 unique domains |
+| Companies collected | 141 | 315 (300 seeded + 15 whose website moved) |
+| Careers page found | 95 (67 %), 30 of them on a job board the Company Discovery Engine reads | 103 (33 %), 3 on a job board (none of them in its directory yet) |
+| Companies with readable jobs | 19 (13.5 %) | 9 (2.9 %) |
+| Unique open jobs | 132 (≈ 94 per 100 companies) | 35 valid (≈ 11 per 100); 10 US, 10 elsewhere, 16 unknown |
+| Jobs the existing ATS integration covers | 140 open, on 26 of the 30 boards skipped | 0 (3 boards, not yet discovered there) |
+| Failed runs | 5 % | 25 %: 24 bot-blocked (403), 17 timeouts, 16 refused/TLS, 16 dead domains (DNS), 2 rate-limited (429), 1 robots.txt |
+| Requests | 885 over 323 runs | 988 over 408 runs (2.0–2.3 per company); first pass of 300 took 243 s |
+| Accuracy (manual review) | 30/30 sampled jobs real, title on its source page | 36/36 titles on their source page; 35 real jobs, 1 careers-area page (from before the area rule; closes on its next complete run) |
+
+Findings: YC startups give 8× more jobs per company: they hire and publish open roles. Overture's
+local businesses are a much larger pool but mostly have no careers page or list no jobs, a quarter
+of their websites block or fail, and their few job-rich sites are larger firms (architecture,
+manufacturing, outpatient care, rentals). Per category, manufacturers, outpatient care, design
+firms and corporate offices yielded jobs; financial, legal, technical and b2b services, dental and
+real estate yielded none in the pilot. Overture is better used as a broad, cheap pool for the
+categories that yielded, and for the companies' own websites, than as a primary job source.
 
 Settings (`.env` locally, Vercel Environment Variables in production):
 
@@ -319,6 +358,7 @@ Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (form
 | `npm run osm:import -- <file.geojsonseq>` | Load OpenStreetMap businesses from an `osmium export` file (see OpenStreetMap above) |
 | `npm run overture -- targets / sql / load …` | Look our companies up in Overture Maps (see Overture Maps above) |
 | `npm run yc -- import` | Load (or refresh) every Y Combinator company into `yc_companies` |
+| `npm run collect:overture -- sql / seed …` | Careers-page targets from Overture Maps places (see Targets from Overture Maps above) |
 
 ## Architecture
 
