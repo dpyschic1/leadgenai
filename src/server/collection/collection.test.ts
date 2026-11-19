@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { careersUrlFrom, jobPageLinks, jobPostingsFrom, listingPageLinks, looksClientRendered } from "./collectors/career-pages";
-import { askRequest, freelancerRequest, hiringPost, newestThread } from "./collectors/hacker-news";
+import { askRequest, freelancerRequest, hiringPost, nameFitsDomain, newestThread } from "./collectors/hacker-news";
 import { gemJobs, hostedBoardOf, ripplingJob, ripplingList } from "./collectors/hosted-boards";
 import { samDate, samTenders } from "./collectors/sam-gov";
 import { currentJob, dateIn, jobCardsFrom, jobPageFrom } from "./collectors/html-jobs";
@@ -209,6 +209,17 @@ describe("careers pages", () => {
       country: "US",
       companyDomain: "acme.com",
     });
+  });
+
+  it("takes the site's own domain when the organisation links only to a profile or a job site", () => {
+    const html = jsonLd([
+      {
+        "@type": "JobPosting",
+        title: "Founding Engineer",
+        hiringOrganization: { "@type": "Organization", name: "Booko", url: "https://www.ycombinator.com/companies/booko", sameAs: "https://www.linkedin.com/company/booko" },
+      },
+    ]);
+    expect(jobPostingsFrom(html, "https://booko.com/careers", "booko.com", NOW)[0]).toMatchObject({ companyName: "Booko", companyDomain: "booko.com" });
   });
 
   it("tells apart jobs listed on one page without a URL or id", () => {
@@ -693,9 +704,24 @@ describe("Hacker News hiring posts: websites", () => {
   it("takes the website the header states, and never a short link or app-hosting address", () => {
     expect(hiringPost(comment(1, "Clad (YC W23) | Software Engineer | New York, NY | withclad.com"), "t")?.companyDomain).toBe("withclad.com");
     expect(hiringPost(comment(2, 'GovStar | https://govstar.us | Remote (US) | Security Engineer<p><a href="https://github.com/x">x</a>'), "t")).toMatchObject({ companyDomain: "govstar.us", title: "Security Engineer" });
-    for (const link of ["https://grnh.se/abc", "https://me.vercel.app/", "https://acme.netlify.app/jobs"]) {
+    // An SAP-hosted careers site ("Bechtel | … | jobs.bechtel.cloud.sap") is not the company's website.
+    for (const link of ["https://grnh.se/abc", "https://me.vercel.app/", "https://acme.netlify.app/jobs", "https://careers.bechtel.cloud.sap/job/1"]) {
       expect(hiringPost(comment(3, `Acme | Senior Engineer | REMOTE<p><a href="${link}">x</a>`), "t")?.companyDomain, link).toBeNull();
     }
+  });
+
+  it("takes a linked site only when its domain fits the company's name (not a news article or archive)", () => {
+    const post = (company: string, ...links: string[]) =>
+      comment(4, `${company} | Software Engineer | Remote (US)<p>${links.map((l) => `<a href="${l}">x</a>`).join(" ")}`);
+    expect(hiringPost(post("Paradromics", "https://archive.ph/abc"), "t")?.companyDomain).toBeNull();
+    expect(hiringPost(post("Paramark", "https://www.mercurynews.com/2026/paramark", "https://paramark.com/jobs"), "t")?.companyDomain).toBe("paramark.com");
+    expect(hiringPost(post("Datadog", "https://dtdg.co/hn-jobs"), "t")?.companyDomain).toBeNull();
+    expect(nameFitsDomain("OpenTrain AI", "opentrain.ai")).toBe(true);
+    expect(nameFitsDomain("Lyra", "lyraspace.co")).toBe(true);
+    expect(nameFitsDomain("Jump", "jumpscientific.com")).toBe(true);
+    expect(nameFitsDomain("Marker Learning", "markerlearning.com")).toBe(true);
+    expect(nameFitsDomain("Paradromics", "archive.ph")).toBe(false);
+    expect(nameFitsDomain("AI", "ai.com")).toBe(false);
   });
 });
 

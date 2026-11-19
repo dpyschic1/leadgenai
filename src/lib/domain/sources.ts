@@ -15,6 +15,7 @@ export const SOURCE_SLUGS = [
   "theirstack",
   "overture",
   "yc_directory",
+  "web_collection",
   "fca_register",
 ] as const;
 export type SourceSlug = (typeof SOURCE_SLUGS)[number];
@@ -31,6 +32,7 @@ export const SOURCE_LABELS: Record<SourceSlug, string> = {
   theirstack: "TheirStack job posts",
   overture: "Overture Maps",
   yc_directory: "Y Combinator companies",
+  web_collection: "Own web collection",
   fca_register: "FCA register",
 };
 
@@ -52,6 +54,8 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
     "Phone, email and website from Overture Maps places (Meta, Microsoft, Foursquare and others), matched to your companies by their own website, or a candidate website by postcode and name that is then checked on the site. © Overture Maps Foundation, CDLA Permissive 2.0.",
   yc_directory:
     "Every Y Combinator startup (about 6,400, from the third-party yc-oss dataset of YC's public directory): website, location, industry, team size and whether it is hiring. Takes the active companies in your target countries and industries, hiring ones first; their own sites and job boards are then read as usual.",
+  web_collection:
+    "Jobs our own collector reads from companies' careers pages, Gem and Rippling boards and Hacker News's monthly hiring thread, politely and within robots.txt: companies hiring for the work your services do, in your target countries, found by their own website.",
   fca_register: "Financial firms and approved people. Not used: the FCA's terms need written permission to store or redistribute register data.",
 };
 

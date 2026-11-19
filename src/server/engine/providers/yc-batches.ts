@@ -11,7 +11,7 @@ import type { DiscoveredItem, DiscoveryProvider } from "../types";
  * "unverified" with no amount, and the date is the batch's start (approximate).
  *
  * "Hiring" alone doesn't say for what, so only startups whose open roles are in the shared job pool
- * are listed, with those roles and their service categories: the runner keeps one only when a role
+ * or among the jobs our own collector read are listed, with those roles and their service categories: the runner keeps one only when a role
  * fits a service the workspace sells.
  */
 
@@ -19,18 +19,34 @@ const MAX_ROLES = 5;
 
 type OpenRoles = { titles: string[]; categories: string[] };
 
-/** The open roles of these YC startups' job boards in the shared pool, newest first, with their categories. */
+/**
+ * The open roles of these YC startups, newest first, with their categories: their job boards' jobs
+ * in the shared pool, and the jobs our own collector read from their careers pages (or Gem and
+ * Rippling boards), by their website's domain.
+ */
 async function openRoles(ids: number[]): Promise<Map<number, OpenRoles>> {
   const result = new Map<number, OpenRoles>();
   if (ids.length === 0) return result;
+  const list = sql.join(ids.map((id) => sql`${id}`), sql`, `);
   const rows = await db.execute<{ id: number; title: string; categories: string[] | null }>(sql`
-    select y.id, j.title, array_agg(c.category_slug) filter (where c.category_slug is not null) as categories
-    from yc_companies y
-    join board_jobs j on j.provider = y.board_provider and j.board_token = y.board_token and j.closed_at is null
-    left join board_job_categories c on c.board_job_id = j.id
-    where y.id in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
-    group by y.id, j.id
-    order by coalesce(j.posted_at, j.first_seen_at) desc`);
+    select id, title, categories from (
+      select y.id, j.title, coalesce(j.posted_at, j.first_seen_at) as opened,
+        array_agg(c.category_slug) filter (where c.category_slug is not null) as categories
+      from yc_companies y
+      join board_jobs j on j.provider = y.board_provider and j.board_token = y.board_token and j.closed_at is null
+      left join board_job_categories c on c.board_job_id = j.id
+      where y.id in (${list})
+      group by y.id, j.id
+      union all
+      select y.id, i.title, coalesce(i.posted_at, i.first_seen_at) as opened,
+        array_agg(c.category_slug) filter (where c.category_slug is not null) as categories
+      from yc_companies y
+      join collected_items i on i.company_domain = y.domain and i.kind = 'job' and i.closed_at is null and i.duplicate_of is null
+      left join collected_item_categories c on c.item_id = i.id
+      where y.id in (${list})
+      group by y.id, i.id
+    ) roles
+    order by opened desc`);
   for (const r of rows) {
     const roles = result.get(Number(r.id)) ?? { titles: [], categories: [] };
     const categories = r.categories ?? [];
@@ -80,7 +96,7 @@ export const ycBatches: DiscoveryProvider = {
       // A batch that has not started yet is not funding that has happened.
       return date !== null && date >= cutoff && date <= today;
     });
-    const roles = await openRoles(recent.filter((r) => r.boardToken).map((r) => r.id));
+    const roles = await openRoles(recent.filter((r) => r.boardToken || r.domain).map((r) => r.id));
 
     const items: DiscoveredItem[] = [];
     for (const r of recent) {

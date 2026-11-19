@@ -48,14 +48,31 @@ const ROLES = /\b(engineers|developers|designers|scientists|researchers|managers
  * documents, link shorteners, scheduling (and every platform collection never fetches).
  */
 const NOT_COMPANY_HOSTS =
-  /(^|\.)(ycombinator\.com|grnh\.se|oraclecloud\.com|taleo\.net|successfactors\.(com|eu)|devitjobs\.com|welcometothejungle\.com|otta\.com|builtin\.com|himalayas\.app|remoteok\.com|weworkremotely\.com|vercel\.app|netlify\.app|herokuapp\.com|github\.io|pages\.dev|webflow\.io|github\.com|gitlab\.com|youtube\.com|youtu\.be|vimeo\.com|forms\.gle|notion\.site|notion\.so|medium\.com|substack\.com|calendly\.com|cal\.com|typeform\.com|airtable\.com|tally\.so|lu\.ma|bit\.ly|tinyurl\.com|docs\.google\.com|drive\.google\.com|dropbox\.com|loom\.com)$/i;
+  /(^|\.)(ycombinator\.com|grnh\.se|oraclecloud\.com|cloud\.sap|taleo\.net|successfactors\.(com|eu)|devitjobs\.com|welcometothejungle\.com|otta\.com|builtin\.com|himalayas\.app|remoteok\.com|weworkremotely\.com|vercel\.app|netlify\.app|herokuapp\.com|github\.io|pages\.dev|webflow\.io|github\.com|gitlab\.com|youtube\.com|youtu\.be|vimeo\.com|forms\.gle|notion\.site|notion\.so|medium\.com|substack\.com|calendly\.com|cal\.com|typeform\.com|airtable\.com|tally\.so|lu\.ma|bit\.ly|tinyurl\.com|docs\.google\.com|drive\.google\.com|dropbox\.com|loom\.com)$/i;
 
-/** A post's links that can be the company's own website (not a job board, HN or another platform). */
-function companySite(links: string[]): string | null {
-  for (const url of links) {
+/**
+ * Whether a link's domain is plausibly the company's own: its name, letters and digits only, and
+ * the domain's first label start one another ("OpenTrain AI" and opentrain.ai, "Lyra" and
+ * lyraspace.co), the shorter at least 3 long. A news article or archive a post links to
+ * ("Paradromics" and archive.ph) is not. Pure.
+ */
+export function nameFitsDomain(company: string, domain: string): boolean {
+  const name = company.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const site = (domain.toLowerCase().replace(/^www\./, "").split(".")[0] ?? "").replace(/[^a-z0-9]/g, "");
+  const shorter = name.length <= site.length ? name : site;
+  return shorter.length >= 3 && (name.startsWith(site) || site.startsWith(name));
+}
+
+/**
+ * The company's own website among a post's links (not a job board, HN or another platform). A
+ * website the header states is taken as written; another link only when its domain fits the name.
+ */
+function companySite(stated: string[], links: string[], company: string): string | null {
+  for (const url of [...stated, ...links]) {
     try {
       const host = new URL(url).hostname;
-      if (!NOT_COMPANY_HOSTS.test(host) && !isJobHost(host) && !isBlockedUrl(url)) return url;
+      const fits = stated.includes(url) || nameFitsDomain(company, domainOf(url) ?? host);
+      if (fits && !NOT_COMPANY_HOSTS.test(host) && !isJobHost(host) && !isBlockedUrl(url)) return url;
     } catch {
       // Not a URL.
     }
@@ -93,7 +110,7 @@ export function hiringPost(comment: HnComment, threadId: string): CollectedItemI
   const links = [...comment.text.matchAll(/href="([^"]+)"/g)].map((m) => decodeEntities(m[1]));
   // A website the header states ("https://acme.com", "acme.com") comes first: the company wrote it there.
   const stated = parts.filter((p) => WEBSITE_PART.test(p)).map((p) => (/^https?:/i.test(p) ? p : `https://${p}`));
-  const website = companySite([...stated, ...links]);
+  const website = companySite(stated, links, company);
   const apply = links.find((url) => {
     try {
       return isJobHost(new URL(url).hostname);

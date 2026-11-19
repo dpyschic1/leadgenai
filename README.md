@@ -244,7 +244,18 @@ company's **Sources** card. Adapters live in `src/server/sources/`, the job queu
 
 A separate engine (`src/server/collection/`) that collects public items **once for every
 workspace** into global tables. It is independent of the Company Discovery Engine and the LeadGen
-Engine; they don't read from it yet.
+Engine, which read what it collected:
+
+- **Company Discovery** (`matchCollectedJobs` in `ingestion/shared-jobs.ts`, run by `evaluate_boards`
+  after the board matching, in the same time budget): open collected jobs in a workspace's service
+  categories and countries become companies found by their own website's domain (never a job
+  site's), each job recorded as looked at (`web_collection` source records), the strongest 3 roles
+  as rule-based signals, ranked like board companies. A company the workspace already follows
+  through its job board is left out. Switchable per workspace as the "Own web collection" data
+  source (`web_collection`, migration `0040`). Not in a company's Jobs tab (that is built on the
+  job-board tables) and not read by the AI yet.
+- **LeadGen** (`yc-batches.ts`): a recent YC startup's open roles include the jobs collected from its
+  own careers page, Gem or Rippling board, by its domain.
 
 - **Collectors** (`collectors/`) implement one contract (`types.ts`) and only read their source; the
   runner stores, deduplicates, categorizes and logs. A source runs only when its `sources` row is

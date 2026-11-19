@@ -281,6 +281,13 @@
       "when": 1795031739163,
       "tag": "0039_collection_search",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1795098304592,
+      "tag": "0040_web_collection_source",
+      "breakpoints": true
     }
   ]
 }

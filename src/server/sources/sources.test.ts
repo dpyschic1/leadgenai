@@ -33,7 +33,7 @@ import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation a
 import { boardDomainGuesses, npiSteps } from "@/server/ingestion/handlers";
 import { boardFitsDomain } from "@/server/ingestion/resolve";
 import { boardFitsCompany, toYcCompany, toYcRow, ycBoardTokens, ycCountry, ycIndustry } from "./yc";
-import { boardScore, rankBoards, sizeFit } from "@/server/ingestion/shared-jobs";
+import { boardScore, collectedByCompany, rankBoards, sizeFit } from "@/server/ingestion/shared-jobs";
 import { distinctiveWords, MIN_NAME_AGREEMENT, nameAgreement, osmiumFilters, placeFromFeature, proposeMatches, type MatchPlace, type MatchSite } from "./osm";
 import { tenderSourceText, toTender, toTenderContact } from "./uk-tenders";
 import { cleanPhone, comparablePostcode, overtureLookupSql, placeDomains, proposeOvertureMatches, type OverturePlace, type OvertureTarget } from "./overture";
@@ -1268,5 +1268,18 @@ describe("ranking matched companies", () => {
     const one = [job("ML Engineer")];
     const many = ["ML Engineer", "Data Scientist", "AI Product Engineer"].map((t) => job(t, { posted_at: new Date("2026-10-20T00:00:00Z") }));
     expect(rankBoards([one, many], ["ai_ml"], now)).toEqual([many, one]);
+  });
+
+  it("groups collected jobs by company, in the target countries only", () => {
+    const at = (company_domain: string, location: string | null, country: string | null) => ({ company_domain, location, country });
+    const austin = at("acme.com", "Austin, TX", "US");
+    const remote = at("acme.com", "Remote (US)", null);
+    const berlin = at("acme.com", "Berlin", "DE");
+    const ny = at("beta.com", "New York, NY", null);
+    const unknown = at("gamma.com", null, null);
+    // The stated country decides; else the location is read as for board jobs; no location fits nowhere.
+    expect(collectedByCompany([austin, remote, berlin, ny, unknown], ["US"])).toEqual([[austin, remote], [ny]]);
+    // No target countries: anywhere.
+    expect(collectedByCompany([austin, berlin, unknown], [])).toEqual([[austin, berlin], [unknown]]);
   });
 });

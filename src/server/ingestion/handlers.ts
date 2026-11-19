@@ -72,7 +72,7 @@ import { fetchTenderContact, searchTenders, tenderSourceText, type TenderContact
 import { normalizeDomain } from "@/lib/validation/companies";
 import { formationSignal, NEW_COMPANY_DAYS, newLocationSignal, signalFromAnalysis } from "./found-signal";
 import { sourceRunnable, type JobRow } from "./queue";
-import { matchWorkspaceJobs } from "./shared-jobs";
+import { matchCollectedJobs, matchWorkspaceJobs } from "./shared-jobs";
 import { addFoundPeople, knownIdentifiers, replaceCompanyContacts, resolveCompany, saveSourceLocations, saveSourceRecord } from "./resolve";
 
 /**
@@ -496,18 +496,26 @@ async function discoverYc({ actor }: JobContext): Promise<JobResult> {
  * Matches the shared, already categorised jobs to the workspace's services and countries
  * (`matchWorkspaceJobs`): each matching company is created or found, its jobs and signals recorded
  * at once, and scored. New companies' websites are looked up next. More matches continue a minute
- * later, so a new workspace fills up in a few minutes without waiting for the AI.
+ * later, so a new workspace fills up in a few minutes without waiting for the AI. Then, in the time
+ * left, the jobs our own collector read (`matchCollectedJobs`, the `web_collection` source) the same way.
  */
 async function evaluateBoards({ actor }: JobContext): Promise<JobResult> {
-  if (!(await sourceRunnable(actor.workspaceId, "board_directory"))) return { followUps: [], skipped: true };
-  // Each company is scored as soon as it is matched (inside), so a run cut short keeps its work.
-  const result = await matchWorkspaceJobs(actor);
-  const followUps: FollowUp[] = result.newCompanies.flatMap((entityId) => [
-    { kind: "enrich_company" as const, entityId },
-    // The board's other jobs, sorted against the services the same way (no AI), a little later.
-    { kind: "scan_job_board" as const, entityId, runAfter: later(10 * 60_000) },
-  ]);
-  if (result.more) followUps.push({ kind: "evaluate_boards", entityId: actor.workspaceId, runAfter: later(60_000) });
+  const [boards, collected] = await Promise.all([sourceRunnable(actor.workspaceId, "board_directory"), sourceRunnable(actor.workspaceId, "web_collection")]);
+  if (!boards && !collected) return { followUps: [], skipped: true };
+  // One time budget for both; each company is scored as soon as it is matched (inside), so a run cut short keeps its work.
+  const deadline = Date.now() + 20_000;
+  const fromBoards = boards ? await matchWorkspaceJobs(actor, { deadline }) : null;
+  const fromCollection = collected ? await matchCollectedJobs(actor, { deadline }) : null;
+  const followUps: FollowUp[] = [
+    ...(fromBoards?.newCompanies ?? []).flatMap((entityId) => [
+      { kind: "enrich_company" as const, entityId },
+      // The board's other jobs, sorted against the services the same way (no AI), a little later.
+      { kind: "scan_job_board" as const, entityId, runAfter: later(10 * 60_000) },
+    ]),
+    // A company found by its own website: its contacts and team.
+    ...(fromCollection?.newCompanies ?? []).map((entityId) => ({ kind: "enrich_company" as const, entityId })),
+  ];
+  if (fromBoards?.more || fromCollection?.more) followUps.push({ kind: "evaluate_boards", entityId: actor.workspaceId, runAfter: later(60_000) });
   return { followUps };
 }
 

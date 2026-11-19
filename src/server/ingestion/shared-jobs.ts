@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { boardJobCategories, boardJobs, companyJobBoards, jobAnalyses, jobPostings, signals } from "@/db/schema";
+import { boardJobCategories, boardJobs, companies, companyJobBoards, jobAnalyses, jobPostings, signals } from "@/db/schema";
 import type { SignalAnalysis } from "@/lib/api/types";
 import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import { analyzeSignal } from "@/server/ai/signal-analysis";
@@ -17,7 +17,8 @@ import { insertDetectedSignal, replaceDetectedSignal } from "@/server/services/s
 import { cleanBoardName, jobInCountries } from "@/server/sources/board-directory";
 import { toYcCompany, ycCompanyForBoard } from "@/server/sources/yc";
 import { sourceRunnable } from "./queue";
-import { resolveCompany } from "./resolve";
+import { isJobHost } from "@/server/collection/collectors/html-jobs";
+import { resolveCompany, saveSourceRecord } from "./resolve";
 
 /**
  * Shared job intelligence: discover once, analyse once, match many times.
@@ -438,6 +439,163 @@ const toFacts = (job: Candidate): JobFacts => ({
   postedAt: job.posted_at ? new Date(job.posted_at) : null,
   firstSeenAt: new Date(job.first_seen_at),
 });
+
+// --- 2b. Match the collected jobs ---------------------------------------------------------------
+
+/**
+ * An open job the Web Scraping & Discovery Engine collected (`collected_items`: a company's own
+ * careers page, a Gem or Rippling board, Hacker News's hiring thread), as matching reads it. Its
+ * company is known by its own website's domain, not by a job board.
+ */
+export type CollectedCandidate = RankedJob & {
+  id: string;
+  /** The collector that read it (`career_pages`, `gem_board`…). */
+  collector: string;
+  location: string | null;
+  country: string | null;
+  url: string;
+  company_name: string | null;
+  company_domain: string;
+};
+
+/**
+ * The collected jobs in the workspace's countries (the country the source states, else the
+ * location read as for board jobs), grouped by company domain. Pure.
+ */
+export function collectedByCompany<T extends Pick<CollectedCandidate, "country" | "location" | "company_domain">>(jobs: T[], countries: string[]): T[][] {
+  const byCompany = new Map<string, T[]>();
+  for (const job of jobs) {
+    const inCountries = countries.length === 0 || (job.country ? countries.includes(job.country) : jobInCountries(job.location, countries));
+    if (!inCountries) continue;
+    byCompany.set(job.company_domain, [...(byCompany.get(job.company_domain) ?? []), job]);
+  }
+  return [...byCompany.values()];
+}
+
+/** "acme-labs.com" → "Acme Labs", for a company whose pages state no name. */
+const nameFromDomain = (domain: string) => titleFromToken(domain.split(".")[0] ?? domain);
+
+/**
+ * Matches the collected jobs to this workspace's services, like `matchWorkspaceJobs` and with no
+ * AI: open jobs in its services' categories and countries that it has not looked at, grouped by
+ * company, strongest first (`rankBoards`). Each company is found or created by its own domain, every
+ * job it has is recorded as looked at (`web_collection` source records), and its strongest roles
+ * become rule-based signals. A company the workspace already follows through its job board is left
+ * out: its jobs come from the board.
+ */
+export async function matchCollectedJobs(
+  actor: Actor,
+  {
+    domains: only,
+    deadline = Date.now() + MATCH_TIME_BUDGET_MS,
+  }: {
+    /** Only these companies' jobs (by domain). */
+    domains?: string[];
+    /** Stop starting new companies after this (epoch ms); the rest continue on the next run. */
+    deadline?: number;
+  } = {},
+): Promise<MatchResult> {
+  const result: MatchResult = { newCompanies: [], companies: [], signalsCreated: 0, more: false };
+  const services = await loadServices(actor.workspaceId);
+  const categories = [...new Set(services.flatMap((s) => s.categories))];
+  if (categories.length === 0) return result;
+  const countries = [...new Set(services.flatMap((s) => s.targetCountries))];
+
+  const candidates = await db.execute<CollectedCandidate>(sql`
+    select i.id, i.source_slug as collector, i.title, i.location, i.country, i.url, i.posted_at, i.first_seen_at,
+      i.company_name, i.company_domain, array_agg(c.category_slug) as categories, false as ai_confirmed,
+      y.id is not null as yc, y.team_size, size.open_jobs as board_open_jobs
+    from collected_items i
+    join collected_item_categories c on c.item_id = i.id and c.category_slug in (${sql.join(categories.map((c) => sql`${c}`), sql`, `)})
+    left join lateral (select y.id, y.team_size from yc_companies y where y.domain = i.company_domain limit 1) y on true
+    -- How many jobs the company has open in all: a company with hundreds is a large employer.
+    left join lateral (
+      select count(*)::int as open_jobs from collected_items o
+      where o.company_domain = i.company_domain and o.kind = 'job' and o.closed_at is null and o.duplicate_of is null
+    ) size on true
+    where i.kind = 'job' and i.closed_at is null and i.duplicate_of is null and i.company_domain is not null
+      and (i.valid_through is null or i.valid_through > now())
+      and coalesce(i.posted_at, i.first_seen_at) > now() - make_interval(days => ${MAX_JOB_AGE_DAYS})
+      and not exists (
+        select 1 from source_records r
+        where r.workspace_id = ${actor.workspaceId} and r.source_slug = 'web_collection' and r.external_id = 'job:' || i.id)
+      and not exists (
+        select 1 from companies co join company_job_boards b on b.company_id = co.id
+        where co.workspace_id = ${actor.workspaceId} and co.domain = i.company_domain)
+      ${only ? sql`and i.company_domain in (${sql.join(only.map((d) => sql`${d}`), sql`, `)})` : sql``}
+    group by i.id, y.id, y.team_size, size.open_jobs
+    order by coalesce(i.posted_at, i.first_seen_at) desc
+    limit ${MATCH_CANDIDATES}`);
+
+  // A job site is never the company's own website: resolving by it would merge different companies.
+  const grouped = collectedByCompany(
+    candidates.filter((job) => !isJobHost(job.company_domain)),
+    countries,
+  );
+  const ref = await getReferenceData();
+  const names = new Map(ref.serviceCategories.map((c) => [c.slug, c.name]));
+  const ranked = rankBoards(grouped, categories).slice(0, MATCH_BOARDS_PER_RUN);
+  for (const [index, allJobs] of ranked.entries()) {
+    if (Date.now() > deadline) {
+      result.more = true;
+      break;
+    }
+    const domain = allJobs[0].company_domain;
+    const companyName = allJobs.find((j) => j.company_name)?.company_name ?? nameFromDomain(domain);
+    const record = (job: CollectedCandidate) => ({
+      sourceSlug: "web_collection" as const,
+      externalId: `job:${job.id}`,
+      url: job.url,
+      recordType: "job_post",
+      publishedAt: job.posted_at ? new Date(job.posted_at) : null,
+      data: { title: job.title, location: job.location, collector: job.collector, relevant: true, reason: matchReason(job.categories, categories, names) },
+    });
+    const { companyId, created, signals } = await db.transaction(async (tx) => {
+      const [lead, ...rest] = allJobs;
+      const resolved = await resolveCompany(tx, actor, {
+        name: companyName,
+        domain,
+        industry: null,
+        hq: null,
+        identifiers: [],
+        identity: "partial",
+        foundedOn: null,
+        record: record(lead),
+      });
+      // A company already in the workspace keeps its own name in the signals ("Safety Mojo", not "Safetymojo").
+      const [{ name }] = await tx.select({ name: companies.canonicalName }).from(companies).where(eq(companies.id, resolved.companyId));
+      // Every job is recorded as looked at (provenance, and so it is not offered again).
+      const recordIds = new Map([[lead.id, resolved.recordId]]);
+      for (const job of rest) recordIds.set(job.id, (await saveSourceRecord(tx, actor.workspaceId, record(job), resolved.companyId)).id);
+
+      // One signal per role (the same role posted for several places counts once), newest first.
+      const byRole = new Map<string, CollectedCandidate[]>();
+      for (const job of allJobs.slice(0, MAX_JOBS_PER_MATCH)) byRole.set(roleKey(job.title), [...(byRole.get(roleKey(job.title)) ?? []), job]);
+      let createdSignals = 0;
+      for (const roleJobs of [...byRole.values()].slice(0, MAX_ROLES_PER_COMPANY)) {
+        const [first] = roleJobs;
+        const facts = {
+          title: first.title,
+          department: null,
+          location: first.location,
+          url: first.url,
+          postedAt: first.posted_at ? new Date(first.posted_at) : null,
+          firstSeenAt: new Date(first.first_seen_at),
+        };
+        const values = ruleJobSignal(name, facts, roleJobs.length, first.categories.filter((c) => categories.includes(c)));
+        const signal = await insertDetectedSignal(tx, actor, resolved.companyId, values, recordIds.get(first.id) ?? null);
+        if (signal.created) createdSignals++;
+      }
+      return { companyId: resolved.companyId, created: resolved.created, signals: createdSignals };
+    });
+    if (created) result.newCompanies.push(companyId);
+    result.companies.push(companyId);
+    result.signalsCreated += signals;
+    await rescoreAfterCompanyChange(actor.workspaceId, companyId);
+    if (index === ranked.length - 1 && grouped.length > ranked.length) result.more = true;
+  }
+  return result;
+}
 
 /** "Matches your AI / machine learning service" (the job's categories this workspace sells). */
 export function matchReason(jobCategoriesFound: string[], sold: string[], names: Map<string, string>): string {

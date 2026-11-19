@@ -103,6 +103,19 @@ const fcaRegister: SourceAdapter = {
   },
 };
 
+/**
+ * The Web Scraping & Discovery Engine's collected jobs (`src/server/collection`), matched to a
+ * workspace's services by `evaluate_boards` (`matchCollectedJobs`). Collection itself runs for the
+ * whole platform; this switch only decides whether a workspace takes companies from it.
+ */
+const webCollection: SourceAdapter = {
+  slug: "web_collection",
+  isConfigured: () => true,
+  async healthCheck() {
+    return { ok: true, message: "Our own collector; no account needed." };
+  },
+};
+
 /** Every source adapter, by slug. Adding a provider = one adapter here + one `sources` row. */
 export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   companies_house: companiesHouse,
@@ -116,5 +129,6 @@ export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   theirstack: theirStack,
   overture,
   yc_directory: ycDirectory,
+  web_collection: webCollection,
   fca_register: fcaRegister,
 };

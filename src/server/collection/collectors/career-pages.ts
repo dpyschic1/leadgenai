@@ -9,7 +9,7 @@ import { boardFromUrl } from "@/server/sources/board-directory";
 import { OffSiteRedirectError, registrableDomain } from "@/server/sources/http";
 import { CollectionBudgetError, fetchHome, isBlockedUrl, type Fetcher } from "../fetch";
 import { hostedBoardOf } from "./hosted-boards";
-import { currentJob, jobCardsFrom, jobPageFrom, listingBody } from "./html-jobs";
+import { currentJob, isJobHost, jobCardsFrom, jobPageFrom, listingBody } from "./html-jobs";
 import { canonicalUrl, countryCodeOf, domainOf, parseDate } from "../normalize";
 import type { CollectedItemInput, CollectContext, CollectResult, Collector } from "../types";
 
@@ -123,11 +123,14 @@ function placeOf(location: Json): { text: string | null; country: string | null 
   return { text: parts.length > 0 ? parts.join(", ") : str(location.name), country: countryCodeOf(countryValue) };
 }
 
-/** The organisation's own website among `url` / `sameAs` (a LinkedIn or other profile is not it). */
+/**
+ * The organisation's own website among `url` / `sameAs` (a LinkedIn profile or its page on a job
+ * site, "ycombinator.com/companies/…", is not it).
+ */
 function organisationDomain(org: Json): string | null {
   for (const value of [org.url, org.sameAs].flat()) {
     const url = str(value);
-    if (url && /^https?:\/\//i.test(url) && !isBlockedUrl(url)) return domainOf(url);
+    if (url && /^https?:\/\//i.test(url) && !isBlockedUrl(url) && !isJobHost(new URL(url).hostname)) return domainOf(url);
   }
   return null;
 }

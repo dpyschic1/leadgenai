@@ -1,7 +1,29 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { collectedItemCategories, collectedItems, collectionRuns, collectionTargets, sources } from "@/db/schema";
+import {
+  collectedItemCategories,
+  collectedItems,
+  collectionRuns,
+  collectionTargets,
+  companies,
+  companyJobBoards,
+  signals,
+  sourceRecords,
+  sources,
+  users,
+  workspaces,
+  ycCompanies,
+} from "@/db/schema";
+import { companySchema } from "@/lib/validation/companies";
+import { serviceSchema } from "@/lib/validation/services";
+import { systemActor } from "@/server/auth/actor";
+import type { AuthContext } from "@/server/auth/session";
+import { ycBatches } from "@/server/engine/providers/yc-batches";
+import { matchCollectedJobs } from "@/server/ingestion/shared-jobs";
+import { registerOwner } from "@/server/services/auth.service";
+import { createCompany } from "@/server/services/companies.service";
+import { createService } from "@/server/services/services.service";
 import { COLLECTORS } from "@/server/collection/collectors";
 import { claimTarget, MAX_ACTIVE_RUNS, runDueTargets, runTarget } from "@/server/collection/runner";
 import { closeMissing, expireItems, pruneCollection, storeItems } from "@/server/collection/store";
@@ -12,7 +34,8 @@ import type { CollectedItemInput, CollectResult, Collector } from "@/server/coll
  * The Web Scraping & Discovery Engine against the real database (`npm run test:integration`), with
  * a fake collector in place of the network: items are stored once and refreshed on later visits,
  * changes and duplicates are detected, a complete run closes what is gone, failures back off, runs
- * are logged, targets are never collected twice at once, and restricted sources never run.
+ * are logged, targets are never collected twice at once, and restricted sources never run. And what
+ * was collected feeds both engines: Company Discovery's companies and signals, LeadGen's YC roles.
  */
 
 const SOURCE = "collection_test";
@@ -392,5 +415,103 @@ describe("searching what was collected", () => {
     expect(await titles({ categories: ["software_development"] })).toEqual([`${WORD} Engineer`]);
     expect(await titles({ includeClosed: true, country: "US" })).toEqual([`${WORD} Analyst`, `${WORD} Engineer`]);
     expect(await titles({ includeDuplicates: true, country: "US" })).toEqual([`${WORD} Engineer`, `${WORD} Engineer`]);
+  });
+});
+
+describe("feeding the engines", () => {
+  const run = crypto.randomUUID().slice(0, 8);
+  const hiring = `hiring-${run}.test`;
+  const boarded = `boarded-${run}.test`;
+  const elsewhere = `elsewhere-${run}.test`;
+  const named = `named-${run}.test`;
+  const DOMAINS = [hiring, boarded, elsewhere, named];
+  const ycId = 900_000_000 + Math.floor(Math.random() * 1_000_000);
+  let auth: AuthContext;
+
+  const webJob = (externalId: string, title: string, companyDomain: string, location = "Austin, TX, US", country: string | null = "US") =>
+    job({ externalId, title, companyDomain, companyName: null, location, country, url: `https://${companyDomain}/careers/${externalId}`, categories: ["web_development"] });
+  const signalsOf = (companyId: string) => db.select().from(signals).where(and(eq(signals.workspaceId, auth.workspaceId), eq(signals.companyId, companyId)));
+
+  beforeAll(async () => {
+    const me = await registerOwner({ name: "Collection feed", email: `collection-feed-${run}@jobs.test`, password: "Feed-test-1", workspaceName: `Collection feed ${run}` });
+    auth = { userId: me.user.id, workspaceId: me.workspace.id, role: "owner" };
+    await createService(
+      auth,
+      serviceSchema.parse({
+        name: "Web development",
+        description: "",
+        categories: ["web_development"],
+        targetIndustries: [],
+        targetJobFunctions: [],
+        targetCountries: ["US"],
+        companySizeMin: null,
+        companySizeMax: null,
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    if (auth) {
+      await db.delete(workspaces).where(eq(workspaces.id, auth.workspaceId));
+      await db.delete(users).where(eq(users.id, auth.userId));
+    }
+    await db.delete(ycCompanies).where(eq(ycCompanies.id, ycId));
+  });
+
+  it("turns a company hiring for the work into a company found by its own website, with one signal per role, once", async () => {
+    await storeItems(SOURCE, null, [
+      webJob("h1", "Senior Frontend Engineer", hiring),
+      webJob("h2", "Senior Frontend Engineer", hiring, "Denver, CO, US"),
+      webJob("h3", "Web Developer", hiring),
+      webJob("e1", "Senior Frontend Engineer", elsewhere, "Berlin, Germany", "DE"),
+    ]);
+    const actor = systemActor(auth.workspaceId);
+    const result = await matchCollectedJobs(actor, { domains: DOMAINS });
+    expect(result).toMatchObject({ newCompanies: [expect.any(String)], signalsCreated: 2, more: false });
+
+    // Found by its website (the pages gave no name, so the domain names it); Berlin is not a target country.
+    const found = await db.select().from(companies).where(eq(companies.workspaceId, auth.workspaceId));
+    expect(found).toEqual([expect.objectContaining({ domain: hiring, canonicalName: "Hiring " + run.replace(/^./, (c) => c.toUpperCase()), sourceSlug: "web_collection", identityStatus: "partial" })]);
+    const [frontend, web] = (await signalsOf(found[0].id)).sort((a, b) => a.summary.localeCompare(b.summary));
+    expect(frontend.summary).toContain("Senior Frontend Engineer");
+    expect(frontend.summary).toContain("2 open postings");
+    expect(web.summary).toContain("Web Developer");
+    // Every job is recorded as looked at, with where it came from.
+    const records = await db.select().from(sourceRecords).where(and(eq(sourceRecords.workspaceId, auth.workspaceId), eq(sourceRecords.sourceSlug, "web_collection")));
+    expect(records).toHaveLength(3);
+    expect(records.every((r) => r.companyId === found[0].id && r.data.collector === SOURCE)).toBe(true);
+
+    // Looked at once: the next run finds nothing new.
+    expect(await matchCollectedJobs(actor, { domains: DOMAINS })).toMatchObject({ companies: [], signalsCreated: 0 });
+  });
+
+  it("leaves out a company the workspace follows through its job board", async () => {
+    const company = await createCompany(
+      auth,
+      companySchema.parse({ name: "Boarded", domain: boarded, industry: null, employeeCount: null, description: null, hqCity: null, hqRegion: null, hqCountry: null }),
+    );
+    await db.insert(companyJobBoards).values({ companyId: company.id, workspaceId: auth.workspaceId, provider: "greenhouse", boardToken: `boarded-${run}` });
+    await storeItems(SOURCE, null, [webJob("b1", "Senior Frontend Engineer", boarded)]);
+    expect(await matchCollectedJobs(systemActor(auth.workspaceId), { domains: DOMAINS })).toMatchObject({ companies: [] });
+    expect(await signalsOf(company.id)).toEqual([]);
+  });
+
+  it("adds signals to a company already in the workspace under its own name", async () => {
+    const company = await createCompany(
+      auth,
+      companySchema.parse({ name: "Named Co", domain: named, industry: null, employeeCount: null, description: null, hqCity: null, hqRegion: null, hqCountry: null }),
+    );
+    await storeItems(SOURCE, null, [webJob("n1", "Senior Frontend Engineer", named)]);
+    expect(await matchCollectedJobs(systemActor(auth.workspaceId), { domains: DOMAINS })).toMatchObject({ newCompanies: [], companies: [company.id], signalsCreated: 1 });
+    const [signal] = await signalsOf(company.id);
+    expect(signal.summary).toMatch(/^Named Co is hiring a Senior Frontend Engineer/);
+  });
+
+  it("gives a recent YC startup the roles its own careers page lists (LeadGen's funded companies)", async () => {
+    await db.insert(ycCompanies).values({ id: ycId, slug: `hiring-${run}`, name: "Hiring", domain: hiring, status: "Active", isHiring: true, batch: "S26", country: "US", launchedAt: new Date() });
+    await storeItems(SOURCE, null, [webJob("y1", "Senior Frontend Engineer", hiring)]);
+    const items = await ycBatches.discover({ targeting: { countries: ["US"], industries: [], serviceIds: [] }, serviceTerms: [], config: {}, now: new Date() });
+    const item = items.find((i) => i.externalId === `yc-${ycId}`);
+    expect(item?.metadata).toMatchObject({ roles: ["Senior Frontend Engineer"], jobCategories: ["web_development"] });
   });
 });
