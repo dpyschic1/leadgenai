@@ -324,6 +324,17 @@ Engine; they don't read from it yet.
   officers' names and emails are not kept. Not yet run live (no key).
 - Countries in text: current ISO codes only (the shared `countriesNamedIn` also returns obsolete DD
   for "Germany"), and "US"/"USA" in capitals is the United States.
+- **Search** (`src/server/collection/search.ts`, `searchCollected`): our own index of everything
+  collected, full-text search in Postgres (GIN index `collected_items_search_idx`, migration `0039`)
+  over each item's title (weighs most), company and text. Words as people type them (`react "web
+  app" -wordpress`, `seo or "google ads"`), with filters for kind, service category, country and
+  remote; closed items and copies of an item are left out unless asked for. Best match first,
+  halved for each month since the item was posted, so a fresh match beats an old one; each hit
+  carries its categories and the words around the match. Read-only; not yet used by either engine.
+- **Workday** (source `workday_board`, `pending_review`, migration `0039`): not collected. Its careers
+  sites allow their job pages in robots.txt, but Workday's Terms of Use forbid robots and
+  applications on its Sites without written consent and don't say whether the careers sites are
+  among them. Workday jobs a company's own careers page shows are still read by `career_pages`.
 - **Targets from Overture Maps** (`npm run collect:overture`, `src/server/collection/overture-seed.ts`):
   US businesses with their own website in 30 of Overture's real `basic_category` values (tier 1:
   offices, professional, technical, financial, legal, design and media firms; tier 2: clinics,
@@ -339,6 +350,28 @@ Engine; they don't read from it yet.
   duckdb -c "$(npm run -s collect:overture -- sql places.json austin=-97.80,30.22,-97.68,30.34)"
   npm run collect:overture -- seed places.json --limit 300 --per-category 15 --spread-hours 24 [--dry-run]
   ```
+- **Targets from Common Crawl** (`npm run collect:common-crawl`, `src/server/collection/common-crawl-seed.ts`):
+  `.com` websites whose careers page (`/careers`, `/jobs`, `/join-us`, `/work-with-us`…) the crawl
+  fetched in English, read offline with DuckDB from the URL index's Parquet files, a few at a time
+  (~80 MB and ~2 min each; a crawl has 300, about half of them `.com`). Left out: job sites by name
+  (`…job…`, `…careers…`, `…staffing…`, `…recruit…`), job hosts and blocked platforms, and families
+  of template microsites (10+ sites sharing the start or end of their name with 85 %+ at exactly the
+  same careers path: insurance agents' "/jobs" sites; companies that merely share a name's start
+  vary their paths and are kept). A batch is spread over the whole extraction (hash order), its
+  first runs over hours, behind YC's companies (priority -1), each starting at the careers page the
+  crawl found. Only the domain, crawl and careers URL are kept (`params.commonCrawl`). Common
+  Crawl's terms neither allow nor forbid commercial use outright; no page content is taken from it.
+
+  ```sh
+  npm run -s collect:common-crawl -- sql sites.json --files 150-152 > crawl.sql && duckdb < crawl.sql
+  npm run collect:common-crawl -- seed sites.json --limit 500 --spread-hours 24 [--dry-run]
+  ```
+- **Jobs no longer current** (`currentJob`, every careers-page job): posts marked filled, closed or
+  expired are left out; a site builder's copies ("… Copy 4", "(Copy)") count once under the post's
+  title; on pages that give no dates, a date written in the place or facts is read ("Posted on 01 Dec
+  2025" → older than 60 days, left out; "Closes on 30 May 2026" → a passed deadline, left out; a
+  future deadline becomes the expiry). Checked on the pilot: the filled post, the 2021 posts and an
+  Indian lender's expired post with its 5 copies are closed.
 
 **Seed populations compared** (2026-11-18, Overture release 2026-10-21.0; same collector, 8 runs at
 once, one request a second per site):
@@ -354,6 +387,16 @@ once, one request a second per site):
 | Failed runs | 5 % | 25 %: 24 bot-blocked (403), 17 timeouts, 16 refused/TLS, 16 dead domains (DNS), 2 rate-limited (429), 1 robots.txt |
 | Requests | 885 over 323 runs | 988 over 408 runs (2.0–2.3 per company); first pass of 300 took 243 s |
 | Accuracy (manual review) | 30/30 sampled jobs real, title on its source page | 36/36 titles on their source page; 35 real jobs, 1 careers-area page (from before the area rule; closes on its next complete run) |
+
+**Common Crawl pilot** (2026-11-19, crawl CC-MAIN-2026-43, offline with DuckDB, before the seeder
+and the current-job rules below): 3 of the URL index's 300 files (≈ 80 MB read each, ~7 min) gave 4,331 English `.com` sites
+with a careers page at `/careers`, `/jobs`, `/join-us`… (≈ 13 % insurance agents' template
+microsites). 300 random others, run by the same collector: careers page found 187 (62 %), readable
+jobs at 15 (5.0 %), 84 unique open jobs (≈ 28 per 100 companies; 24 US, 11 elsewhere, 19 fitting a
+service category), 20 % failed (mostly connection failures), 660 requests in 243 s. About 1 in 8
+jobs was not a current job (copies of one post, "POSITION FILLED", 2021 posts on undated pages, a
+job board's listings). Between Overture (2.9 % with jobs) and YC (13.5 %), and the whole crawl
+would give well over 100,000 such sites.
 
 Findings: YC startups give 8× more jobs per company: they hire and publish open roles. Overture's
 local businesses are a much larger pool but mostly have no careers page or list no jobs, a quarter
@@ -399,6 +442,7 @@ Or in pgAdmin: right-click the database → **Backup…** / **Restore…** (form
 | `npm run overture -- targets / sql / load …` | Look our companies up in Overture Maps (see Overture Maps above) |
 | `npm run yc -- import` | Load (or refresh) every Y Combinator company into `yc_companies` |
 | `npm run collect:overture -- sql / seed …` | Careers-page targets from Overture Maps places (see Targets from Overture Maps above) |
+| `npm run collect:common-crawl -- sql / seed …` | Careers-page targets from Common Crawl's URL index (see Targets from Common Crawl above) |
 
 ## Architecture
 

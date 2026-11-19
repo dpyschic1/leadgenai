@@ -1756,6 +1756,12 @@ export const collectedItems = pgTable(
     index("collected_items_company_idx").on(t.companyDomain),
     index("collected_items_kind_posted_idx").on(t.kind, t.postedAt),
     index("collected_items_target_idx").on(t.lastTargetId),
+    // Full-text search (`searchCollected`): title weighs most, then the company, then the text. The
+    // query must repeat this expression exactly for the index to be used.
+    index("collected_items_search_idx").using(
+      "gin",
+      sql`(setweight(to_tsvector('english', ${t.title}), 'A') || setweight(to_tsvector('english', coalesce(${t.companyName}, '')), 'B') || setweight(to_tsvector('english', coalesce(${t.body}, '')), 'C'))`,
+    ),
     check("collected_items_country_chk", sql`${t.country} is null or ${t.country} ~ '^[A-Z]{2}$'`),
     foreignKey({ name: "collected_items_duplicate_fk", columns: [t.duplicateOf], foreignColumns: [t.id] }).onDelete("set null"),
   ],

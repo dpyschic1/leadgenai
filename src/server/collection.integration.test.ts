@@ -5,6 +5,7 @@ import { collectedItemCategories, collectedItems, collectionRuns, collectionTarg
 import { COLLECTORS } from "@/server/collection/collectors";
 import { claimTarget, MAX_ACTIVE_RUNS, runDueTargets, runTarget } from "@/server/collection/runner";
 import { closeMissing, expireItems, pruneCollection, storeItems } from "@/server/collection/store";
+import { searchCollected } from "@/server/collection/search";
 import type { CollectedItemInput, CollectResult, Collector } from "@/server/collection/types";
 
 /**
@@ -342,5 +343,54 @@ describe("running targets", () => {
   it("never runs a restricted source", async () => {
     await addTarget("linkedin", "linkedin.com");
     expect(await claimTarget(["linkedin"])).toBeNull();
+  });
+});
+
+describe("searching what was collected", () => {
+  // A made-up word, so only this test's items match whatever else the database holds.
+  const WORD = "zorblaxian";
+  const ids = async () => Object.fromEntries((await db.select().from(collectedItems).where(inArray(collectedItems.sourceSlug, TEST_SOURCES))).map((r) => [r.externalId, r.id]));
+
+  it("finds items by their title, company and text, best match first, with the words around a match", async () => {
+    await storeItems(SOURCE, null, [
+      job({ externalId: "in-text", title: "Backend Engineer", text: `Build ${WORD} services for clinics.`, location: "Denver, CO, US" }),
+      job({ externalId: "in-title", title: `${WORD} Frontend Engineer`, text: "Build our React web app.", location: "Remote" }),
+    ]);
+    const hits = await searchCollected({ query: WORD });
+    expect(hits.map((h) => h.title)).toEqual([`${WORD} Frontend Engineer`, "Backend Engineer"]);
+    expect(hits[1].snippet).toContain(`«${WORD}»`);
+    expect(hits[0].snippet).toBeNull();
+    expect(hits[0].categories).toContain("software_development");
+    expect(await searchCollected({ query: `${WORD} -react` })).toHaveLength(1);
+    expect(await searchCollected({ query: `"${WORD} services"` })).toHaveLength(1);
+  });
+
+  it("ranks a fresh match above an older one that matches as well", async () => {
+    await storeItems(SOURCE, null, [
+      job({ externalId: "old", title: `${WORD} Engineer`, location: "Austin", postedAt: new Date(Date.now() - 50 * 86_400_000) }),
+      job({ externalId: "new", title: `${WORD} Engineer`, location: "Boston", postedAt: new Date(Date.now() - 86_400_000) }),
+    ]);
+    expect((await searchCollected({ query: WORD })).map((h) => h.location)).toEqual(["Boston", "Austin"]);
+  });
+
+  it("filters by kind, category, country and remote, and leaves out closed items and copies unless asked", async () => {
+    await storeItems(SOURCE, null, [
+      job({ externalId: "us", title: `${WORD} Engineer`, location: "Austin", country: "US", remote: false, categories: ["software_development"] }),
+      job({ externalId: "gb", title: `${WORD} Designer`, location: "London", country: "GB", remote: true, categories: ["ui_ux_design"] }),
+      job({ externalId: "post", kind: "post", title: `Looking for a ${WORD} agency`, location: null, country: null }),
+      job({ externalId: "closed", title: `${WORD} Analyst`, location: "Reno", country: "US" }),
+    ]);
+    await storeItems(OTHER, null, [job({ externalId: "copy", url: "https://jobs.example/1", title: `${WORD} Engineer`, location: "Austin", country: "US", remote: false })]);
+    const { closed } = await ids();
+    await db.update(collectedItems).set({ closedAt: new Date() }).where(eq(collectedItems.id, closed));
+
+    const titles = async (search: Parameters<typeof searchCollected>[0]) => (await searchCollected({ query: WORD, ...search })).map((h) => h.title).sort();
+    expect(await titles({})).toEqual([`Looking for a ${WORD} agency`, `${WORD} Designer`, `${WORD} Engineer`]);
+    expect(await titles({ kinds: ["post"] })).toEqual([`Looking for a ${WORD} agency`]);
+    expect(await titles({ country: "us" })).toEqual([`${WORD} Engineer`]);
+    expect(await titles({ remote: true })).toEqual([`${WORD} Designer`]);
+    expect(await titles({ categories: ["software_development"] })).toEqual([`${WORD} Engineer`]);
+    expect(await titles({ includeClosed: true, country: "US" })).toEqual([`${WORD} Analyst`, `${WORD} Engineer`]);
+    expect(await titles({ includeDuplicates: true, country: "US" })).toEqual([`${WORD} Engineer`, `${WORD} Engineer`]);
   });
 });

@@ -1,6 +1,6 @@
 import "server-only";
 import { decodeEntities, htmlToText } from "@/server/jobs/html-to-text";
-import { repostKey } from "@/server/jobs/job-signal";
+import { isStaleJob, repostKey } from "@/server/jobs/job-signal";
 import { registrableDomain } from "@/server/sources/http";
 import { canonicalUrl, countriesIn } from "../normalize";
 import type { CollectedItemInput } from "../types";
@@ -199,6 +199,57 @@ export function jobCardsFrom(html: string, pageUrl: string, domain: string): Col
     });
   }
   return [...items.values()];
+}
+
+// --- Jobs that are no longer current ---------------------------------------------------------------
+
+/** A post marked as no longer open: "Content Manager – POSITION FILLED", "(Closed)", "Expired: …". */
+const NO_LONGER_OPEN =
+  /\b(position|role|job|vacancy|opening)\s+(is\s+|has\s+been\s+)?(filled|closed)\b|\bno longer (available|accepting|open)\b|[-–—:|([]\s*(filled|closed|expired)\s*[)\]]?\s*$|^\s*[([]?(filled|closed|expired)\s*[)\]:|–—-]/i;
+
+/** A website builder's duplicate of a post: "Area Sales Manager Copy 2", "Designer (Copy)", "Designer - Copy". */
+const COPY_SUFFIX = /\s+(\(copy(\s*\d+)?\)|[-–]\s*copy(\s*\d+)?|copy\s+\d+)\s*$/i;
+
+const MONTHS = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+/** "October 1, 2021", "Oct 1 2021", "1 October 2021", "2021-10-01", "10/01/2021" (US order). */
+const DATE = new RegExp(
+  `\\b(?:(${MONTHS})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20\\d{2})|(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTHS})\\.?,?\\s+(20\\d{2})|(20\\d{2})-(\\d{2})-(\\d{2})|(\\d{1,2})/(\\d{1,2})/(20\\d{2}))\\b`,
+  "i",
+);
+/** Words that make a date the last day to apply, not the day the job was posted. */
+const DEADLINE = /\b(deadline|apply by|closes?|closing|until|expires?|before)\b[^\d]{0,20}$/i;
+
+/** The first date written in a text, and whether the text calls it a deadline; null when none. Pure. */
+export function dateIn(text: string): { date: Date; deadline: boolean; match: string } | null {
+  const found = text.match(DATE);
+  if (!found) return null;
+  const [, m1, d1, y1, d2, m2, y2, yi, mi, di, mu, du, yu] = found;
+  const month = (name: string) => MONTHS.split("|").findIndex((m) => new RegExp(`^(${m})$`, "i").test(name.toLowerCase()));
+  const [y, m, d] = m1 ? [+y1, month(m1), +d1] : m2 ? [+y2, month(m2), +d2] : yi ? [+yi, +mi - 1, +di] : [+yu, +mu - 1, +du];
+  const date = new Date(Date.UTC(y, m, d));
+  if (m < 0 || m > 11 || date.getUTCDate() !== d) return null;
+  return { date, deadline: DEADLINE.test(text.slice(0, found.index)), match: found[0] };
+}
+
+/**
+ * A careers-page job as it is still current, or null when it isn't: a post marked filled or closed,
+ * a builder's "Copy N" duplicate of a post (kept once, under the post's own title), and, on a page
+ * that gives no dates, a date written in its place or facts (a "posted" date more than 60 days old,
+ * or a deadline that has passed). Pure.
+ */
+export function currentJob(item: CollectedItemInput, now: Date): CollectedItemInput | null {
+  const facts = typeof item.data.facts === "string" ? item.data.facts : "";
+  if ([item.title, item.location ?? "", facts].some((t) => NO_LONGER_OPEN.test(t))) return null;
+  const title = item.title.replace(COPY_SUFFIX, "").trim() || item.title;
+  if (item.postedAt || item.validThrough) return { ...item, title };
+  const written = dateIn(item.location ?? "") ?? dateIn(facts);
+  if (!written) return { ...item, title };
+  if (written.deadline) return written.date < now ? null : { ...item, title, validThrough: written.date };
+  if (written.date > now) return { ...item, title };
+  if (isStaleJob(written.date, now)) return null;
+  // The date is the post's, not its place: "USA / remote / October 1, 2021" → "USA / remote".
+  const location = item.location?.replace(written.match, "").replace(/[\s/|,;·•-]+$/, "").trim() || null;
+  return { ...item, title, location, postedAt: written.date };
 }
 
 /** Placeholder text of an unfinished website template: a sample job, not a real one. */

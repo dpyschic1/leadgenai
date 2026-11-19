@@ -3,8 +3,9 @@ import { careersUrlFrom, jobPageLinks, jobPostingsFrom, listingPageLinks, looksC
 import { askRequest, freelancerRequest, hiringPost, newestThread } from "./collectors/hacker-news";
 import { gemJobs, hostedBoardOf, ripplingJob, ripplingList } from "./collectors/hosted-boards";
 import { samDate, samTenders } from "./collectors/sam-gov";
-import { jobCardsFrom, jobPageFrom } from "./collectors/html-jobs";
+import { currentJob, dateIn, jobCardsFrom, jobPageFrom } from "./collectors/html-jobs";
 import { pickBatch, seedCandidates, seedDomain, seedPlacesSql, type SeedPlace } from "./overture-seed";
+import { crawlCandidates, crawlSitesSql, indexFiles, pickCrawlBatch, type CrawlSite } from "./common-crawl-seed";
 import { isBlockedUrl } from "./fetch";
 import { canonicalUrl, countriesIn, countryCodeOf, dedupeKey, domainOf, normalizeItem, parseDate } from "./normalize";
 import { nextInterval, retryDelayMinutes } from "./runner";
@@ -712,5 +713,109 @@ describe("countries: the US abbreviation", () => {
       expect(hiringPost(post(link), "t")?.companyDomain, link).toBeNull();
     }
     expect(hiringPost(post("https://x.com"), "t")?.country).toBe("US");
+  });
+});
+
+describe("careers-page jobs that are no longer current (patterns from the Common Crawl pilot)", () => {
+  const now = new Date("2026-11-19T12:00:00Z");
+  const card = (overrides: Partial<CollectedItemInput> = {}): CollectedItemInput => ({
+    externalId: "x",
+    kind: "job",
+    url: "https://acme.com/jobs/1",
+    extraction: "html",
+    fetchedUrl: "https://acme.com/jobs",
+    title: "Copywriter",
+    text: null,
+    companyName: null,
+    companyDomain: "acme.com",
+    location: "Remote",
+    country: null,
+    remote: true,
+    postedAt: null,
+    validThrough: null,
+    data: {},
+    ...overrides,
+  });
+
+  it("leaves out posts marked filled or closed, wherever the mark is", () => {
+    expect(currentJob(card({ title: "Content Manager – POSITION FILLED" }), now)).toBeNull();
+    expect(currentJob(card({ title: "Designer (Closed)" }), now)).toBeNull();
+    expect(currentJob(card({ title: "Expired: Office Manager" }), now)).toBeNull();
+    expect(currentJob(card({ data: { facts: "Full-time · This position has been filled" } }), now)).toBeNull();
+    expect(currentJob(card({ title: "Closed Captioning Specialist" }), now)?.title).toBe("Closed Captioning Specialist");
+  });
+
+  it("keeps a builder's copies of a post under the post's own title, so they count once", () => {
+    expect(currentJob(card({ title: "Area Sales Manager - Commercial Vehicle Loan Copy 4" }), now)?.title).toBe("Area Sales Manager - Commercial Vehicle Loan");
+    expect(currentJob(card({ title: "Designer (Copy)" }), now)?.title).toBe("Designer");
+    expect(currentJob(card({ title: "Designer - Copy 2" }), now)?.title).toBe("Designer");
+    expect(currentJob(card({ title: "Ad Copy Editor" }), now)?.title).toBe("Ad Copy Editor");
+    expect(currentJob(card({ title: "Copywriter" }), now)?.title).toBe("Copywriter");
+  });
+
+  it("reads a date written on an undated page: old posts go, recent ones get their date", () => {
+    expect(currentJob(card({ location: "USA / remote / October 1, 2021" }), now)).toBeNull();
+    const recent = currentJob(card({ location: "USA / remote / November 2, 2026" }), now);
+    expect(recent).toMatchObject({ location: "USA / remote", postedAt: new Date("2026-11-02T00:00:00Z") });
+    expect(currentJob(card({ data: { facts: "Posted 2026-11-10 · Full-time" } }), now)?.postedAt).toEqual(new Date("2026-11-10T00:00:00Z"));
+  });
+
+  it("reads a deadline as the last day to apply, never as the posting date", () => {
+    expect(currentJob(card({ data: { facts: "Apply by March 3, 2026" } }), now)).toBeNull();
+    expect(currentJob(card({ data: { facts: "Deadline: 12/15/2026" } }), now)).toMatchObject({ validThrough: new Date("2026-12-15T00:00:00Z"), postedAt: null });
+  });
+
+  it("trusts the dates a page states over dates in its text", () => {
+    const posted = new Date("2026-11-01T00:00:00Z");
+    expect(currentJob(card({ postedAt: posted, location: "Austin, TX (since May 1, 2020)" }), now)?.postedAt).toBe(posted);
+  });
+
+  it("reads written dates in the usual forms, and nothing else", () => {
+    expect(dateIn("1st October 2021")?.date).toEqual(new Date("2021-10-01T00:00:00Z"));
+    expect(dateIn("Sept. 9, 2026")?.date).toEqual(new Date("2026-09-09T00:00:00Z"));
+    expect(dateIn("February 30, 2026")).toBeNull();
+    expect(dateIn("Team of 2021 people")).toBeNull();
+  });
+});
+
+describe("Common Crawl seeds", () => {
+  const site = (domain: string, path = "/careers", www = false): CrawlSite => ({ domain, careers_url: `https://${www ? "www." : ""}${domain}${path}` });
+
+  it("keeps companies on their own careers page, never job sites, platforms or targets we have", () => {
+    const { candidates, stats } = crawlCandidates(
+      [site("acme.com"), site("acme.com", "/jobs"), site("beta.com", "/jobs/", true), site("interislandjob.com"), site("techcareers.com"), site("linkedin.com"), site("known.com"), site("gamma.org"), { domain: "delta.com", careers_url: "https://jobs.other.com/careers" }],
+      new Set(["known.com"]),
+    );
+    expect(candidates.map((c) => c.domain)).toEqual(["acme.com", "beta.com"]);
+    expect(candidates[1].careersUrl).toBe("https://www.beta.com/jobs/");
+    expect(stats).toMatchObject({ alreadyTargets: 1, jobSites: 3, candidates: 2 });
+  });
+
+  it("leaves out families of template microsites, not companies that merely share a name's start", () => {
+    const agents = Array.from({ length: 20 }, (_, i) => site(`myagent${String.fromCharCode(97 + i)}x.com`, i === 0 ? "/careers" : "/jobs"));
+    const integra = Array.from({ length: 20 }, (_, i) => site(`integra${String.fromCharCode(97 + i)}y.com`, ["/careers", "/jobs", "/join-us", "/careers/"][i % 4]));
+    const stateFarm = ["anna", "bert", "carl", "dana", "eric", "faye", "gail", "hugo", "ivan", "jane", "kurt"].map((n) => site(`my${n}${n}sfagent.com`, "/jobs", n < "f"));
+    const { candidates, stats } = crawlCandidates([...agents, ...integra, ...stateFarm], new Set());
+    expect(stats.templateFamilies).toBe(31);
+    expect(candidates.every((c) => c.domain.startsWith("integra"))).toBe(true);
+    expect(candidates).toHaveLength(20);
+  });
+
+  it("spreads a batch over the whole extraction, the same batch every time", () => {
+    const sites = Array.from({ length: 50 }, (_, i) => ({ domain: `a${String(i).padStart(2, "0")}.com`, careersUrl: "" }));
+    const batch = pickCrawlBatch(sites, 10);
+    expect(batch).toHaveLength(10);
+    expect(batch).toEqual(pickCrawlBatch([...sites].reverse(), 10));
+    expect(batch.map((s) => s.domain)).not.toEqual(sites.slice(0, 10).map((s) => s.domain));
+  });
+
+  it("reads the index files asked for, and only .com careers pages from them", () => {
+    const list = ["cc-index/table/cc-main/warc/crawl=X/subset=warc/part-00000.parquet", "cc-index/table/cc-main/warc/crawl=X/subset=crawldiagnostics/part-00000.parquet", "cc-index/table/cc-main/warc/crawl=X/subset=warc/part-00001.parquet", "cc-index/table/cc-main/warc/crawl=X/subset=warc/part-00002.parquet"].join("\n");
+    expect(indexFiles(list, "1-2,0")).toEqual([0, 1, 2].map((n) => `https://data.commoncrawl.org/cc-index/table/cc-main/warc/crawl=X/subset=warc/part-0000${n}.parquet`));
+    expect(() => indexFiles(list, "7")).toThrow(/no file 7/);
+    const query = crawlSitesSql(["https://data.commoncrawl.org/f.parquet"], "out's.json");
+    expect(query).toContain("url_host_tld = 'com'");
+    expect(query).toContain("'out''s.json'");
+    expect(query).toContain("|careers/open-positions|");
   });
 });

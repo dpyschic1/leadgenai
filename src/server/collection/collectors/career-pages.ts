@@ -9,7 +9,7 @@ import { boardFromUrl } from "@/server/sources/board-directory";
 import { OffSiteRedirectError, registrableDomain } from "@/server/sources/http";
 import { CollectionBudgetError, fetchHome, isBlockedUrl, type Fetcher } from "../fetch";
 import { hostedBoardOf } from "./hosted-boards";
-import { jobCardsFrom, jobPageFrom, listingBody } from "./html-jobs";
+import { currentJob, jobCardsFrom, jobPageFrom, listingBody } from "./html-jobs";
 import { canonicalUrl, countryCodeOf, domainOf, parseDate } from "../normalize";
 import type { CollectedItemInput, CollectContext, CollectResult, Collector } from "../types";
 
@@ -376,6 +376,8 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
     }
     items.push(...cards.values());
     cards.clear();
+    // Posts marked filled, builders' copies, and dates written on undated pages (see currentJob).
+    items.splice(0, items.length, ...items.flatMap((item) => currentJob(item, now) ?? []));
 
     if (items.length === 0 && boardLinks.size > 0) return withBoards(idle(cursor, "Jobs are on a Gem or Rippling board, collected there"), boardLinks, domain);
     if (items.length === 0 && looksClientRendered(listing.body)) {
@@ -394,7 +396,7 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
     );
   } catch (error) {
     if (!(error instanceof CollectionBudgetError)) throw error;
-    return { items: [...items, ...cards.values()], cursor, complete: false, note: "Stopped at the run's request budget or time" };
+    return { items: [...items, ...cards.values()].flatMap((item) => currentJob(item, now) ?? []), cursor, complete: false, note: "Stopped at the run's request budget or time" };
   }
 }
 
