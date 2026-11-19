@@ -20,7 +20,12 @@ export type FeedbackChange = {
   correctsMatch: boolean;
 };
 
-const corrects = (verdict: FeedbackVerdict) => (CORRECTING_VERDICTS as readonly string[]).includes(verdict);
+/**
+ * Whether a verdict changes scoring: the correcting ones, and a good-fit opinion (given, replaced
+ * by "not relevant" or removed), which decides whether a likely competitor stays hidden.
+ */
+const corrects = (verdict: FeedbackVerdict) =>
+  (CORRECTING_VERDICTS as readonly string[]).includes(verdict) || verdict === "good_fit" || verdict === "not_relevant";
 
 export async function listFeedback(auth: AuthContext, opportunityId: string): Promise<OpportunityFeedback[]> {
   const rows = await db

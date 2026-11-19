@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
 import { companyContactPoints, users, workspaces } from "@/db/schema";
 import { companySchema, personSchema } from "@/lib/validation/companies";
+import { feedbackSchema } from "@/lib/validation/feedback";
 import { leadContactsQuerySchema, leadListQuerySchema, opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
 import { serviceSchema } from "@/lib/validation/services";
 import { signalSchema } from "@/lib/validation/signals";
@@ -12,6 +13,7 @@ import { rescoreCompany } from "@/server/scoring/rescore";
 import { registerOwner } from "@/server/services/auth.service";
 import { createCompany, listCompanies } from "@/server/services/companies.service";
 import { exportOpportunities } from "@/server/services/exports.service";
+import { giveFeedback } from "@/server/services/feedback.service";
 import { listLeadContacts, listLeads, listOpportunities, updateOpportunity } from "@/server/services/opportunities.service";
 import { listPipeline } from "@/server/services/pipeline.service";
 import { addPerson } from "@/server/services/people.service";
@@ -299,5 +301,45 @@ describe("contacts and the Leads page", () => {
     await updateOpportunity(auth, items[0].id, { archived: true });
     expect((await leads({})).counts.all).toBe(2); // an archived lead is off the Leads page too
     await updateOpportunity(auth, items[0].id, { stageId: stages.find((s) => s.intake)!.id, archived: false });
+  });
+});
+
+describe("likely competitors", () => {
+  it("are hidden from the feed and the Leads page, found with the hidden filter, and come back when marked a good fit", async () => {
+    const company = await createCompany(
+      auth,
+      companySchema.parse({ name: `Rivet Consulting ${run}`, domain: `rivet-${run}.example`, industry: null, employeeCount: 40, description: null, hqCity: null, hqRegion: null, hqCountry: "GB" }),
+    );
+    await createSignal(
+      auth,
+      company.id,
+      signalSchema.parse({
+        signalType: "engineering_hiring",
+        intentLevel: "high",
+        urgency: "medium",
+        serviceCategories: ["staff_augmentation"],
+        summary: "Rivet is hiring engineers.",
+        personId: null,
+        occurredOn: daysAgo(1),
+        sourceUrl: null,
+        excerpt: null,
+        evidenceLabel: "observed",
+        source: "manual",
+        confidence: null,
+      }),
+    );
+    await rescoreCompany(auth.workspaceId, company.id);
+    const rivet = `Rivet Consulting ${run}`;
+
+    expect(await feed({})).not.toContain(rivet);
+    expect((await listLeads(auth, leadListQuerySchema.parse({ q: "rivet" }))).counts.all).toBe(0);
+    expect(await feed({ hidden: "true" })).toEqual([rivet]);
+    const [hidden] = (await listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", hidden: "true" }))).items;
+
+    const change = await giveFeedback(auth, hidden.id, feedbackSchema.parse({ verdict: "good_fit" }));
+    expect(change.correctsMatch).toBe(true);
+    await rescoreCompany(auth.workspaceId, company.id);
+    expect(await feed({})).toContain(rivet);
+    expect(await feed({ hidden: "true" })).toEqual([]);
   });
 });

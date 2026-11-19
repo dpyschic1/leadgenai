@@ -50,6 +50,7 @@ export function activeFilterCount(filters: OpportunityFilters): number {
     (filters.minScore === null ? 0 : 1) +
     (filters.withinDays === null ? 0 : 1) +
     (filters.foundWithinDays === null ? 0 : 1) +
-    (filters.contact === null ? 0 : 1)
+    (filters.contact === null ? 0 : 1) +
+    (filters.hidden ? 1 : 0)
   );
 }

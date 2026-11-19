@@ -10,6 +10,7 @@ import { CLOSED_JOB_RETENTION_DAYS, isStaleJob, jobDigest, MAX_JOB_AGE_DAYS, rep
 import { JOB_BOARD_ADAPTERS } from "@/server/jobs/providers";
 import { decodeEntities } from "@/server/jobs/html-to-text";
 import type { NormalizedJob } from "@/server/jobs/types";
+import { isJobHost } from "@/server/collection/collectors/html-jobs";
 import { politeGet, registrableDomain } from "./http";
 import type { HealthStatus, SourceAdapter } from "./index";
 
@@ -580,6 +581,30 @@ export function sitesInJobPosts(descriptions: (string | null)[]): { site: string
     for (const site of sites) counts.set(site, (counts.get(site) ?? 0) + 1);
   }
   return [...counts.entries()].map(([site, posts]) => ({ site, posts })).sort((a, b) => b.posts - a.posts);
+}
+
+/**
+ * The company's own site, from where its job board sends applicants: a board can be set to link
+ * every job to the employer's careers page (coinbase.com/careers/…, careers.roblox.com/…), which
+ * only the employer can configure. Taken when at least two jobs and at least half of them point
+ * to the same site, and it isn't a job board or another third party. Pure.
+ */
+export function siteFromJobLinks(urls: string[]): string | null {
+  const counts = new Map<string, number>();
+  for (const url of urls) {
+    let host: string;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      continue;
+    }
+    // A careers-only domain (instacart.careers) is not the company's own site.
+    if (THIRD_PARTY_HOSTS.test(host) || isJobHost(host) || /\.(careers|jobs)$/.test(host)) continue;
+    const site = siteOf(host);
+    counts.set(site, (counts.get(site) ?? 0) + 1);
+  }
+  const [best] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  return best && best[1] >= 2 && best[1] * 2 >= urls.length ? best[0] : null;
 }
 
 // The inbox applicants are asked to send their CV to; never accessibility, privacy, legal or

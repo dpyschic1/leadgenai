@@ -2,10 +2,11 @@ import "server-only";
 import { supersedeFundedOpportunities } from "@/server/engine/ingest";
 import { refreshEngineScores } from "@/server/engine/rescore";
 import { intakeStageId } from "@/server/services/pipeline.service";
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   companies,
+  companyJobBoards,
   companyLocations,
   opportunities,
   opportunityFeedback,
@@ -14,6 +15,7 @@ import {
   signalServiceCategories,
   signals,
   signalTypes,
+  ycCompanies,
 } from "@/db/schema";
 import { CORRECTING_VERDICTS } from "@/lib/domain/feedback";
 import { isSuggestable } from "@/lib/domain/people";
@@ -54,7 +56,7 @@ export async function rescoreCompany(workspaceId: string, companyId: string): Pr
       await db.transaction(async (tx) => {
         await tx
           .update(opportunities)
-          .set({ opportunityScore: 0, intentScore: 0, icpScore: 0, identityConfidence: 0, serviceFit: 0, scoreFactors: {}, scoredAt: new Date() })
+          .set({ opportunityScore: 0, intentScore: 0, icpScore: 0, identityConfidence: 0, serviceFit: 0, scoreFactors: {}, hiddenReason: null, scoredAt: new Date() })
           .where(eq(opportunities.id, existing.id));
         await tx.delete(opportunitySignals).where(eq(opportunitySignals.opportunityId, existing.id));
       });
@@ -75,6 +77,7 @@ export async function rescoreCompany(workspaceId: string, companyId: string): Pr
     serviceFit: result.factors.serviceFit.score,
     opportunityScore: result.opportunityScore,
     scoreFactors: result.factors,
+    hiddenReason: result.hiddenReason,
     latestSignalAt: result.latestSignalAt,
     scoredAt: new Date(),
   };
@@ -160,7 +163,7 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
     .limit(1);
   if (!company) return null;
 
-  const [signalRows, people, services, weights, ref, flags] = await Promise.all([
+  const [signalRows, people, services, weights, ref, flags, [yc], openJobs] = await Promise.all([
     db
       .select({ signal: signals, category: signalTypes.categorySlug })
       .from(signals)
@@ -179,9 +182,15 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
         and(
           eq(opportunities.companyId, companyId),
           eq(opportunityFeedback.workspaceId, workspaceId),
-          inArray(opportunityFeedback.verdict, [...CORRECTING_VERDICTS]),
+          inArray(opportunityFeedback.verdict, [...CORRECTING_VERDICTS, "good_fit"]),
         ),
       ),
+    // YC's published team size, when nobody entered or found the company's own: shared reference
+    // data read at scoring time, so it stays as fresh as the YC directory.
+    company.domain && company.employeeCount === null
+      ? db.select({ teamSize: ycCompanies.teamSize }).from(ycCompanies).where(and(eq(ycCompanies.domain, company.domain), isNotNull(ycCompanies.teamSize))).limit(1)
+      : [],
+    openJobTitles(workspaceId, companyId, company.domain),
   ]);
 
   const ids = signalRows.map((r) => r.signal.id);
@@ -210,9 +219,11 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
         name: company.name,
         domain: company.domain,
         industry: company.industry,
-        employeeCount: company.employeeCount,
+        employeeCount: company.employeeCount ?? yc?.teamSize ?? null,
+        sizeSource: company.employeeCount === null && yc ? "YC" : null,
         hqCountry: company.hqCountry,
         hasHeadquarters: company.hqId !== null,
+        openJobTitles: openJobs,
       },
       people: people.map((p) => ({
         id: p.id,
@@ -246,8 +257,24 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
         personIds: flags.flatMap((f) => (f.verdict === "wrong_person" && f.personId ? [f.personId] : [])),
         serviceIds: flags.flatMap((f) => (f.verdict === "wrong_service" && f.serviceId ? [f.serviceId] : [])),
       },
+      markedGoodFit: flags.some((f) => f.verdict === "good_fit"),
     },
   };
+}
+
+/**
+ * Titles of the jobs a company has open now: on the job boards it's followed through, and on its
+ * own careers page (collected by its website). Its hiring volume, and what kind of company it is.
+ */
+async function openJobTitles(workspaceId: string, companyId: string, domain: string | null): Promise<string[]> {
+  const rows = await db.execute<{ title: string }>(sql`
+    select j.title from ${companyJobBoards} b
+    join board_jobs j on j.provider = b.provider and j.board_token = b.board_token and j.closed_at is null
+    where b.company_id = ${companyId} and b.workspace_id = ${workspaceId}
+    union all
+    select i.title from collected_items i
+    where ${domain}::text is not null and i.company_domain = ${domain} and i.kind = 'job' and i.closed_at is null and i.duplicate_of is null`);
+  return rows.map((r) => r.title);
 }
 
 /** After a change to one company's signals, people or details. */

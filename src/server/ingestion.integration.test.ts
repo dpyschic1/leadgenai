@@ -302,6 +302,41 @@ describe("automatic ingestion", () => {
     await db.delete(users).where(eq(users.id, third.userId));
   });
 
+  it("asks the AI again after a rate-limited attempt, and takes the country from the site's own markup", async () => {
+    const domain = `retry-${run}.example`;
+    const mine = await signUp("retry");
+    const company = await createCompany(
+      mine,
+      companySchema.parse({ name: "Retry Dental", domain, industry: null, employeeCount: null, description: null, hqCity: null, hqRegion: null, hqCountry: null }),
+    );
+    const usual = vi.mocked(readWebsite).getMockImplementation()!;
+    vi.mocked(readWebsite).mockImplementation(async (d) => {
+      const site = (await usual(d))!;
+      return { ...site, structured: { ...site.structured, country: "US" } };
+    });
+    const scan = () =>
+      HANDLERS.scan_website(jobContext({ id: randomUUID(), workspaceId: mine.workspaceId, kind: "scan_website", entityId: company.id, status: "running", attempts: 1 } as JobRow));
+
+    // First attempt: the pages are saved, then the AI refuses (its per-minute limit).
+    vi.mocked(extractWebsiteFacts).mockClear().mockRejectedValueOnce(new AppError("AI_BUSY", "busy"));
+    await expect(scan()).rejects.toMatchObject({ code: "AI_BUSY" });
+    expect((await getCompany(mine, company.id)).people).toHaveLength(0);
+
+    // The retry: nothing on the site changed, but the AI never read it, so it's asked again.
+    await scan();
+    vi.mocked(readWebsite).mockImplementation(usual);
+    expect(extractWebsiteFacts).toHaveBeenCalledTimes(2);
+    const detail = await getCompany(mine, company.id);
+    expect(detail.people.map((p) => p.name)).toContain("Priya Shah");
+    expect(detail.locations.find((l) => l.type === "headquarters")?.country).toBe("US");
+
+    // Once read, an unchanged site isn't sent to the AI again.
+    await scan();
+    expect(extractWebsiteFacts).toHaveBeenCalledTimes(2);
+    await db.delete(workspaces).where(eq(workspaces.id, mine.workspaceId));
+    await db.delete(users).where(eq(users.id, mine.userId));
+  });
+
   it("adds nothing twice when it runs again", async () => {
     const before = (await listCompanies(owner)).total;
     await runNow(owner);

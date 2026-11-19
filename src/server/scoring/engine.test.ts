@@ -95,6 +95,65 @@ describe("service choice: size and specificity", () => {
     // Size unknown: never excluded.
     expect(score({ company: { ...base.company, employeeCount: null }, services: [aug], signals: [hiring({ serviceCategories: ["software_development"] })] }).serviceId).toBe("aug");
   });
+  it("lowers the fit of a company just outside the size range, more the further out it is", () => {
+    const fitAt = (employeeCount: number) =>
+      score({ company: { ...base.company, employeeCount, sizeSource: "YC" }, services: [aug], signals: [hiring({ serviceCategories: ["software_development"] })] }).factors.icpFit;
+    expect(fitAt(150).reasons).toContain("150 employees (YC) is within the target size");
+    expect(fitAt(250).reasons).toContain("250 employees (YC) is outside the target size (1-200)");
+    expect(fitAt(150).score).toBeGreaterThan(fitAt(250).score);
+    expect(fitAt(250).score).toBeGreaterThan(fitAt(390).score);
+  });
+  it("takes a company hiring many people at once as likely bigger, without excluding it", () => {
+    const titles = (n: number) => Array.from({ length: n }, (_, i) => `Software Engineer ${i}`);
+    const busy = score({ company: { ...base.company, employeeCount: null, openJobTitles: titles(60) }, services: [aug], signals: [hiring({ serviceCategories: ["software_development"] })] });
+    expect(busy.serviceId).toBe("aug");
+    expect(busy.factors.icpFit.reasons).toContain("Size unknown, but hiring 60 roles at once: likely over 200 employees (target 1-200)");
+    const quiet = score({ company: { ...base.company, employeeCount: null, openJobTitles: titles(5) }, services: [aug], signals: [hiring({ serviceCategories: ["software_development"] })] });
+    expect(quiet.factors.icpFit.reasons).toContain("Company size unknown");
+    expect(quiet.factors.icpFit.score).toBeGreaterThan(busy.factors.icpFit.score);
+  });
+});
+
+describe("hiring weighed against company size", () => {
+  const titles = (n: number) => Array.from({ length: n }, (_, i) => `Engineer ${i}`);
+  const intent = (employeeCount: number | null, open: number) =>
+    score({ company: { ...base.company, employeeCount, openJobTitles: titles(open) }, signals: [hiring()] }).factors.intent;
+
+  it("counts a few openings at a small company as a big push, the same at a large one as routine", () => {
+    expect(intent(40, 3).reasons).toContain("3 open roles for 40 employees (8%): a big push");
+    expect(intent(5000, 3).reasons).toContain("3 open roles for 5,000 employees (0.1%): routine hiring for its size");
+    expect(intent(40, 3).score).toBeGreaterThan(intent(5000, 3).score);
+  });
+  it("falls back to counting signals when the size is unknown", () => {
+    expect(intent(null, 3).reasons.some((r) => r.includes("open role"))).toBe(false);
+  });
+});
+
+describe("likely competitors", () => {
+  const firm = (name: string, overrides: Partial<EngineInput["company"]> = {}) => score({ company: { ...base.company, name, industry: null, ...overrides } });
+
+  it("hides a company whose name says it sells services, with the reason", () => {
+    for (const name of ["Clarkston Consulting", "Accenture Federal Services", "Aditi Staffing"]) {
+      const result = firm(name);
+      expect(result.hiddenReason).toMatch(/^Hidden: its name says/);
+      expect(result.factors.icpFit.reasons).toContain(result.hiddenReason);
+    }
+  });
+  it("needs two weaker clues to agree", () => {
+    const consultants = ["SAP Consultant", "Senior Consultant", "Workday Consultant", "Recruiter"];
+    expect(firm("Attain Partners").hiddenReason).toBeNull();
+    expect(firm("Attain Partners", { openJobTitles: consultants }).hiddenReason).toBe(
+      "Hidden: likely a competitor or partner selling services like yours (its name; 3 of its 4 open roles are consultants)",
+    );
+    // A software company labelled professional services, or with sales "consultants", is not one.
+    expect(firm("Lattice", { industry: "professional_services" }).hiddenReason).toBeNull();
+    expect(firm("Strata", { industry: "professional_services", openJobTitles: ["Solutions Consultant", "Sales Consultant", "Engineer", "Designer"] }).hiddenReason).toBeNull();
+  });
+  it("keeps it when your service targets that industry, or the team marked it a good fit", () => {
+    const forConsultancies = { ...base.services[0], targetIndustries: ["professional_services"] };
+    expect(score({ company: { ...base.company, name: "PA Consulting", industry: "professional_services" }, services: [forConsultancies] }).hiddenReason).toBeNull();
+    expect(score({ company: { ...base.company, name: "PA Consulting" }, markedGoodFit: true }).hiddenReason).toBeNull();
+  });
 });
 
 describe("scoreCompany", () => {

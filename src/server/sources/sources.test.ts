@@ -8,10 +8,12 @@ import {
   hiringEmails,
   jobInCountries,
   nameFromBoardTitle,
+  siteFromJobLinks,
   siteOf,
   sitesInJobPosts,
   workableProfile,
 } from "./board-directory";
+import { countryCodeOf } from "@/lib/countries";
 import { finalizeFacts } from "@/server/ai/website-extract";
 import { formationSignal, newLocationSignal, signalFromAnalysis } from "@/server/ingestion/found-signal";
 import type { SignalAnalysis } from "@/lib/api/types";
@@ -30,7 +32,7 @@ import {
 } from "./names";
 import { isAllowed, parseRobots } from "./http";
 import { fitsIndustry, parseSearch, toFoundCompany as toNpiCompany, toLocation as toNpiLocation, toPeople as toNpiPeople, usPhone } from "./nppes";
-import { boardDomainGuesses, npiSteps } from "@/server/ingestion/handlers";
+import { boardDomainGuesses, MAX_CONCURRENT_AI, npiSteps, withAiSlot } from "@/server/ingestion/handlers";
 import { boardFitsDomain } from "@/server/ingestion/resolve";
 import { boardFitsCompany, toYcCompany, toYcRow, ycBoardTokens, ycCountry, ycIndustry } from "./yc";
 import { boardScore, collectedByCompany, rankBoards, sizeFit } from "@/server/ingestion/shared-jobs";
@@ -577,7 +579,7 @@ describe("website checks (no AI)", () => {
 
   it("reads the company's own structured data and sitemap", () => {
     const html = `<script type="application/ld+json">{"@context":"https://schema.org","@graph":[
-      {"@type":"Dentist","telephone":"0113 496 0000","email":"mailto:Hello@Smiles.example","numberOfEmployees":{"@type":"QuantitativeValue","value":24},
+      {"@type":"Dentist","address":{"@type":"PostalAddress","addressCountry":"United Kingdom"},"telephone":"0113 496 0000","email":"mailto:Hello@Smiles.example","numberOfEmployees":{"@type":"QuantitativeValue","value":24},
        "founder":{"@type":"Person","name":"Sophie Clarke","jobTitle":"Principal Dentist"}},
       {"@type":"Person","name":"Priya Shah","jobTitle":"Practice Manager"},
       {"@type":"Person","name":"Solo"}]}</script><script type="application/ld+json">{broken</script>`;
@@ -585,6 +587,7 @@ describe("website checks (no AI)", () => {
       telephone: "0113 496 0000",
       email: "hello@smiles.example",
       employees: 24,
+      country: "GB",
       people: [
         { name: "Sophie Clarke", title: "Principal Dentist" },
         { name: "Priya Shah", title: "Practice Manager" },
@@ -985,6 +988,26 @@ describe("company site from its job posts", () => {
     expect(sitesInJobPosts(toast)).toEqual([{ site: "toasttab.com", posts: 2 }]);
   });
 
+  it("takes the site its job board sends applicants to, when most jobs agree", () => {
+    const coinbase = ["https://www.coinbase.com/careers/positions/1?gh_jid=1", "https://www.coinbase.com/careers/positions/2?gh_jid=2", "https://job-boards.greenhouse.io/coinbase/jobs/3"];
+    expect(siteFromJobLinks(coinbase)).toBe("coinbase.com");
+    expect(siteFromJobLinks(["https://careers.roblox.com/jobs/1", "https://careers.roblox.com/jobs/2"])).toBe("roblox.com");
+    // One job, a minority of jobs, or job boards and social sites: no answer.
+    expect(siteFromJobLinks(["https://acme.com/careers/1"])).toBeNull();
+    expect(siteFromJobLinks(["https://acme.com/1", "https://acme.com/2", ...Array.from({ length: 5 }, (_, i) => `https://boards.greenhouse.io/acme/jobs/${i}`)])).toBeNull();
+    expect(siteFromJobLinks(["https://www.linkedin.com/jobs/1", "https://www.linkedin.com/jobs/2", "https://jobs.lever.co/acme/1"])).toBeNull();
+    expect(siteFromJobLinks(["not a url", "https://acme.com/1", "https://acme.com/2"])).toBe("acme.com");
+    expect(siteFromJobLinks(["https://instacart.careers/job/1", "https://instacart.careers/job/2"])).toBeNull();
+  });
+
+  it("reads a country however a site writes it", () => {
+    expect(["US", "us", "USA", "United States", "United States of America"].map(countryCodeOf)).toEqual(["US", "US", "US", "US", "US"]);
+    expect(["UK", "United Kingdom", "England", "GB"].map(countryCodeOf)).toEqual(["GB", "GB", "GB", "GB"]);
+    expect(countryCodeOf("Germany")).toBe("DE");
+    expect(countryCodeOf("Atlantis")).toBeNull();
+    expect(countryCodeOf("XX")).toBeNull();
+  });
+
   it("keeps hiring inboxes at that site, never accommodation or privacy addresses", () => {
     expect(hiringEmails(toast, "toasttab.com")).toEqual([]);
     const posts = ["Send your CV to Careers@Acme.co.uk or recruitment@jobs.acme.co.uk", "privacy@acme.co.uk, accommodations@acme.co.uk, careers@gmail.com, jobs@other.com"];
@@ -1281,5 +1304,26 @@ describe("ranking matched companies", () => {
     expect(collectedByCompany([austin, remote, berlin, ny, unknown], ["US"])).toEqual([[austin, remote], [ny]]);
     // No target countries: anywhere.
     expect(collectedByCompany([austin, berlin, unknown], [])).toEqual([[austin, berlin], [unknown]]);
+  });
+});
+
+describe("AI pacing", () => {
+  it("runs at most a few AI calls at once, and every call still runs", async () => {
+    let running = 0;
+    let peak = 0;
+    const call = (i: number) =>
+      withAiSlot(async () => {
+        running++;
+        peak = Math.max(peak, running);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        running--;
+        if (i === 3) throw new Error("refused");
+        return i;
+      });
+    const results = await Promise.allSettled(Array.from({ length: 8 }, (_, i) => call(i)));
+    expect(peak).toBe(MAX_CONCURRENT_AI);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(7);
+    // A failed call frees its slot: the next ones still run.
+    expect(await withAiSlot(async () => "after")).toBe("after");
   });
 });

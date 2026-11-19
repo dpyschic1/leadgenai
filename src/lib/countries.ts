@@ -15,3 +15,26 @@ const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
 export function countryName(code: string): string {
   return displayNames.of(code) ?? code;
 }
+
+const COUNTRY_ALIASES: Record<string, string> = {
+  usa: "US",
+  "u.s.": "US",
+  "u.s.a.": "US",
+  "united states of america": "US",
+  uk: "GB",
+  "u.k.": "GB",
+  "great britain": "GB",
+  england: "GB",
+  scotland: "GB",
+  wales: "GB",
+};
+let codesByName: Map<string, string> | null = null;
+
+/** A country as a site writes it ("US", "USA", "United Kingdom") as its ISO code, or null. Pure. */
+export function countryCodeOf(value: string): string | null {
+  const text = value.trim().toLowerCase();
+  if (COUNTRY_ALIASES[text]) return COUNTRY_ALIASES[text];
+  if (/^[a-z]{2}$/.test(text)) return COUNTRY_CODES.includes(text.toUpperCase()) ? text.toUpperCase() : null;
+  codesByName ??= new Map(COUNTRY_CODES.map((code) => [countryName(code).toLowerCase(), code]));
+  return COUNTRY_ALIASES[text] ?? codesByName.get(text) ?? null;
+}

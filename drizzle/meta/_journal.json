@@ -288,6 +288,13 @@
       "when": 1795098304592,
       "tag": "0040_web_collection_source",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1795123105659,
+      "tag": "0041_opportunity_hidden_reason",
+      "breakpoints": true
     }
   ]
 }

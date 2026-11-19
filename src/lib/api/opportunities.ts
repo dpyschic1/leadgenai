@@ -8,7 +8,7 @@ import type { InterpretedSearch, LeadContacts, LeadList, OpportunityDetail, Oppo
 /** Adds the active filters to `params` (lists comma-separated); empty filters are left out. */
 export function setFilterParams(params: URLSearchParams, filters: OpportunityFilters): URLSearchParams {
   for (const [key, value] of Object.entries(filters)) {
-    if (Array.isArray(value) ? value.length > 0 : value !== null && value !== "") {
+    if (Array.isArray(value) ? value.length > 0 : value !== null && value !== "" && value !== false) {
       params.set(key, Array.isArray(value) ? value.join(",") : String(value));
     }
   }

@@ -46,8 +46,12 @@ export type EngineCompany = {
   domain: string | null;
   industry: string | null;
   employeeCount: number | null;
+  /** Where a size not entered or found on the company itself came from (e.g. "YC"), for the reasons. */
+  sizeSource?: string | null;
   hqCountry: string | null;
   hasHeadquarters: boolean;
+  /** Titles of the jobs the company has open now (its boards and careers page): hiring volume and company type. */
+  openJobTitles?: string[];
 };
 
 export type EnginePerson = {
@@ -81,6 +85,8 @@ export type EngineInput = {
   now: Date;
   /** Matches the team flagged as wrong (feedback): never suggested again for this company. */
   rejected?: { personIds: string[]; serviceIds: string[] };
+  /** Someone on the team marked it a good fit: never hidden as a likely competitor. */
+  markedGoodFit?: boolean;
 };
 
 export type FactorResult = { score: number; weight: number; contribution: number; reasons: string[] };
@@ -98,6 +104,8 @@ export type ScoreResult = {
   primaryPersonId: string | null;
   latestSignalAt: Date;
   signalRoles: SignalRole[];
+  /** Why it's kept out of the feed (a likely competitor), or null. Scored all the same, and found with the "hidden" filter. */
+  hiddenReason: string | null;
 };
 
 /** Strength of each intent level before recency. */
@@ -152,6 +160,10 @@ const INTENT_WINDOW_DAYS = 180;
 const NEGATIVE_WINDOW_DAYS = 120;
 const NEGATIVE_PENALTY = 25;
 const URGENCY_WINDOW_DAYS = 90;
+/** Open roles per employee that count as fully corroborated hiring (5%: one opening per 20 people). */
+const FULL_HIRING_INTENSITY = 0.05;
+/** How far past a service's size range a company may be and still be offered it, with a lower fit. */
+const SIZE_TOLERANCE = 2;
 
 const URGENCY_RANK: Record<UrgencyLevel, number> = { high: 3, medium: 2, low: 1, unknown: 0 };
 
@@ -239,9 +251,11 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
     service,
   );
 
+  const provider = input.markedGoodFit ? null : serviceProviderReason(input.company, service);
+  const icp = icpFactor(input.company, input.people, service, best?.fit ?? 0, labels);
   const raw: Record<ScoreFactor, { score: number; reasons: string[] }> = {
-    intent: intentFactor(ranked, negatives, now, labels),
-    icpFit: icpFactor(input.company, input.people, service, best?.fit ?? 0, labels),
+    intent: intentFactor(ranked, negatives, now, labels, input.company),
+    icpFit: provider ? { ...icp, reasons: [...icp.reasons, provider] } : icp,
     recency: recencyFactor(latestSignalAt, now),
     identity: identityFactor(input.company, person),
     serviceFit: best
@@ -282,7 +296,48 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
       })),
       ...negatives.map((s) => ({ signalId: s.id, role: "negative" as const, weight: -NEGATIVE_PENALTY })),
     ],
+    hiddenReason: provider,
   };
+}
+
+/**
+ * Company type: a firm selling the same kind of work (a consultancy, a staffing or IT services firm)
+ * is a competitor or partner, not a buyer, so it's kept out of the feed (lead-scoring tools'
+ * "exclude competitors"). A name that says so is enough on its own; otherwise two weaker clues
+ * must agree, since industry labels and titles alone mislead (an HR software company labelled
+ * "professional services"; a software company's revenue-cycle "consultants"). Not applied when the
+ * matched service is aimed at that industry: there, consultancies are the customers. Pure.
+ */
+const PROVIDER_NAME = /\b(consulting|consultants?|consultancy|staffing|federal services|it services|technology services|outsourcing|systems integrators?)\b/i;
+const PROVIDER_NAME_HINT = /\b(partners|talent|advisory|solutions group)\b/i;
+const PROVIDER_INDUSTRIES = new Set(["professional_services", "recruitment_staffing"]);
+/** Client-work roles; sales and support roles called "consultant" at product companies don't count. */
+const CONSULTANT_TITLE = /\b(consultant|consulting)\b/i;
+const PRODUCT_CONSULTANT_TITLE = /\b(solutions?|sales|pre-?sales|customer success|implementation|technical account|value|support) consult/i;
+const MIN_TITLES_FOR_SHARE = 4;
+
+export function serviceProviderReason(company: EngineCompany, service: Pick<EngineService, "targetIndustries"> | null): string | null {
+  if (company.industry && service?.targetIndustries.includes(company.industry)) return null;
+  if (PROVIDER_NAME.test(company.name)) return "Hidden: its name says it sells services like yours, so it's likely a competitor or partner, not a buyer";
+  const titles = company.openJobTitles ?? [];
+  const consulting = titles.filter((t) => CONSULTANT_TITLE.test(t) && !PRODUCT_CONSULTANT_TITLE.test(t)).length;
+  const clues = [
+    PROVIDER_NAME_HINT.test(company.name) && "its name",
+    company.industry !== null && PROVIDER_INDUSTRIES.has(company.industry) && "its industry",
+    titles.length >= MIN_TITLES_FOR_SHARE && consulting * 2 >= titles.length && `${consulting} of its ${titles.length} open roles are consultants`,
+  ].filter((clue): clue is string => typeof clue === "string");
+  return clues.length >= 2 ? `Hidden: likely a competitor or partner selling services like yours (${clues.join("; ")})` : null;
+}
+
+/**
+ * The fewest employees a company hiring this many people at once is likely to have. Measured on
+ * YC companies with a known team size: of those with 50+ open roles all had over 200 employees,
+ * of those with 25+ open roles 95% had over 50. Fewer open roles say too little. Pure.
+ */
+export function likelyMinEmployees(openRoles: number): number | null {
+  if (openRoles >= 50) return 200;
+  if (openRoles >= 25) return 50;
+  return null;
 }
 
 /**
@@ -290,7 +345,7 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
  * (`ranked` is strongest first, so ranked[0] is the lead signal). Recent negative signals then
  * subtract a fixed penalty each.
  */
-function intentFactor(ranked: EngineSignal[], negatives: EngineSignal[], now: Date, labels: EngineLabels) {
+function intentFactor(ranked: EngineSignal[], negatives: EngineSignal[], now: Date, labels: EngineLabels, company: EngineCompany) {
   const recent = ranked.filter((s) => daysBetween(s.occurredAt, now) <= INTENT_WINDOW_DAYS);
   if (recent.length === 0) {
     return { score: 0, reasons: [`No positive signal in the last ${INTENT_WINDOW_DAYS} days`] };
@@ -302,6 +357,10 @@ function intentFactor(ranked: EngineSignal[], negatives: EngineSignal[], now: Da
   const latestDays = Math.min(...recent.map((s) => daysBetween(s.occurredAt, now)));
   const topUrgency = recent.reduce<UrgencyLevel>((top, s) => (URGENCY_RANK[s.urgency] > URGENCY_RANK[top] ? s.urgency : top), "unknown");
   const corroborating = recent.length - 1;
+  // Hiring is weighed against the company's size: three openings at a 20-person startup are a real
+  // need, three at a 7,000-person company are routine turnover. Only with a known size.
+  const openRoles = company.openJobTitles?.length ?? 0;
+  const intensity = lead.category === "workforce" && company.employeeCount && openRoles > 0 ? openRoles / company.employeeCount : null;
 
   const components: Record<keyof typeof INTENT_WEIGHTS, number> = {
     explicitRequest: explicit ? 1 : max((s) => EXPLICITNESS[s.intentLevel]),
@@ -309,7 +368,7 @@ function intentFactor(ranked: EngineSignal[], negatives: EngineSignal[], now: Da
     evaluationActivity: evaluating ? 1 : 0,
     recency: recencyMultiplier(latestDays),
     urgency: URGENCY_VALUE[topUrgency],
-    corroboration: Math.min(1, corroborating / 2),
+    corroboration: intensity === null ? Math.min(1, corroborating / 2) : Math.min(1, intensity / FULL_HIRING_INTENSITY),
     sourceReliability: lead.evidenceLabel === "observed" && lead.hasSourceUrl ? 1 : SOURCE_RELIABILITY[lead.evidenceLabel],
   };
   let score = (Object.keys(INTENT_WEIGHTS) as (keyof typeof INTENT_WEIGHTS)[]).reduce(
@@ -325,7 +384,12 @@ function intentFactor(ranked: EngineSignal[], negatives: EngineSignal[], now: Da
   if (evaluating && evaluating !== explicit) reasons.push(`Evaluating vendors: ${labels.signalType(evaluating.signalType)}`);
   else if (evaluating) reasons.push("Actively evaluating vendors");
   if (topUrgency !== "unknown") reasons.push(`${topUrgency[0].toUpperCase()}${topUrgency.slice(1)} urgency`);
-  if (corroborating > 0) reasons.push(`${plural(corroborating, "corroborating signal")}`);
+  if (intensity !== null) {
+    const share = intensity * 100;
+    reasons.push(
+      `${plural(openRoles, "open role")} for ${company.employeeCount!.toLocaleString("en")} employees (${share < 1 ? share.toFixed(1) : Math.round(share)}%): ${intensity >= FULL_HIRING_INTENSITY ? "a big push" : "routine hiring for its size"}`,
+    );
+  } else if (corroborating > 0) reasons.push(`${plural(corroborating, "corroborating signal")}`);
   reasons.push(lead.evidenceLabel === "observed" ? `Observed in a source${lead.hasSourceUrl ? ", with link" : ""}` : `Evidence ${lead.evidenceLabel}`);
 
   for (const negative of negatives.filter((s) => daysBetween(s.occurredAt, now) <= NEGATIVE_WINDOW_DAYS)) {
@@ -361,9 +425,14 @@ function recencyFactor(latest: Date, now: Date) {
  */
 const GENERIC_CATEGORIES = new Set(["staff_augmentation"]);
 
-/** Whether a known company size is outside the service's target range (unknown never is). Pure. */
+/**
+ * Whether a known company size is far outside the service's target range: more than twice the
+ * maximum, or under half the minimum. Unknown never is. Just outside only lowers the ICP fit. Pure.
+ */
 export const outsideSize = (service: Pick<EngineService, "companySizeMin" | "companySizeMax">, employees: number | null) =>
-  employees !== null && ((service.companySizeMin !== null && employees < service.companySizeMin) || (service.companySizeMax !== null && employees > service.companySizeMax));
+  employees !== null &&
+  ((service.companySizeMin !== null && employees * SIZE_TOLERANCE < service.companySizeMin) ||
+    (service.companySizeMax !== null && employees > service.companySizeMax * SIZE_TOLERANCE));
 
 function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels, industry: string | null = null, employees: number | null = null) {
   const categorised = positives.filter((s) => s.serviceCategories.length > 0);
@@ -439,12 +508,8 @@ function icpFactor(
     else check(ICP_WEIGHTS.geography, 0, `${company.hqCountry} isn't a target country`);
   }
   if (service.companySizeMin !== null || service.companySizeMax !== null) {
-    const size = company.employeeCount;
-    const min = service.companySizeMin ?? 1;
-    const max = service.companySizeMax ?? Number.POSITIVE_INFINITY;
-    if (size === null) check(ICP_WEIGHTS.size, 0.5, "Company size unknown");
-    else if (size >= min && size <= max) check(ICP_WEIGHTS.size, 1, `${size.toLocaleString("en")} employees is within the target size`);
-    else check(ICP_WEIGHTS.size, 0, `${size.toLocaleString("en")} employees is outside the target size`);
+    const fit = sizeFit(company, service);
+    check(ICP_WEIGHTS.size, fit.value, fit.reason);
   }
   if (service.targetJobFunctions.length > 0) {
     const buyer = people.find((p) => p.jobFunction && service.targetJobFunctions.includes(p.jobFunction));
@@ -461,6 +526,33 @@ function icpFactor(
   const totalWeight = checks.reduce((sum, c) => sum + c.weight, 0);
   const score = (checks.reduce((sum, c) => sum + c.weight * c.value, 0) / totalWeight) * 100;
   return { score, reasons: checks.map((c) => c.reason) };
+}
+
+/**
+ * Company size against a service's range. Inside scores 1; just outside (up to twice past the edge)
+ * scores less the further out it is; further out the service isn't offered at all (`outsideSize`).
+ * An unknown size scores half, unless the company is hiring so many people at once that it's
+ * likely bigger than the range allows: an estimate only ever lowers the fit, it never excludes.
+ */
+function sizeFit(company: EngineCompany, service: EngineService): { value: number; reason: string } {
+  const size = company.employeeCount;
+  const min = service.companySizeMin ?? 1;
+  const max = service.companySizeMax ?? Number.POSITIVE_INFINITY;
+  const range = service.companySizeMax === null ? `${min.toLocaleString("en")}+` : `${min.toLocaleString("en")}-${max.toLocaleString("en")}`;
+  if (size === null) {
+    const openRoles = company.openJobTitles?.length ?? 0;
+    const atLeast = likelyMinEmployees(openRoles);
+    if (atLeast !== null && atLeast >= max) {
+      return { value: 0, reason: `Size unknown, but hiring ${openRoles} roles at once: likely over ${atLeast} employees (target ${range})` };
+    }
+    return { value: 0.5, reason: "Company size unknown" };
+  }
+  const employees = `${size.toLocaleString("en")} employees${company.sizeSource ? ` (${company.sizeSource})` : ""}`;
+  if (size >= min && size <= max) return { value: 1, reason: `${employees} is within the target size` };
+  // How many times past the edge: 1 at the edge, SIZE_TOLERANCE at the limit.
+  const ratio = size > max ? size / max : min / size;
+  const value = Math.max(0, 1 - Math.log(ratio) / Math.log(SIZE_TOLERANCE));
+  return { value, reason: `${employees} is outside the target size (${range})` };
 }
 
 /** How sure we are about who the company is and who to contact. */

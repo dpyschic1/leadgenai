@@ -1,5 +1,6 @@
 import "server-only";
 import { createHash } from "node:crypto";
+import { countryCodeOf } from "@/lib/countries";
 import { BOARD_TOKEN_PATTERN, type JobBoardProvider } from "@/lib/domain/job-boards";
 import { decodeEntities, htmlToText } from "@/server/jobs/html-to-text";
 import type { HealthStatus, SourceAdapter } from "./index";
@@ -17,6 +18,8 @@ export type StructuredFacts = {
   telephone: string | null;
   email: string | null;
   employees: number | null;
+  /** The country of the organisation's own address (ISO code); missing in reads saved before it was kept. */
+  country?: string | null;
   people: { name: string; title: string | null }[];
 };
 
@@ -431,7 +434,7 @@ const ORGANISATION = /Organization|LocalBusiness|Dentist|MedicalBusiness|Medical
 
 /** The organisation's phone, email, size and named people from its JSON-LD. Pure. */
 export function structuredFacts(objects: Record<string, unknown>[]): StructuredFacts {
-  const facts: StructuredFacts = { telephone: null, email: null, employees: null, people: [] };
+  const facts: StructuredFacts = { telephone: null, email: null, employees: null, country: null, people: [] };
   const people = new Map<string, { name: string; title: string | null }>();
   const addPerson = (value: unknown) => {
     for (const item of [value].flat()) {
@@ -451,6 +454,13 @@ export function structuredFacts(objects: Record<string, unknown>[]): StructuredF
       const employees = object.numberOfEmployees as { value?: unknown; maxValue?: unknown } | number | undefined;
       const count = typeof employees === "number" ? employees : Number(employees?.value ?? employees?.maxValue);
       if (!facts.employees && Number.isInteger(count) && count > 0 && count < 1_000_000) facts.employees = count;
+      // Its address's country ("US", "United States", or { name: "United States" }); the first one given.
+      for (const address of [object.address].flat()) {
+        if (facts.country || !address || typeof address !== "object") continue;
+        const stated = (address as { addressCountry?: unknown }).addressCountry;
+        const name = typeof stated === "string" ? stated : (stated as { name?: unknown } | undefined)?.name;
+        if (typeof name === "string") facts.country = countryCodeOf(name);
+      }
       addPerson(object.founder);
       addPerson(object.employee);
     }

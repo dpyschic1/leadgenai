@@ -68,6 +68,8 @@ export const opportunityFiltersSchema = z.object({
   foundWithinDays: optionalInt(1, 365),
   /** How the lead can be reached (see `CONTACT_REACH`); missing means any. */
   contact: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(CONTACT_REACH).nullable()).default(null),
+  /** Show only the opportunities scoring hid (likely competitors) instead of the rest. */
+  hidden: z.preprocess((value) => value === true || value === "true" || value === "1", z.boolean()).default(false),
 });
 
 export type OpportunityFilters = z.output<typeof opportunityFiltersSchema>;
@@ -88,6 +90,7 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   needs: [],
   foundWithinDays: null,
   contact: null,
+  hidden: false,
 };
 
 /** How the feed is ordered: best match (score) by default, or newest found, latest activity, most open roles. */

@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
 import {
@@ -17,6 +17,7 @@ import {
   sourceRecords,
   siteReads,
   theirstackJobs,
+  ycCompanies,
 } from "@/db/schema";
 import type { Service, SignalAnalysis } from "@/lib/api/types";
 import type { IngestionJobKind } from "@/lib/domain/sources";
@@ -32,7 +33,7 @@ import { getReferenceData } from "@/server/services/reference-data.service";
 import { connectDetectedBoard, jobText, syncCompanyJobs } from "@/server/services/job-boards.service";
 import { loadServices } from "@/server/services/services.service";
 import { insertDetectedSignal } from "@/server/services/signals.service";
-import { hiringEmails, jobInCountries, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
+import { hiringEmails, jobInCountries, siteFromJobLinks, siteOf, sitesInJobPosts } from "@/server/sources/board-directory";
 import { categorizeJob, refineCategories } from "@/server/jobs/job-categories";
 import { companiesHouse, findCompanyNumber } from "@/server/sources/companies-house";
 import { findWebsite, readWebsite, usableEmails, websiteFindings, type SiteRead } from "@/server/sources/company-website";
@@ -571,7 +572,7 @@ async function enrichCompany({ job, actor }: JobContext): Promise<JobResult> {
 type WebsiteEvidence = {
   domain: string;
   confidence: number;
-  matchedBy: "company_number" | "registered_address" | "name" | "job_board_link" | "job_post_links" | "name_links_board" | "regulator_listing";
+  matchedBy: "company_number" | "registered_address" | "name" | "job_board_link" | "job_links" | "job_post_links" | "name_links_board" | "regulator_listing";
 };
 
 /**
@@ -678,6 +679,24 @@ async function candidateFromBoard(actor: Actor, company: { id: string; name: str
       site?.jobBoard &&
       boards.some((b) => b.provider === site.jobBoard!.provider && b.boardToken.toLowerCase() === site.jobBoard!.boardToken.toLowerCase()),
     );
+
+  // Where its board sends applicants: the employer's own careers page, set by the employer in its
+  // board (Coinbase's jobs open on coinbase.com). Many big companies' sites embed the board with
+  // script, so their site never "links back"; this needs only that the site is up.
+  const jobUrls = boards.length
+    ? await db
+        .select({ url: boardJobs.url })
+        .from(boardJobs)
+        .where(
+          and(
+            or(...boards.map((b) => and(eq(boardJobs.provider, b.provider), eq(boardJobs.boardToken, b.boardToken)))),
+            isNull(boardJobs.closedAt),
+          ),
+        )
+        .limit(200)
+    : [];
+  const linked = siteFromJobLinks(jobUrls.map((j) => j.url));
+  if (linked && (await readWebsite(linked))) return { domain: linked, confidence: 90, matchedBy: "job_links" };
 
   // Where the board's jobs link to (a careers page on the company's own site).
   if (data?.candidateWebsite) {
@@ -790,10 +809,7 @@ async function sharedSiteRead(domain: string): Promise<SiteRead | null> {
  * pages for every workspace: reused while their content is unchanged, else asked again and stored.
  */
 async function sharedSiteFacts(domain: string, pages: { contentHash: string | null }[], ask: () => Promise<WebsiteFacts>): Promise<WebsiteFacts> {
-  const from = pages
-    .map((p) => p.contentHash ?? "")
-    .sort()
-    .join(",");
+  const from = factsKey(pages);
   const [cached] = await db.select({ facts: siteReads.facts, factsFrom: siteReads.factsFrom }).from(siteReads).where(eq(siteReads.domain, domain));
   if (cached?.facts && cached.factsFrom === from) return cached.facts as unknown as WebsiteFacts;
   const facts = await ask();
@@ -802,6 +818,43 @@ async function sharedSiteFacts(domain: string, pages: { contentHash: string | nu
     .set({ facts: facts as unknown as Record<string, unknown>, factsFrom: from, factsAt: sql`now()` })
     .where(eq(siteReads.domain, domain));
   return facts;
+}
+
+/** Which version of the profile pages a reading was made from. */
+const factsKey = (pages: { contentHash: string | null }[]) =>
+  pages
+    .map((p) => p.contentHash ?? "")
+    .sort()
+    .join(",");
+
+/** Whether the AI has read this version of the site's profile pages (for any workspace). */
+async function hasSiteFacts(domain: string, pages: { contentHash: string | null }[]): Promise<boolean> {
+  const [cached] = await db.select({ factsFrom: siteReads.factsFrom }).from(siteReads).where(eq(siteReads.domain, domain));
+  return cached?.factsFrom === factsKey(pages);
+}
+
+/**
+ * Records the headquarters country when none is known, from the address the site gives in its own
+ * company markup, else the country YC lists for that website. Never overwrites one already known.
+ * Returns the country now on record, or null.
+ */
+async function fillHqCountry(companyId: string, domain: string, stated: string | null): Promise<string | null> {
+  let country = stated;
+  let source = "company_website";
+  if (!country) {
+    const [yc] = await db.select({ country: ycCompanies.country }).from(ycCompanies).where(and(eq(ycCompanies.domain, domain), isNotNull(ycCompanies.country))).limit(1);
+    country = yc?.country ?? null;
+    source = "yc_directory";
+  }
+  if (!country) return null;
+  const [hq] = await db
+    .select({ id: companyLocations.id, country: companyLocations.country })
+    .from(companyLocations)
+    .where(and(eq(companyLocations.companyId, companyId), eq(companyLocations.type, "headquarters")));
+  if (hq?.country) return hq.country;
+  if (hq) await db.update(companyLocations).set({ country }).where(eq(companyLocations.id, hq.id));
+  else await db.insert(companyLocations).values({ companyId, type: "headquarters", country, sourceSlug: source }).onConflictDoNothing();
+  return country;
 }
 
 /**
@@ -870,10 +923,12 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     if (detected && (await connectDetectedBoard(actor, company.id, detected))) followUps.push({ kind: "scan_job_board", entityId: company.id });
   }
 
-  // Who works there, and what the company does: only when those pages changed since last time.
+  // Who works there, and what the company does: when those pages changed since last time, or when
+  // the AI never read this version of them. The pages are saved before the AI is asked, so an
+  // attempt the AI's rate limit stopped would otherwise find nothing "changed" on retry and skip it for good.
   let peopleAdded = 0;
   const profilePages = saved.filter((p) => ["home", "about", "team", "contact"].includes(p.kind));
-  if (profilePages.some((p) => p.changed)) {
+  if (profilePages.length > 0 && (profilePages.some((p) => p.changed) || !(await hasSiteFacts(company.domain, profilePages)))) {
     const facts = await sharedSiteFacts(company.domain, profilePages, () => ai(() => extractWebsiteFacts({ name: company.name, domain: site.domain }, profilePages)));
     peopleAdded = await db.transaction(async (tx) => {
       if (facts.description) {
@@ -927,7 +982,8 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     });
   }
 
-  await attachEmails(actor, company.id, site.domain, emails, company.country);
+  const country = company.country ?? (await fillHqCountry(company.id, company.domain, structured.country ?? null));
+  await attachEmails(actor, company.id, site.domain, emails, country);
 
   // Possible website problems, by fixed rules: recorded only for workspaces selling a fix.
   let signalsCreated = 0;
@@ -998,7 +1054,8 @@ async function scanWebsite({ job, actor, ai }: JobContext): Promise<JobResult> {
     if (signal.created) signalsCreated++;
   }
 
-  if (peopleAdded > 0 || signalsCreated > 0) await rescoreAfterCompanyChange(actor.workspaceId, company.id);
+  // A headquarters country just learned changes geography fit and identity.
+  if (peopleAdded > 0 || signalsCreated > 0 || (company.country === null && country !== null)) await rescoreAfterCompanyChange(actor.workspaceId, company.id);
   return { followUps };
 }
 
@@ -1531,6 +1588,29 @@ export const HANDLERS: Record<IngestionJobKind, (context: JobContext) => Promise
   discover_yc: discoverYc,
 };
 
+/**
+ * AI calls in flight at once across this process's job lanes. The free plan allows ~8,000 tokens a
+ * minute and one website reading is ~3,000, so more at once only collects rate-limit refusals; the
+ * other lanes keep fetching sites meanwhile. Exported for tests.
+ */
+export const MAX_CONCURRENT_AI = 2;
+let aiInFlight = 0;
+const aiWaiting: (() => void)[] = [];
+
+/** Runs `call` once fewer than `MAX_CONCURRENT_AI` AI calls are running. */
+export async function withAiSlot<T>(call: () => Promise<T>): Promise<T> {
+  if (aiInFlight >= MAX_CONCURRENT_AI) await new Promise<void>((resolve) => aiWaiting.push(resolve));
+  else aiInFlight++;
+  try {
+    return await call();
+  } finally {
+    // Hand the slot straight to the next waiting call, else free it.
+    const next = aiWaiting.shift();
+    if (next) next();
+    else aiInFlight--;
+  }
+}
+
 /** The AI wrapper for a job: counts calls and draws from the workspace's daily AI budget. */
 export function jobContext(job: JobRow): JobContext & { aiCalls: () => number } {
   let calls = 0;
@@ -1541,7 +1621,7 @@ export function jobContext(job: JobRow): JobContext & { aiCalls: () => number } 
     ai: async (call) => {
       await rateLimit("aiWorkspace", job.workspaceId);
       try {
-        const result = await call();
+        const result = await withAiSlot(call);
         calls++;
         return result;
       } catch (error) {

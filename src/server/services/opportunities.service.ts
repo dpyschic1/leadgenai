@@ -524,6 +524,8 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
       ),
     ),
     filters.foundWithinDays === null ? undefined : gte(opportunities.createdAt, sql`now() - make_interval(days => ${filters.foundWithinDays})`),
+    // Likely competitors are hidden unless asked for (then only they are shown).
+    filters.hidden ? isNotNull(opportunities.hiddenReason) : isNull(opportunities.hiddenReason),
   );
 }
 

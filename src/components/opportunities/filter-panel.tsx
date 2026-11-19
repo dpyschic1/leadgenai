@@ -13,6 +13,7 @@ import { EMPTY_FILTERS, type OpportunityFilters } from "@/lib/validation/opportu
 
 export const MIN_SCORE_CHOICES = [50, 60, 70, 80, 90] as const;
 export const WITHIN_DAYS_CHOICES = [7, 30, 90, 180] as const;
+export const HIDDEN_FILTER_LABEL = "Show only likely competitors";
 const ANY = "any";
 
 /** Every structured filter in one panel. Changes apply straight away. */
@@ -118,21 +119,35 @@ export function FilterPanel({
             </div>
           </div>
 
-          <Group label="Contact">
-            <Select value={filters.contact ?? ANY} onValueChange={(next) => onChange({ ...filters, contact: next === ANY ? null : (next as ContactReach) })}>
-              <SelectTrigger aria-label="How the lead can be reached" className="h-10! w-full sm:w-64">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>Any</SelectItem>
-                {CONTACT_REACH.map((reach) => (
-                  <SelectItem key={reach} value={reach}>
-                    {CONTACT_REACH_LABELS[reach]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Group>
+          <div className="grid gap-5 sm:grid-cols-2">
+            <Group label="Contact">
+              <Select value={filters.contact ?? ANY} onValueChange={(next) => onChange({ ...filters, contact: next === ANY ? null : (next as ContactReach) })}>
+                <SelectTrigger aria-label="How the lead can be reached" className="h-10! w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Any</SelectItem>
+                  {CONTACT_REACH.map((reach) => (
+                    <SelectItem key={reach} value={reach}>
+                      {CONTACT_REACH_LABELS[reach]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Group>
+            {/* Consultancies and staffing firms sell what you sell: hidden unless asked for. */}
+            <Group label="Likely competitors">
+              <Select value={filters.hidden ? "only" : "hide"} onValueChange={(next) => onChange({ ...filters, hidden: next === "only" })}>
+                <SelectTrigger aria-label="Likely competitors" className="h-10! w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="hide">Hidden</SelectItem>
+                  <SelectItem value="only">{HIDDEN_FILTER_LABEL}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Group>
+          </div>
 
           {options.services.length > 0 && (
             <Group label="Matches your service">

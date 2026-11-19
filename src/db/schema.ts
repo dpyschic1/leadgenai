@@ -1115,6 +1115,11 @@ export const opportunities = pgTable(
     /** Prioritization score, not a purchase probability (PRD §12). */
     opportunityScore: score(),
     scoreFactors: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * Set by scoring when the company looks like a competitor (a consultancy or staffing firm): left
+     * out of the feed and Leads unless the "hidden" filter asks for it. Cleared when someone marks it a good fit.
+     */
+    hiddenReason: text(),
     /** Where it is in the workspace's sales pipeline; discovery never changes it. */
     stageId: uuid().notNull(),
     /** Set when archived (replaces "dismissed"): hidden from the working tabs, kept for history. */
