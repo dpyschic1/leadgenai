@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { companyContactPoints, users, workspaces } from "@/db/schema";
+import { companies, companyContactPoints, jobPostings, signalEvidence, signals, users, workspaces } from "@/db/schema";
 import { companySchema, personSchema } from "@/lib/validation/companies";
 import { feedbackSchema } from "@/lib/validation/feedback";
 import { leadContactsQuerySchema, leadListQuerySchema, opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
@@ -341,5 +341,62 @@ describe("likely competitors", () => {
     await rescoreCompany(auth.workspaceId, company.id);
     expect(await feed({})).toContain(rivet);
     expect(await feed({ hidden: "true" })).toEqual([]);
+  });
+});
+
+describe("remote work", () => {
+  it("narrows the feed, the Leads page and the export to leads hiring remotely", async () => {
+    // Medisync's job says remote; Ledgerline's says it isn't.
+    const job = async (company: string, location: string) => {
+      const [signal] = await db
+        .select({ id: signals.id, companyId: signals.companyId })
+        .from(signals)
+        .innerJoin(companies, eq(companies.id, signals.companyId))
+        .where(and(eq(signals.workspaceId, auth.workspaceId), eq(companies.canonicalName, company)));
+      await db.insert(jobPostings).values({
+        workspaceId: auth.workspaceId,
+        companyId: signal.companyId,
+        provider: "greenhouse",
+        externalId: `${company}-${run}`,
+        title: "Software Engineer",
+        location,
+        url: `https://example.com/${run}`,
+        signalId: signal.id,
+      });
+    };
+    await job("Medisync Health", "Remote - US");
+    await job("Ledgerline", "London (not remote)");
+
+    expect(await feed({ remote: "true" })).toEqual(["Medisync Health"]);
+    // Off, the filter leaves every lead in.
+    expect(await feed({})).toEqual(expect.arrayContaining(["Ledgerline", "Medisync Health", "Northbridge Legal"]));
+    const leads = await listLeads(auth, leadListQuerySchema.parse({ remote: "true" }));
+    expect(leads.items.map((i) => i.company?.name)).toEqual(["Medisync Health"]);
+    expect(leads.counts.all).toBe(1);
+    const { count } = await exportOpportunities(auth, opportunityExportQuerySchema.parse({ group: "open", remote: "true" }));
+    expect(count).toBe(1);
+  });
+});
+
+describe("job sites in the source filter", () => {
+  it("finds leads with a job posted on LinkedIn or Indeed, not a company named after them", async () => {
+    const evidence = async (company: string, sourceUrl: string) => {
+      const [signal] = await db
+        .select({ id: signals.id })
+        .from(signals)
+        .innerJoin(companies, eq(companies.id, signals.companyId))
+        .where(and(eq(signals.workspaceId, auth.workspaceId), eq(companies.canonicalName, company)));
+      await db.insert(signalEvidence).values({ signalId: signal.id, sourceUrl });
+    };
+    await evidence("Northbridge Legal", "https://www.linkedin.com/jobs/view/4470411870/");
+    await evidence("Medisync Health", "https://uk.indeed.com/viewjob?jk=abc123");
+    // LinkedIn's own careers board on another site isn't a job posted on LinkedIn.
+    await evidence("Ledgerline", "https://jobs.smartrecruiters.com/LinkedIn3/744000159942579");
+
+    expect(await feed({ sources: "linkedin" })).toEqual(["Northbridge Legal"]);
+    expect(await feed({ sources: "indeed" })).toEqual(["Medisync Health"]);
+    expect(await feed({ sources: "linkedin,indeed" })).toEqual(["Medisync Health", "Northbridge Legal"]);
+    // Combined with a discovery source, either one matches.
+    expect(await feed({ sources: "linkedin,freelancer" })).toEqual(["Northbridge Legal"]);
   });
 });

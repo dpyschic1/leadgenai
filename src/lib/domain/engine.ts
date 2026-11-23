@@ -61,6 +61,16 @@ export const ENGINE_SOURCE_LABELS: Record<string, string> = {
   guru: "Guru",
 };
 
+/**
+ * Job sites we never read ourselves (their terms forbid it), reached only through licensed data
+ * providers (TheirStack, Google search via SerpAPI) that list where each job was posted. A source
+ * filter value: leads with a supporting job posted on that site.
+ */
+export const JOB_SITE_SOURCE_LABELS: Record<string, string> = {
+  linkedin: "LinkedIn (via TheirStack)",
+  indeed: "Indeed (via TheirStack)",
+};
+
 export const VERIFICATION_LABELS: Record<VerificationStatus, string> = { verified: "Verified", unverified: "Unverified", unavailable: "Unavailable" };
 
 /** Evidence verification (spec §8). */

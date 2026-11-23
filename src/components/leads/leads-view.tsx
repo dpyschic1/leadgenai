@@ -73,8 +73,9 @@ export function LeadsView() {
   const [tab, setTab] = useState<LeadTab>("all");
   const [role, setRole] = useState<RoleFamily | null>(null);
   const [search, setSearch] = useState("");
+  const [remote, setRemote] = useState(false);
   const q = useDebouncedValue(search.trim());
-  const filter = useMemo<LeadFilter>(() => ({ tab, role, q }), [tab, role, q]);
+  const filter = useMemo<LeadFilter>(() => ({ tab, role, q, remote }), [tab, role, q, remote]);
   const view = JSON.stringify(filter);
   const [page, setPage] = usePage(view);
   const { data, isPending, isFetching } = useLeads(filter, page);
@@ -141,6 +142,16 @@ export function LeadsView() {
                 className="h-9 bg-card pl-9"
               />
             </div>
+            {/* Leads hiring remotely: work a remote team can do. */}
+            <Button
+              variant="outline"
+              aria-pressed={remote}
+              onClick={() => setRemote(!remote)}
+              className={cn("h-9 shrink-0 bg-card", remote && "border-primary/40 bg-signal-tint text-[var(--signal-deep)]")}
+            >
+              <GlobeIcon />
+              Remote
+            </Button>
             <Button
               variant="outline"
               aria-pressed={selecting}
@@ -216,7 +227,7 @@ export function LeadsView() {
               </ul>
             ) : (
               <p className="px-4 py-12 text-center text-sm text-muted-foreground">
-                {q ? `No leads match “${q}”.` : role ? `No ${ROLE_FAMILY_LABELS[role]} leads here.` : EMPTY[tab]}
+                {q ? `No leads match “${q}”.` : role ? `No ${ROLE_FAMILY_LABELS[role]} leads here.` : remote ? "No leads hiring remotely here." : EMPTY[tab]}
               </p>
             )}
           </div>

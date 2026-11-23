@@ -36,6 +36,7 @@ function outputSchema(ref: ReferenceData, services: SearchService[]) {
     countries: z.array(z.enum(COUNTRY_CODES)).describe("ISO 3166-1 alpha-2 codes of the company's headquarters."),
     minScore: z.number().int().nullable().describe("0-100, or null."),
     withinDays: z.number().int().nullable().describe("1-365, or null."),
+    remote: z.boolean().describe("True only when the request asks for remote work."),
     companyName: z.string().nullable().describe("Only when the request names one specific company."),
     unmatched: z
       .array(z.string())
@@ -71,6 +72,7 @@ ${list(ref.industries)}
 - countries: where the company is headquartered, as ISO codes. "UK" or "Britain" is GB. A region means all its main countries, e.g. "Europe" or "EU" means the EU countries plus GB, NO and CH; "North America" means US and CA.
 - minScore: minimum opportunity score.
 - withinDays: the newest supporting signal is at most this many days old.
+- remote: only companies hiring for remote work (a job whose location says remote) and freelance projects.
 - companyName: one specific company the user names.
 
 Translating words:
@@ -81,6 +83,7 @@ Translating words:
 - "website", "SEO", "app", "AI" and similar describe the deal or the service: use opportunityTypes and/or services, not industries.
 - "hot", "strong", "best", "top", "high priority" -> minScore 70. "very strong" or "the very best" -> minScore 80.
 - "urgent", "asap", "right now" -> urgency high.
+- "remote", "work from home", "distributed", "anywhere" -> remote true.
 - "recent", "new", "latest" -> withinDays 30; "this week" -> 7; "today" -> 1; "this month" -> 30; "this quarter" or "last 3 months" -> 90.
 - Do not add filters the request doesn't ask for. A broad request ("show me everything good") needs only minScore.
 - When a phrase partly fits a filter, apply the filter and put only the leftover detail in unmatched: "Series A funding" -> signalCategories company_event, unmatched "Series A"; "hiring 10+ engineers" -> signalCategories workforce, unmatched "10+ engineers".
@@ -141,6 +144,7 @@ export function toFilters(raw: RawSearch): InterpretedSearch {
     countries: raw.countries,
     minScore: clamp(raw.minScore, 0, 100),
     withinDays: clamp(raw.withinDays, 1, 365),
+    remote: raw.remote,
   });
   const unmatched = raw.unmatched.map((phrase) => phrase.trim()).filter(Boolean).slice(0, 5);
   return { filters, unmatched };

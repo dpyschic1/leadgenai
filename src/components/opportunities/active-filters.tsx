@@ -62,6 +62,7 @@ export function ActiveFilters({
   if (filters.contact !== null) {
     chips.push({ key: "contact", label: CONTACT_REACH_LABELS[filters.contact], remove: (f) => ({ ...f, contact: null }) });
   }
+  if (filters.remote) chips.push({ key: "remote", label: "Remote", remove: (f) => ({ ...f, remote: false }) });
   if (filters.hidden) chips.push({ key: "hidden", label: HIDDEN_FILTER_LABEL, remove: (f) => ({ ...f, hidden: false }) });
 
   return (

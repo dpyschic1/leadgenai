@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  GlobeIcon,
   ListChecksIcon,
   PhoneIcon,
   SearchIcon,
@@ -205,6 +206,16 @@ export function OpportunitiesView() {
               >
                 <PhoneIcon />
                 Has contact
+              </Button>
+              {/* Companies hiring remotely: work a remote team can do. */}
+              <Button
+                variant="outline"
+                aria-pressed={filters.remote}
+                onClick={() => setFilters({ ...filters, remote: !filters.remote })}
+                className={cn("h-9 shrink-0 bg-card", filters.remote && "border-primary/40 bg-signal-tint text-[var(--signal-deep)]")}
+              >
+                <GlobeIcon />
+                Remote
               </Button>
               <FilterPanel filters={filters} onChange={setFilters} />
               <Select value={sort} onValueChange={(next) => setSort(next as OpportunitySort)}>

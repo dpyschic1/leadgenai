@@ -31,6 +31,9 @@ const optionalInt = (min: number, max: number) =>
     z.number().int().min(min).max(max).nullable(),
   );
 
+/** An on/off filter from a URL ("true", "1") or from code (true); missing means off. */
+const flag = z.preprocess((value) => value === true || value === "true" || value === "1", z.boolean()).default(false);
+
 /** Urgency levels worth filtering by; "unknown" isn't something anyone searches for. */
 export const FILTER_URGENCY_LEVELS = ["high", "medium", "low"] as const;
 
@@ -68,8 +71,10 @@ export const opportunityFiltersSchema = z.object({
   foundWithinDays: optionalInt(1, 365),
   /** How the lead can be reached (see `CONTACT_REACH`); missing means any. */
   contact: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(CONTACT_REACH).nullable()).default(null),
+  /** Only remote work: a supporting job whose location or title says remote, or a freelance project. */
+  remote: flag,
   /** Show only the opportunities scoring hid (likely competitors) instead of the rest. */
-  hidden: z.preprocess((value) => value === true || value === "true" || value === "1", z.boolean()).default(false),
+  hidden: flag,
 });
 
 export type OpportunityFilters = z.output<typeof opportunityFiltersSchema>;
@@ -90,6 +95,7 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   needs: [],
   foundWithinDays: null,
   contact: null,
+  remote: false,
   hidden: false,
 };
 
@@ -164,6 +170,8 @@ export const leadFilterFields = {
   q: z.string().trim().max(200).default(""),
   tab: z.enum(LEAD_TABS).default("all"),
   role: z.enum(ROLE_FAMILIES).optional(),
+  /** Only leads hiring for remote work (see the feed's `remote` filter). */
+  remote: flag,
 };
 
 /** One page of the Leads page. */

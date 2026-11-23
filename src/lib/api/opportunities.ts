@@ -15,14 +15,15 @@ export function setFilterParams(params: URLSearchParams, filters: OpportunityFil
   return params;
 }
 
-/** What the Leads page shows: a contact tab, a role type (null: any) and a search. */
-export type LeadFilter = { tab: LeadTab; role: RoleFamily | null; q: string };
+/** What the Leads page shows: a contact tab, a role type (null: any), a search, and remote work only. */
+export type LeadFilter = { tab: LeadTab; role: RoleFamily | null; q: string; remote: boolean };
 
-function leadParams({ tab, role, q }: LeadFilter): URLSearchParams {
+function leadParams({ tab, role, q, remote }: LeadFilter): URLSearchParams {
   const params = new URLSearchParams();
   if (tab !== "all") params.set("tab", tab);
   if (role) params.set("role", role);
   if (q) params.set("q", q);
+  if (remote) params.set("remote", "true");
   return params;
 }
 

@@ -12,6 +12,7 @@ const raw = (overrides: Partial<Parameters<typeof toFilters>[0]> = {}): Paramete
   countries: [],
   minScore: null,
   withinDays: null,
+  remote: false,
   companyName: null,
   unmatched: [],
   ...overrides,
@@ -34,6 +35,11 @@ describe("toFilters", () => {
   it("keeps numbers in range, since the model can't be held to one", () => {
     expect(toFilters(raw({ minScore: 140, withinDays: 0 })).filters).toMatchObject({ minScore: 100, withinDays: 1 });
     expect(toFilters(raw({ minScore: 72.6, withinDays: 9000 })).filters).toMatchObject({ minScore: 73, withinDays: 365 });
+  });
+
+  it("asks for remote work only when the request does", () => {
+    expect(toFilters(raw({ remote: true })).filters.remote).toBe(true);
+    expect(toFilters(raw()).filters.remote).toBe(false);
   });
 
   it("uses a named company as the company search", () => {

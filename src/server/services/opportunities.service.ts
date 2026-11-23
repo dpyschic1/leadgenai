@@ -249,6 +249,62 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
 /** What "new" means in the feed: found in the last 7 days. */
 export const NEW_DAYS = 7;
 
+/** A job's location or title saying the work can be done remotely ("Remote - US", "Pittsburgh, PA or Remote", "Work from home"), not "not remote". */
+const REMOTE_TEXT = String.raw`\mremote\M|work from home|\mwfh\M|\manywhere\M`;
+const NOT_REMOTE_TEXT = String.raw`\m(not|no|non)[- ]remote\M`;
+const saysRemote = (text: SQL) => sql`(${text} ~* ${REMOTE_TEXT} and ${text} !~* ${NOT_REMOTE_TEXT})`;
+
+/**
+ * Remote work: a supporting job (from a job board, or collected from the company's careers page)
+ * whose location or title says remote, or a freelance project, which is remote by nature.
+ * Expects `opportunities` in the query.
+ */
+const remoteWork = sql`(
+  ${opportunities.category} = 'freelance_project'
+  or exists (
+    select 1 from ${opportunitySignals}
+    join ${jobPostings} on ${jobPostings.signalId} = ${opportunitySignals.signalId}
+    where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+      and ${saysRemote(sql`coalesce(${jobPostings.location}, '') || ' ' || ${jobPostings.title}`)}
+  )
+  or exists (
+    select 1 from ${opportunitySignals}
+    join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+    join ${sourceRecords} on ${sourceRecords.id} = ${signals.sourceRecordId}
+    where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+      and ${saysRemote(sql`coalesce(${sourceRecords.data} ->> 'location', '') || ' ' || coalesce(${sourceRecords.data} ->> 'title', '')`)}
+  )
+)`;
+
+/**
+ * The job sites in the source filter, as the host pattern of a link to them: the site itself, never
+ * a company named after it (LinkedIn's own careers board on SmartRecruiters is not "on LinkedIn").
+ */
+const JOB_SITE_HOSTS: Record<string, string> = {
+  linkedin: String.raw`linkedin\.com`,
+  indeed: String.raw`indeed\.[a-z.]+`,
+};
+
+/**
+ * A supporting job was posted on this job site: its evidence link, or the source record a data
+ * provider gave it (TheirStack's job URL and where it found the job), or an engine opportunity's own link.
+ */
+function postedOn(site: string): SQL {
+  const link = `^https?://([a-z0-9-]+\\.)*${JOB_SITE_HOSTS[site]}(/|$)`;
+  const host = `^([a-z0-9-]+\\.)*${JOB_SITE_HOSTS[site]}$`;
+  return sql`(
+    ${opportunities.sourceUrl} ~* ${link}
+    or exists (
+      select 1 from ${opportunitySignals}
+      join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+      left join ${sourceRecords} on ${sourceRecords.id} = ${signals.sourceRecordId}
+      where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+        and (${sourceRecords.url} ~* ${link} or (${sourceRecords.data} ->> 'foundOn') ~* ${host}
+          or exists (select 1 from ${signalEvidence} where ${signalEvidence.signalId} = ${signals.id} and ${signalEvidence.sourceUrl} ~* ${link}))
+    )
+  )`;
+}
+
 /** Open supporting signals: how many roles or reasons back the opportunity. */
 const supportingSignals = sql`(select count(*) from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`;
 
@@ -273,7 +329,7 @@ export function feedOrder(sort: OpportunitySort = "best") {
 export async function listLeads(auth: AuthContext, query: LeadListQuery): Promise<LeadList> {
   await refreshStaleScores(auth.workspaceId);
   const { page, pageSize } = query;
-  const base = leadBase(auth.workspaceId, query.q);
+  const base = leadBase(auth.workspaceId, query.q, query.remote);
   const tab = leadTab(query.tab);
   const index = await roleIndex(base);
   const role = query.role ? hiringFor(index, query.role) : undefined;
@@ -377,9 +433,9 @@ function hiringFor(index: RoleIndex, family: RoleFamily): SQL {
   return ids.length > 0 ? inArray(opportunities.id, ids) : sql`false`;
 }
 
-/** Every lead still being worked (open or in progress, not archived), narrowed by a search. Expects `companies` and `pipeline_stages` joined. */
-function leadBase(workspaceId: string, q: string): SQL | undefined {
-  return and(matchesFilters(workspaceId, { ...EMPTY_FILTERS, q }), or(groupCondition("open"), groupCondition("inProgress")));
+/** Every lead still being worked (open or in progress, not archived), narrowed by a search and to remote work if asked. Expects `companies` and `pipeline_stages` joined. */
+function leadBase(workspaceId: string, q: string, remote: boolean): SQL | undefined {
+  return and(matchesFilters(workspaceId, { ...EMPTY_FILTERS, q, remote }), or(groupCondition("open"), groupCondition("inProgress")));
 }
 
 const leadEmail = sql`coalesce(${personEmail}, ${companyEmail})`;
@@ -401,7 +457,7 @@ function leadTab(tab: LeadTab): SQL | undefined {
 
 /** Every lead the Leads page's tab, role type and search match (best first), with the email and phone to use. */
 export async function listLeadContacts(auth: AuthContext, query: LeadContactsQuery): Promise<LeadContacts> {
-  const base = leadBase(auth.workspaceId, query.q);
+  const base = leadBase(auth.workspaceId, query.q, query.remote);
   const role = query.role ? hiringFor(await roleIndex(base), query.role) : undefined;
   const where = and(base, role, leadTab(query.tab));
   const rows = await db
@@ -478,7 +534,12 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
       const engine = cats.filter((c): c is Exclude<typeof c, "signal"> => c !== "signal");
       return or(cats.includes("signal") ? isNull(opportunities.category) : undefined, engine.length ? inArray(opportunities.category, engine) : undefined);
     }),
-    any(filters.sources, (slugs) => inArray(opportunities.sourceSlug, slugs)),
+    // A discovery source the opportunity came from, or a job site a supporting job was posted on.
+    any(filters.sources, (slugs) => {
+      const sites = slugs.filter((s) => s in JOB_SITE_HOSTS);
+      const engine = slugs.filter((s) => !(s in JOB_SITE_HOSTS));
+      return or(engine.length ? inArray(opportunities.sourceSlug, engine) : undefined, ...sites.map(postedOn));
+    }),
     any(filters.intents, (levels) => inArray(opportunities.intentLevel, levels)),
     // A company's headquarters, or the country an engine opportunity states (a funded company's address, a project's client).
     any(
@@ -524,6 +585,7 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
       ),
     ),
     filters.foundWithinDays === null ? undefined : gte(opportunities.createdAt, sql`now() - make_interval(days => ${filters.foundWithinDays})`),
+    filters.remote ? remoteWork : undefined,
     // Likely competitors are hidden unless asked for (then only they are shown).
     filters.hidden ? isNotNull(opportunities.hiddenReason) : isNull(opportunities.hiddenReason),
   );

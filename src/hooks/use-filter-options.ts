@@ -1,7 +1,7 @@
 "use client";
 
 import { COUNTRY_CODES, countryName } from "@/lib/countries";
-import { ENGINE_SOURCE_LABELS } from "@/lib/domain/engine";
+import { ENGINE_SOURCE_LABELS, JOB_SITE_SOURCE_LABELS } from "@/lib/domain/engine";
 import { INTENT_LABELS, URGENCY_LABELS } from "@/lib/domain/signals";
 import { FILTER_URGENCY_LEVELS, type OpportunityFilters } from "@/lib/validation/opportunities";
 import { useReferenceData } from "./use-reference-data";
@@ -16,7 +16,7 @@ type Option = { value: string; label: string };
 const COUNTRY_OPTIONS: Option[] = COUNTRY_CODES.map((code) => ({ value: code, label: countryName(code) })).sort((a, b) =>
   a.label.localeCompare(b.label),
 );
-const SOURCE_OPTIONS: Option[] = Object.entries(ENGINE_SOURCE_LABELS).map(([value, label]) => ({ value, label }));
+const SOURCE_OPTIONS: Option[] = Object.entries({ ...ENGINE_SOURCE_LABELS, ...JOB_SITE_SOURCE_LABELS }).map(([value, label]) => ({ value, label }));
 const INTENT_OPTIONS: Option[] = (['explicit', 'high', 'medium', 'low'] as const).map((level) => ({ value: level, label: INTENT_LABELS[level] }));
 const URGENCY_OPTIONS: Option[] = FILTER_URGENCY_LEVELS.map((level) => ({ value: level, label: URGENCY_LABELS[level] }));
 
@@ -51,6 +51,7 @@ export function activeFilterCount(filters: OpportunityFilters): number {
     (filters.withinDays === null ? 0 : 1) +
     (filters.foundWithinDays === null ? 0 : 1) +
     (filters.contact === null ? 0 : 1) +
+    (filters.remote ? 1 : 0) +
     (filters.hidden ? 1 : 0)
   );
 }
