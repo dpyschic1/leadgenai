@@ -3,8 +3,8 @@
 import {
   BriefcaseBusinessIcon,
   Building2Icon,
-  FactoryIcon,
   GlobeIcon,
+  LaptopIcon,
   MoreHorizontalIcon,
   PencilIcon,
   Trash2Icon,
@@ -23,6 +23,7 @@ import { useReferenceData } from "@/hooks/use-reference-data";
 import type { Service } from "@/lib/api/types";
 import { countryName } from "@/lib/countries";
 import { cn } from "@/lib/utils";
+import { CLIENT_TYPE_LABELS, WORK_TYPE_LABELS } from "@/lib/validation/services";
 
 function companySize(min: number | null, max: number | null): string | null {
   const fmt = (n: number) => n.toLocaleString();
@@ -121,8 +122,8 @@ export function ServiceCard({
       <div className="mt-5 border-t pt-4">
         <p className="mb-2.5 text-sm font-medium">Ideal customer</p>
         <dl className="grid grid-cols-2 gap-2">
-          <TargetTile icon={UsersRoundIcon} label="Buyer roles" values={nameOf(ref?.jobFunctions, service.targetJobFunctions)} />
-          <TargetTile icon={FactoryIcon} label="Industries" values={nameOf(ref?.industries, service.targetIndustries)} />
+          <TargetTile icon={UsersRoundIcon} label="Client type" values={service.clientTypes.map((t) => CLIENT_TYPE_LABELS[t])} />
+          <TargetTile icon={LaptopIcon} label="Work type" values={service.workType === "any" ? null : WORK_TYPE_LABELS[service.workType]} />
           <TargetTile icon={GlobeIcon} label="Countries" values={service.targetCountries.map(countryName)} />
           <TargetTile
             icon={Building2Icon}

@@ -259,6 +259,24 @@ const saysRemote = (text: SQL) => sql`(${text} ~* ${REMOTE_TEXT} and ${text} !~*
  * whose location or title says remote, or a freelance project, which is remote by nature.
  * Expects `opportunities` in the query.
  */
+/**
+ * "Who you sell to": only opportunities from a kind of client one of the workspace's services is
+ * sold to (or every kind, before it has services). A freelance project is project-based work; an
+ * intent post by someone with no company is an individual; everything else is a company. Expects
+ * `opportunities` in the query.
+ */
+const offeredToClient = sql`(
+  not exists (select 1 from ${services} where ${services.workspaceId} = ${opportunities.workspaceId})
+  or exists (
+    select 1 from ${services}
+    where ${services.workspaceId} = ${opportunities.workspaceId}
+      and (case
+        when ${opportunities.category} = 'freelance_project' then 'project'
+        when ${opportunities.category} = 'intent' and ${opportunities.companyId} is null then 'individual'
+        else 'company' end) = any(${services.clientTypes})
+  )
+)`;
+
 const remoteWork = sql`(
   ${opportunities.category} = 'freelance_project'
   or exists (
@@ -586,6 +604,7 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
     ),
     filters.foundWithinDays === null ? undefined : gte(opportunities.createdAt, sql`now() - make_interval(days => ${filters.foundWithinDays})`),
     filters.remote ? remoteWork : undefined,
+    offeredToClient,
     // Likely competitors are hidden unless asked for (then only they are shown).
     filters.hidden ? isNotNull(opportunities.hiddenReason) : isNull(opportunities.hiddenReason),
   );

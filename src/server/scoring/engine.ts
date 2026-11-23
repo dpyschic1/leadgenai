@@ -2,6 +2,7 @@ import type { SeniorityLevel } from "@/lib/domain/people";
 import { SENIORITY_LEVELS } from "@/lib/domain/people";
 import type { EvidenceLabel, IntentLevel, UrgencyLevel } from "@/lib/domain/signals";
 import type { ScoreFactor, ScoreWeights } from "@/lib/validation/scoring";
+import { WORK_TYPE_LABELS, type ClientType, type WorkType } from "@/lib/validation/services";
 
 /**
  * Opportunity scoring (PRD §12). Deterministic and pure: the same inputs always give the same
@@ -39,7 +40,14 @@ export type EngineService = {
   targetCountries: string[];
   companySizeMin: number | null;
   companySizeMax: number | null;
+  /** Who it's sold to; absent means everyone. */
+  clientTypes?: ClientType[];
+  /** How the work is done; absent means any. */
+  workType?: WorkType;
 };
+
+/** A way of working a job states. */
+export type WorkMode = "remote" | "hybrid" | "onsite";
 
 export type EngineCompany = {
   name: string;
@@ -52,6 +60,8 @@ export type EngineCompany = {
   hasHeadquarters: boolean;
   /** Titles of the jobs the company has open now (its boards and careers page): hiring volume and company type. */
   openJobTitles?: string[];
+  /** The way of working each of its jobs states (one entry per job that says); see `workModesOf`. */
+  workModes?: WorkMode[];
 };
 
 export type EnginePerson = {
@@ -87,6 +97,8 @@ export type EngineInput = {
   rejected?: { personIds: string[]; serviceIds: string[] };
   /** Someone on the team marked it a good fit: never hidden as a likely competitor. */
   markedGoodFit?: boolean;
+  /** What kind of client the opportunity is; services not sold to it aren't matched. Absent: any service. */
+  clientType?: ClientType;
 };
 
 export type FactorResult = { score: number; weight: number; contribution: number; reasons: string[] };
@@ -139,7 +151,10 @@ const INTENT_WEIGHTS = {
  * technology and business model aren't captured yet; buyer roles stands in with the weight the PRD
  * gives location count. Only criteria the service defines are scored, then re-normalised.
  */
-const ICP_WEIGHTS = { industry: 15, geography: 10, size: 15, buyerRoles: 10, serviceCompatibility: 20 } as const;
+const ICP_WEIGHTS = { industry: 15, geography: 10, size: 15, buyerRoles: 10, workType: 10, serviceCompatibility: 20 } as const;
+
+/** Who usually buys development and AI work, most likely first: the contact when a service names no buyer roles. */
+const DEFAULT_BUYER_ROLES = ["founder_executive", "engineering", "product"];
 
 /** Signal types that show the company is actively evaluating vendors. */
 const EVALUATION_TYPES = new Set([
@@ -229,15 +244,20 @@ export function scoreCompany(input: EngineInput): ScoreResult | null {
 
   const rejectedServices = new Set(input.rejected?.serviceIds);
   const rejectedPeople = new Set(input.rejected?.personIds);
-  const candidates = input.services.filter((s) => !rejectedServices.has(s.id));
-  const skipped = input.services
+  // Only services sold to this kind of client (a company, a person's post, a freelance project).
+  const { clientType } = input;
+  const forClient = clientType ? input.services.filter((s) => !s.clientTypes || s.clientTypes.includes(clientType)) : input.services;
+  if (input.services.length > 0 && forClient.length === 0) return null;
+  const candidates = forClient.filter((s) => !rejectedServices.has(s.id));
+  const skipped = forClient
     .filter((s) => rejectedServices.has(s.id))
     .map((s) => `Not matched to ${s.name}: your team flagged it as the wrong service`);
 
-  const best = pickService(candidates, positives, labels, input.company.industry, input.company.employeeCount);
-  // The only services that fit what the company needs are for companies of another size: not a lead.
+  const best = pickService(candidates, positives, labels, input.company);
+  // The only services that fit what the company needs aren't offered to it (another size, or a way
+  // of working they can't do): not a lead.
   const needed = new Set(positives.flatMap((s) => s.serviceCategories));
-  if (!best && candidates.some((s) => outsideSize(s, input.company.employeeCount) && s.categories.some((c) => needed.has(c)))) return null;
+  if (!best && candidates.some((s) => notOffered(s, input.company) && s.categories.some((c) => needed.has(c)))) return null;
   const service = best?.service ?? null;
   // The lead signal is the strongest one that needs the matched service, so "why" explains the match
   // (a company matched to a design service leads with its designer job, not its engineering one).
@@ -434,14 +454,59 @@ export const outsideSize = (service: Pick<EngineService, "companySizeMin" | "com
   ((service.companySizeMin !== null && employees * SIZE_TOLERANCE < service.companySizeMin) ||
     (service.companySizeMax !== null && employees > service.companySizeMax * SIZE_TOLERANCE));
 
-function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels, industry: string | null = null, employees: number | null = null) {
+/**
+ * How well each way of working suits a service's work type: 1 is what it asks for, 0 is work it
+ * can't do. A remote team can't staff an onsite or hybrid role; an onsite team can still take remote work.
+ */
+const WORK_MODE_FIT: Record<Exclude<WorkType, "any">, Record<WorkMode, number>> = {
+  remote: { remote: 1, hybrid: 0, onsite: 0 },
+  hybrid: { hybrid: 1, remote: 0.8, onsite: 0 },
+  onsite: { onsite: 1, hybrid: 1, remote: 0.6 },
+};
+const WORK_MODE_LABEL: Record<WorkMode, string> = { remote: "remote", hybrid: "hybrid", onsite: "onsite" };
+
+/** The way of working each text states (a job's location and title), when it states one. Pure. */
+const REMOTE_WORK = /\b(remote|wfh|anywhere)\b|work from home/i;
+const NOT_REMOTE = /\b(not|no|non)[- ]remote\b/i;
+const HYBRID_WORK = /\bhybrid\b/i;
+const ONSITE_WORK = /\b(on-?site|in[- ]office|in person)\b/i;
+export function workModesOf(texts: string[]): WorkMode[] {
+  return texts.flatMap((text): WorkMode[] => {
+    if (HYBRID_WORK.test(text)) return ["hybrid"];
+    if (REMOTE_WORK.test(text) && !NOT_REMOTE.test(text)) return ["remote"];
+    if (ONSITE_WORK.test(text) || NOT_REMOTE.test(text)) return ["onsite"];
+    return [];
+  });
+}
+
+/** The best fit among the ways of working the company's jobs state; null when none states one or the service takes any. Pure. */
+function workTypeFit(service: Pick<EngineService, "workType">, company: EngineCompany): { value: number; mode: WorkMode } | null {
+  const stated = company.workModes ?? [];
+  if (!service.workType || service.workType === "any" || stated.length === 0) return null;
+  const table = WORK_MODE_FIT[service.workType];
+  return stated.reduce<{ value: number; mode: WorkMode }>((best, mode) => (table[mode] > best.value ? { value: table[mode], mode } : best), {
+    value: table[stated[0]],
+    mode: stated[0],
+  });
+}
+
+/**
+ * Whether the service isn't offered to this company at all: a known size far outside its range, or
+ * work that clearly says a way of working the service can't do (onsite jobs only, for a remote team).
+ * Work that doesn't say stays in. Pure.
+ */
+export const notOffered = (service: EngineService, company: EngineCompany) =>
+  outsideSize(service, company.employeeCount) || workTypeFit(service, company)?.value === 0;
+
+function pickService(services: EngineService[], positives: EngineSignal[], labels: EngineLabels, company: EngineCompany) {
   const categorised = positives.filter((s) => s.serviceCategories.length > 0);
+  const industry = company.industry;
   let best: { service: EngineService; fit: number; rank: number; reasons: string[] } | null = null;
 
   for (const service of services) {
     // A known size outside the service's range is not its customer (a 40,000-person company for a
-    // startups-only service).
-    if (outsideSize(service, employees)) continue;
+    // startups-only service); nor is onsite-only work for a remote team.
+    if (notOffered(service, company)) continue;
     const offered = new Set(service.categories);
     let weighted = 0;
     let specific = 0;
@@ -517,6 +582,17 @@ function icpFactor(
     else if (people.length === 0) check(ICP_WEIGHTS.buyerRoles, 0.5, "No people added yet");
     else check(ICP_WEIGHTS.buyerRoles, 0.3, "No one in a target buyer role yet");
   }
+  if (service.workType && service.workType !== "any") {
+    const fit = workTypeFit(service, company);
+    const wanted = WORK_TYPE_LABELS[service.workType].toLowerCase();
+    if (!fit) check(ICP_WEIGHTS.workType, 0.5, "Its jobs don't say whether the work is remote, hybrid or onsite");
+    else
+      check(
+        ICP_WEIGHTS.workType,
+        fit.value,
+        fit.value === 1 ? `Has ${WORK_MODE_LABEL[fit.mode]} work, as ${service.name} offers` : `Its work is ${WORK_MODE_LABEL[fit.mode]}; ${service.name} is ${wanted}`,
+      );
+  }
   check(
     ICP_WEIGHTS.serviceCompatibility,
     serviceFit / 100,
@@ -581,16 +657,17 @@ function pickPerson(people: EnginePerson[], lead: EngineSignal, service: EngineS
   const fromSignal = lead.personId ? people.find((p) => p.id === lead.personId) : undefined;
   if (fromSignal) return fromSignal;
   const bySeniority = [...people].sort((a, b) => (SENIORITY_RANK.get(a.seniority) ?? 99) - (SENIORITY_RANK.get(b.seniority) ?? 99));
-  const isBuyer = (p: EnginePerson) => Boolean(service && p.jobFunction && service.targetJobFunctions.includes(p.jobFunction));
+  // The service's own buyer roles (most senior first), else the usual buyers of development work in
+  // order (founder, then engineering, then product; most senior first within each).
+  const named = service !== null && service.targetJobFunctions.length > 0;
+  const roles = named ? service.targetJobFunctions : DEFAULT_BUYER_ROLES;
+  const roleRank = (p: EnginePerson) => (named ? 0 : roles.indexOf(p.jobFunction!));
+  const buyers = service
+    ? bySeniority.filter((p) => p.jobFunction !== null && roles.includes(p.jobFunction)).sort((a, b) => roleRank(a) - roleRank(b))
+    : [];
   // Someone the team can actually email or call beats a name alone (e.g. a director from the register).
   const reachable = (p: EnginePerson) => p.hasEmail || p.hasPhone;
-  return (
-    bySeniority.find((p) => isBuyer(p) && reachable(p)) ??
-    bySeniority.find(reachable) ??
-    bySeniority.find(isBuyer) ??
-    bySeniority[0] ??
-    null
-  );
+  return buyers.find(reachable) ?? bySeniority.find(reachable) ?? buyers[0] ?? bySeniority[0] ?? null;
 }
 
 function opportunityType(lead: EngineSignal, service: EngineService | null): string {

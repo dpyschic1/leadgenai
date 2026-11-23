@@ -866,12 +866,21 @@ export const services = pgTable(
     description: text(),
     targetCompanySizeMin: integer(),
     targetCompanySizeMax: integer(),
+    /**
+     * Who it's sold to: company, individual, project (see CLIENT_TYPES). A small fixed set of
+     * values read with the service, so an array, not a join table.
+     */
+    clientTypes: text().array().notNull().default(sql`'{company,individual,project}'::text[]`),
+    /** How the work is done: any, remote, hybrid or onsite (see WORK_TYPES). */
+    workType: text().notNull().default("any"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     index("services_workspace_idx").on(t.workspaceId),
     unique("services_id_workspace_uq").on(t.id, t.workspaceId),
+    check("services_client_types_chk", sql`cardinality(${t.clientTypes}) > 0 and ${t.clientTypes} <@ '{company,individual,project}'::text[]`),
+    check("services_work_type_chk", sql`${t.workType} in ('any', 'remote', 'hybrid', 'onsite')`),
     check(
       "services_company_size_chk",
       sql`${t.targetCompanySizeMin} is null or ${t.targetCompanySizeMax} is null or ${t.targetCompanySizeMin} <= ${t.targetCompanySizeMax}`,

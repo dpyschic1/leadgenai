@@ -5,6 +5,7 @@ import { getReferenceData } from "@/server/services/reference-data.service";
 import { loadWeights } from "@/server/services/scoring.service";
 import { loadServices } from "@/server/services/services.service";
 import type { ScoreWeights } from "@/lib/validation/scoring";
+import type { ClientType } from "@/lib/validation/services";
 import type { DiscoveredItem, EngineScore } from "./types";
 
 /**
@@ -19,7 +20,16 @@ import type { DiscoveredItem, EngineScore } from "./types";
 export type DiscoveredInput = {
   signal: Omit<EngineSignal, "occurredAt"> & { occurredAt: string };
   company: EngineCompany;
+  /** Absent on items stored before client types existed: then any service may match. */
+  clientType?: ClientType;
 };
+
+/** Who posted it: a freelance project is project-based work; a post or round from a named company is a company. Pure. */
+export function clientTypeOf(item: Pick<DiscoveredItem, "capability" | "companyName" | "companyDomain" | "clientType">): ClientType {
+  if (item.capability === "freelance") return "project";
+  if (item.capability === "funded" || item.companyName || item.companyDomain) return "company";
+  return item.clientType ?? "individual";
+}
 
 export type ScoreContext = { services: EngineService[]; weights: ScoreWeights; labels: EngineLabels };
 
@@ -103,7 +113,10 @@ export function discoveredInput(item: DiscoveredItem, score: EngineScore, fallba
       employeeCount: teamSize,
       hqCountry: item.country,
       hasHeadquarters: item.country !== null,
+      // What the source says about how the work is done; nothing when it doesn't say.
+      workModes: item.remote === true ? ["remote"] : item.remote === false ? ["onsite"] : [],
     },
+    clientType: clientTypeOf(item),
   };
 }
 
@@ -118,6 +131,7 @@ export function scoreDiscovered(input: DiscoveredInput, context: ScoreContext, n
     weights: context.weights,
     labels: context.labels,
     now,
+    clientType: input.clientType,
   });
 }
 

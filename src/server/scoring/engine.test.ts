@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SCORE_WEIGHTS } from "@/lib/validation/scoring";
-import { recencyMultiplier, scoreCompany, type EngineInput, type EngineSignal } from "./engine";
+import { recencyMultiplier, scoreCompany, workModesOf, type EngineInput, type EngineSignal } from "./engine";
 
 const NOW = new Date("2026-10-29T12:00:00Z");
 const daysAgo = (days: number) => new Date(NOW.getTime() - days * 86_400_000);
@@ -111,6 +111,45 @@ describe("service choice: size and specificity", () => {
     const quiet = score({ company: { ...base.company, employeeCount: null, openJobTitles: titles(5) }, services: [aug], signals: [hiring({ serviceCategories: ["software_development"] })] });
     expect(quiet.factors.icpFit.reasons).toContain("Company size unknown");
     expect(quiet.factors.icpFit.score).toBeGreaterThan(busy.factors.icpFit.score);
+  });
+});
+
+describe("who the service is sold to, and how the work is done", () => {
+  const dev = { id: "dev", name: "Developers", categories: ["software_development"], targetIndustries: [], targetJobFunctions: [], targetCountries: [], companySizeMin: null, companySizeMax: null };
+  const need = [hiring({ serviceCategories: ["software_development"] })];
+  const at = (workModes: ("remote" | "hybrid" | "onsite")[], workType: "remote" | "hybrid" | "onsite") =>
+    scoreCompany({ ...base, company: { ...base.company, workModes }, services: [{ ...dev, workType }], signals: need });
+
+  it("reads the way of working a job states, and nothing from one that doesn't say", () => {
+    expect(workModesOf(["Remote - US Software Engineer", "Hybrid (NYC) Engineer", "On-site, Austin TX Engineer", "Not remote: Boston", "San Francisco, CA Engineer"])).toEqual([
+      "remote",
+      "hybrid",
+      "onsite",
+      "onsite",
+    ]);
+  });
+  it("ranks work of the service's type higher, and keeps work that doesn't say", () => {
+    expect(at(["remote"], "remote")!.factors.icpFit.reasons).toContain("Has remote work, as Developers offers");
+    expect(at([], "remote")!.factors.icpFit.reasons).toContain("Its jobs don't say whether the work is remote, hybrid or onsite");
+    expect(at(["remote"], "remote")!.factors.icpFit.score).toBeGreaterThan(at([], "remote")!.factors.icpFit.score);
+  });
+  it("doesn't offer a remote service for work that only says onsite or hybrid; onsite teams take any", () => {
+    expect(at(["onsite", "hybrid"], "remote")).toBeNull();
+    expect(at(["onsite", "remote"], "remote")!.serviceId).toBe("dev");
+    expect(at(["onsite"], "hybrid")).toBeNull();
+    expect(at(["remote"], "onsite")!.serviceId).toBe("dev");
+  });
+  it("matches only services sold to that kind of client", () => {
+    const companiesOnly = { ...dev, clientTypes: ["company" as const] };
+    expect(scoreCompany({ ...base, services: [companiesOnly], signals: need, clientType: "project" })).toBeNull();
+    expect(scoreCompany({ ...base, services: [companiesOnly], signals: need, clientType: "company" })!.serviceId).toBe("dev");
+    expect(scoreCompany({ ...base, services: [companiesOnly, { ...dev, id: "any" }], signals: need, clientType: "individual" })!.serviceId).toBe("any");
+  });
+  it("picks the founder, then engineering, then product as the contact when the service names no buyer roles", () => {
+    const person = (id: string, jobFunction: string, seniority: "c_level" | "director" = "director") => ({ ...base.people[0], id, name: id, jobFunction, seniority });
+    const pick = (people: EngineInput["people"]) => score({ people, services: [dev], signals: need }).primaryPersonId;
+    expect(pick([person("sales", "sales", "c_level"), person("cto", "engineering"), person("ceo", "founder_executive")])).toBe("ceo");
+    expect(pick([person("sales", "sales", "c_level"), person("pm", "product"), person("eng", "engineering")])).toBe("eng");
   });
 });
 

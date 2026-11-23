@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { companies, companyContactPoints, jobPostings, signalEvidence, signals, users, workspaces } from "@/db/schema";
+import { companies, companyContactPoints, jobPostings, opportunities, signalEvidence, signals, users, workspaces } from "@/db/schema";
 import { companySchema, personSchema } from "@/lib/validation/companies";
 import { feedbackSchema } from "@/lib/validation/feedback";
 import { leadContactsQuerySchema, leadListQuerySchema, opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
@@ -15,9 +15,9 @@ import { createCompany, listCompanies } from "@/server/services/companies.servic
 import { exportOpportunities } from "@/server/services/exports.service";
 import { giveFeedback } from "@/server/services/feedback.service";
 import { listLeadContacts, listLeads, listOpportunities, updateOpportunity } from "@/server/services/opportunities.service";
-import { listPipeline } from "@/server/services/pipeline.service";
+import { intakeStageId, listPipeline } from "@/server/services/pipeline.service";
 import { addPerson } from "@/server/services/people.service";
-import { createService, listServices } from "@/server/services/services.service";
+import { createService, listServices, updateService } from "@/server/services/services.service";
 import { createSignal } from "@/server/services/signals.service";
 
 /**
@@ -398,5 +398,38 @@ describe("job sites in the source filter", () => {
     expect(await feed({ sources: "linkedin,indeed" })).toEqual(["Medisync Health", "Northbridge Legal"]);
     // Combined with a discovery source, either one matches.
     expect(await feed({ sources: "linkedin,freelancer" })).toEqual(["Northbridge Legal"]);
+  });
+});
+
+describe("who the services are sold to", () => {
+  it("shows only kinds of client a service is sold to, and keeps the choice and work type on the service", async () => {
+    await db.insert(opportunities).values({
+      workspaceId: auth.workspaceId,
+      stageId: await intakeStageId(db, auth.workspaceId),
+      category: "freelance_project",
+      type: "software_development",
+      title: `Build a React dashboard ${run}`,
+      sourceSlug: "freelancer",
+      sourceExternalId: `project-${run}`,
+      opportunityScore: 50,
+    });
+    const titles = async () =>
+      (await listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open" }))).items.map((i) => i.company?.name ?? i.engine?.title);
+    expect(await titles()).toContain(`Build a React dashboard ${run}`);
+
+    const { items } = await listServices(auth);
+    const companiesOnly = async (clientTypes: string[], workType: string) => {
+      for (const s of items) {
+        const saved = await updateService(auth, s.id, serviceSchema.parse({ ...s, clientTypes, workType }));
+        expect(saved).toMatchObject({ clientTypes, workType, targetIndustries: [], targetJobFunctions: [] });
+      }
+    };
+    await companiesOnly(["company"], "remote");
+    expect(await titles()).not.toContain(`Build a React dashboard ${run}`);
+    expect(await titles()).toEqual(expect.arrayContaining(["Ledgerline", "Medisync Health", "Northbridge Legal"]));
+
+    // Ticked again, the project comes back: nothing was deleted.
+    await companiesOnly(["company", "individual", "project"], "any");
+    expect(await titles()).toContain(`Build a React dashboard ${run}`);
   });
 });

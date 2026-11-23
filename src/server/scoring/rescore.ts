@@ -8,6 +8,7 @@ import {
   companies,
   companyJobBoards,
   companyLocations,
+  jobPostings,
   opportunities,
   opportunityFeedback,
   opportunitySignals,
@@ -23,7 +24,7 @@ import { getReferenceData } from "@/server/services/reference-data.service";
 import { loadCompanyPeople } from "@/server/services/people.service";
 import { loadWeights } from "@/server/services/scoring.service";
 import { loadServices } from "@/server/services/services.service";
-import { scoreCompany, type EngineInput, type EngineLabels } from "./engine";
+import { scoreCompany, workModesOf, type EngineInput, type EngineLabels, type WorkMode } from "./engine";
 
 /**
  * Keeps opportunities in step with their inputs. Called after anything that changes a score
@@ -163,7 +164,7 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
     .limit(1);
   if (!company) return null;
 
-  const [signalRows, people, services, weights, ref, flags, [yc], openJobs] = await Promise.all([
+  const [signalRows, people, services, weights, ref, flags, [yc], jobs] = await Promise.all([
     db
       .select({ signal: signals, category: signalTypes.categorySlug })
       .from(signals)
@@ -190,7 +191,7 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
     company.domain && company.employeeCount === null
       ? db.select({ teamSize: ycCompanies.teamSize }).from(ycCompanies).where(and(eq(ycCompanies.domain, company.domain), isNotNull(ycCompanies.teamSize))).limit(1)
       : [],
-    openJobTitles(workspaceId, companyId, company.domain),
+    openJobs(workspaceId, companyId, company.domain),
   ]);
 
   const ids = signalRows.map((r) => r.signal.id);
@@ -223,7 +224,8 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
         sizeSource: company.employeeCount === null && yc ? "YC" : null,
         hqCountry: company.hqCountry,
         hasHeadquarters: company.hqId !== null,
-        openJobTitles: openJobs,
+        openJobTitles: jobs.titles,
+        workModes: jobs.workModes,
       },
       people: people.map((p) => ({
         id: p.id,
@@ -258,6 +260,7 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
         serviceIds: flags.flatMap((f) => (f.verdict === "wrong_service" && f.serviceId ? [f.serviceId] : [])),
       },
       markedGoodFit: flags.some((f) => f.verdict === "good_fit"),
+      clientType: "company",
     },
   };
 }
@@ -266,15 +269,20 @@ async function loadInput(workspaceId: string, companyId: string): Promise<{ engi
  * Titles of the jobs a company has open now: on the job boards it's followed through, and on its
  * own careers page (collected by its website). Its hiring volume, and what kind of company it is.
  */
-async function openJobTitles(workspaceId: string, companyId: string, domain: string | null): Promise<string[]> {
-  const rows = await db.execute<{ title: string }>(sql`
-    select j.title from ${companyJobBoards} b
-    join board_jobs j on j.provider = b.provider and j.board_token = b.board_token and j.closed_at is null
-    where b.company_id = ${companyId} and b.workspace_id = ${workspaceId}
-    union all
-    select i.title from collected_items i
-    where ${domain}::text is not null and i.company_domain = ${domain} and i.kind = 'job' and i.closed_at is null and i.duplicate_of is null`);
-  return rows.map((r) => r.title);
+async function openJobs(workspaceId: string, companyId: string, domain: string | null): Promise<{ titles: string[]; workModes: WorkMode[] }> {
+  const [open, found] = await Promise.all([
+    db.execute<{ title: string; place: string }>(sql`
+      select j.title, coalesce(j.location, '') as place from ${companyJobBoards} b
+      join board_jobs j on j.provider = b.provider and j.board_token = b.board_token and j.closed_at is null
+      where b.company_id = ${companyId} and b.workspace_id = ${workspaceId}
+      union all
+      select i.title, concat_ws(' ', i.location, case when i.remote then 'remote' end) from collected_items i
+      where ${domain}::text is not null and i.company_domain = ${domain} and i.kind = 'job' and i.closed_at is null and i.duplicate_of is null`),
+    // The jobs that made it a lead, which may come from other sources (TheirStack, job boards).
+    db.select({ title: jobPostings.title, place: jobPostings.location }).from(jobPostings).where(and(eq(jobPostings.companyId, companyId), eq(jobPostings.workspaceId, workspaceId))),
+  ]);
+  const text = (r: { title: string; place: string | null }) => `${r.place ?? ""} ${r.title}`;
+  return { titles: open.map((r) => r.title), workModes: workModesOf([...open, ...found].map(text)) };
 }
 
 /** After a change to one company's signals, people or details. */

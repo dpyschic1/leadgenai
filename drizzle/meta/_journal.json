@@ -295,6 +295,13 @@
       "when": 1795123105659,
       "tag": "0041_opportunity_hidden_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1795462075039,
+      "tag": "0042_service_client_work_type",
+      "breakpoints": true
     }
   ]
 }

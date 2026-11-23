@@ -8,20 +8,21 @@ import { FieldError } from "@/components/ui/field";
 import { useCreateService, useUpdateService } from "@/hooks/use-services";
 import type { Service } from "@/lib/api/types";
 import { applyApiError } from "@/lib/forms/apply-api-error";
-import { serviceSchema, type ServiceInput, type ServiceValues } from "@/lib/validation/services";
+import { CLIENT_TYPES, serviceSchema, type ServiceInput, type ServiceValues } from "@/lib/validation/services";
 import { ServiceBasicsFields, ServiceTargetingFields } from "./service-fields";
 
 const FIELDS = [
   "name",
   "description",
   "categories",
-  "targetIndustries",
-  "targetJobFunctions",
   "targetCountries",
   "companySizeMin",
   "companySizeMax",
+  "clientTypes",
+  "workType",
 ] as const;
 
+// Industries and buyer roles are no longer asked for: saving clears them (contacts are picked automatically).
 const EMPTY: ServiceInput = {
   name: "",
   description: "",
@@ -31,18 +32,21 @@ const EMPTY: ServiceInput = {
   targetCountries: [],
   companySizeMin: null,
   companySizeMax: null,
+  clientTypes: [...CLIENT_TYPES],
+  workType: "any",
 };
 
 function toFormValues(service: Service): ServiceInput {
   return {
+    ...EMPTY,
     name: service.name,
     description: service.description,
     categories: service.categories,
-    targetIndustries: service.targetIndustries,
-    targetJobFunctions: service.targetJobFunctions,
     targetCountries: service.targetCountries,
     companySizeMin: service.companySizeMin,
     companySizeMax: service.companySizeMax,
+    clientTypes: service.clientTypes,
+    workType: service.workType,
   };
 }
 
@@ -81,7 +85,7 @@ export function ServiceForm({
         <FormSection title="What you sell" description="Used to match signals to this service.">
           <ServiceBasicsFields control={form.control} />
         </FormSection>
-        <FormSection title="Who you sell to" description="Your ideal customer. Leave anything blank to match all.">
+        <FormSection title="Who you sell to" description="Your ideal customer. Contacts are picked for you: founders first, then engineering and product leads.">
           <ServiceTargetingFields control={form.control} />
         </FormSection>
         {form.formState.errors.root && <FieldError>{form.formState.errors.root.message}</FieldError>}

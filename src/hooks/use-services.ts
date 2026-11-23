@@ -42,6 +42,11 @@ export function useUpdateService() {
   });
 }
 
+/** AI draft of "What does it include?" from the service name; saves nothing. */
+export function useDescribeService() {
+  return useMutation({ mutationFn: servicesApi.describe });
+}
+
 export function useDeleteService() {
   const queryClient = useQueryClient();
   return useMutation({

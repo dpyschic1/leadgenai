@@ -4,6 +4,7 @@ import type { FeedbackVerdict } from "@/lib/domain/feedback";
 import type { CompanyIdentity, SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
 import type { LeadTab, RoleFamily, StatusGroup } from "@/lib/domain/opportunities";
 import type { StageRef } from "@/lib/domain/pipeline";
+import type { ClientType, WorkType } from "@/lib/validation/services";
 import type {
   CompanyRelationship,
   ContactVerification,
@@ -105,6 +106,8 @@ export type Service = {
   targetCountries: string[];
   companySizeMin: number | null;
   companySizeMax: number | null;
+  clientTypes: ClientType[];
+  workType: WorkType;
 };
 
 export type ScoringProfile = {

@@ -12,7 +12,7 @@ import {
 } from "@/db/schema";
 import type { Service } from "@/lib/api/types";
 import { FIRST_PAGE, offsetOf, type Page, type Pagination } from "@/lib/validation/pagination";
-import type { ServiceValues } from "@/lib/validation/services";
+import { CLIENT_TYPES, WORK_TYPES, type ClientType, type ServiceValues, type WorkType } from "@/lib/validation/services";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 
@@ -92,6 +92,8 @@ function serviceColumns(input: ServiceValues) {
     description: input.description || null,
     targetCompanySizeMin: input.companySizeMin,
     targetCompanySizeMax: input.companySizeMax,
+    clientTypes: input.clientTypes,
+    workType: input.workType,
   };
 }
 
@@ -151,6 +153,8 @@ async function withTargeting(conn: Tx | typeof db, rows: ServiceRow[]): Promise<
     targetCountries: pick(countries, row.id, (r) => r.countryCode),
     companySizeMin: row.targetCompanySizeMin,
     companySizeMax: row.targetCompanySizeMax,
+    clientTypes: row.clientTypes.filter((t): t is ClientType => (CLIENT_TYPES as readonly string[]).includes(t)),
+    workType: (WORK_TYPES as readonly string[]).includes(row.workType) ? (row.workType as WorkType) : "any",
   }));
 }
 
