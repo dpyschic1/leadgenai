@@ -51,6 +51,7 @@ export function activeFilterCount(filters: OpportunityFilters): number {
     (filters.withinDays === null ? 0 : 1) +
     (filters.foundWithinDays === null ? 0 : 1) +
     (filters.contact === null ? 0 : 1) +
+    (filters.leadStatus === null ? 0 : 1) +
     (filters.remote ? 1 : 0) +
     (filters.hidden ? 1 : 0)
   );

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { activeFilterCount, useFilterOptions, type ListFilterKey } from "@/hooks/use-filter-options";
-import { CONTACT_REACH, CONTACT_REACH_LABELS, type ContactReach } from "@/lib/domain/opportunities";
+import { CONTACT_REACH, CONTACT_REACH_LABELS, LEAD_STATUS_LABELS, LEAD_STATUSES, type ContactReach, type LeadStatus } from "@/lib/domain/opportunities";
 import { EMPTY_FILTERS, type OpportunityFilters } from "@/lib/validation/opportunities";
 
 export const MIN_SCORE_CHOICES = [50, 60, 70, 80, 90] as const;
@@ -120,6 +120,22 @@ export function FilterPanel({
           </div>
 
           <div className="grid gap-5 sm:grid-cols-2">
+            {/* An opportunity is everything found; the AI's check makes it a lead. */}
+            <Group label="Lead status">
+              <Select value={filters.leadStatus ?? ANY} onValueChange={(next) => onChange({ ...filters, leadStatus: next === ANY ? null : (next as LeadStatus) })}>
+                <SelectTrigger aria-label="Lead status" className="h-10! w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Any</SelectItem>
+                  {LEAD_STATUSES.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {LEAD_STATUS_LABELS[status]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Group>
             <Group label="Contact">
               <Select value={filters.contact ?? ANY} onValueChange={(next) => onChange({ ...filters, contact: next === ANY ? null : (next as ContactReach) })}>
                 <SelectTrigger aria-label="How the lead can be reached" className="h-10! w-full">

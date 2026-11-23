@@ -3,14 +3,21 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import {
+  BanknoteIcon,
   BriefcaseBusinessIcon,
   CalendarIcon,
   CheckIcon,
+  FileTextIcon,
   MailIcon,
+  MessageSquareIcon,
   MinusIcon,
+  NewspaperIcon,
   PhoneIcon,
   RadioTowerIcon,
+  TriangleAlertIcon,
   UserRoundIcon,
+  UsersRoundIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { useLookupNames } from "@/hooks/use-reference-data";
@@ -20,8 +27,7 @@ import { opportunityName } from "@/lib/opportunity-display";
 import { cn } from "@/lib/utils";
 import { CategoryBadge, EngineChips, VerificationBadge } from "./engine-parts";
 import { FeedbackVotes } from "./feedback-votes";
-import { ScoreRing } from "./score-ring";
-import { StatusBadge } from "./status-badge";
+import { LeadBadge, StatusBadge } from "./status-badge";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
 
@@ -36,6 +42,27 @@ export function TickBox({ checked, partly = false }: { checked: boolean; partly?
       )}
     >
       {checked ? <CheckIcon className="size-3.5" strokeWidth={3} /> : partly && <MinusIcon className="size-3.5" strokeWidth={3} />}
+    </span>
+  );
+}
+
+/** Each kind of opportunity: what to call it and its icon. */
+export const KIND: Record<OpportunitySummary["kind"], { label: string; icon: LucideIcon; tone: string }> = {
+  hiring: { label: "Hiring", icon: UsersRoundIcon, tone: "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300" },
+  request: { label: "Asking for help", icon: MessageSquareIcon, tone: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300" },
+  project: { label: "Freelance project", icon: FileTextIcon, tone: "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300" },
+  funding: { label: "Recently funded", icon: BanknoteIcon, tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" },
+  event: { label: "Company news", icon: NewspaperIcon, tone: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300" },
+  problem: { label: "Problem found", icon: TriangleAlertIcon, tone: "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300" },
+  other: { label: "Signal", icon: RadioTowerIcon, tone: "bg-secondary text-muted-foreground" },
+};
+
+/** The kind of opportunity as an icon tile, in place of a score: what it is at a glance. */
+export function KindTile({ kind, size = "md" }: { kind: OpportunitySummary["kind"]; size?: "md" | "lg" }) {
+  const { label, icon: Icon, tone } = KIND[kind];
+  return (
+    <span title={label} className={cn("grid shrink-0 place-items-center rounded-xl", tone, size === "lg" ? "size-16" : "size-11")}>
+      <Icon className={size === "lg" ? "size-7" : "size-5"} />
     </span>
   );
 }
@@ -82,8 +109,9 @@ export function OpportunityCard({
           className="absolute inset-0 z-[5] cursor-pointer rounded-xl outline-none"
         />
       )}
+      {/* What it is, not a number: the AI's score shows once it's a lead. */}
       <div className="flex flex-col items-center gap-1">
-        <ScoreRing score={opportunity.score} />
+        <KindTile kind={opportunity.kind} />
         {rank !== null && <span className="text-xs tabular-nums text-muted-foreground">#{rank}</span>}
       </div>
 
@@ -102,10 +130,14 @@ export function OpportunityCard({
                 <VerificationBadge status={opportunity.engine.verification} />
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">{names.opportunityType(opportunity.type)}</p>
+              <p className="text-sm text-muted-foreground">
+                <span className="font-medium text-foreground/80">{KIND[opportunity.kind].label}</span>
+                {opportunity.openRoles.total > 0 && ` · ${opportunity.openRoles.total} open ${opportunity.openRoles.total === 1 ? "role" : "roles"}`}
+              </p>
             )}
           </div>
           <div className="flex items-center gap-1">
+            <LeadBadge lead={opportunity.lead} />
             <StatusBadge stage={opportunity.stage} archived={opportunity.archived} />
             {action && <div className="relative z-10">{action}</div>}
             {selection && (
@@ -117,6 +149,38 @@ export function OpportunityCard({
         </div>
 
         {opportunity.problem && <p className="mt-2 line-clamp-2 text-sm leading-relaxed">{opportunity.problem}</p>}
+        {/* What they're after: the roles they're hiring for and the kinds of work it points to. */}
+        {(opportunity.openRoles.titles.length > 0 || opportunity.needs.length > 0) && (
+          <div className="mt-2 space-y-1.5 text-sm">
+            {opportunity.openRoles.titles.length > 0 && (
+              <p className="line-clamp-1 text-muted-foreground">
+                <span className="font-medium text-foreground">Roles: </span>
+                {opportunity.openRoles.titles.join(" · ")}
+                {opportunity.openRoles.total > opportunity.openRoles.titles.length && (
+                  <span className="text-primary"> +{opportunity.openRoles.total - opportunity.openRoles.titles.length} more</span>
+                )}
+              </p>
+            )}
+            {opportunity.needs.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-medium">Needs:</span>
+                {opportunity.needs.slice(0, 4).map((slug) => (
+                  <span key={slug} className="rounded-full border bg-secondary px-2 py-0.5 text-xs">
+                    {names.category(slug)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {/* The AI's (or team's) verdict, with the line from the evidence that shows the need. */}
+        {opportunity.lead.reason && (
+          <p className="mt-1.5 line-clamp-2 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">Why: </span>
+            {opportunity.lead.reason}
+            {opportunity.lead.quote && <span className="italic"> “{opportunity.lead.quote}”</span>}
+          </p>
+        )}
 
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           {opportunity.service && (

@@ -16,9 +16,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { useOpportunity, useUpdateOpportunity } from "@/hooks/use-opportunities";
 import { usePipeline } from "@/hooks/use-pipeline";
 import { usePermission } from "@/hooks/use-permission";
-import { useLookupNames } from "@/hooks/use-reference-data";
 import { ApiError } from "@/lib/api/client";
 import type { CompanyContact, CompanyPerson, OpportunityDetail } from "@/lib/api/types";
+import { QUALIFICATION_LABELS, QUALIFICATIONS, type Qualification } from "@/lib/domain/opportunities";
 import { SENIORITY_LABELS } from "@/lib/domain/people";
 import { SOURCE_LABELS } from "@/lib/domain/sources";
 import { EDITOR_ROLES } from "@/lib/permissions";
@@ -27,7 +27,8 @@ import { cn } from "@/lib/utils";
 import { EngineEvidencePanel, EngineScoreBreakdown } from "./engine-parts";
 import { FeedbackPanel } from "./feedback-panel";
 import { ScoreBreakdown } from "./score-breakdown";
-import { ScoreRing } from "./score-ring";
+import { KIND, KindTile } from "./opportunity-card";
+import { LeadBadge } from "./status-badge";
 
 export function OpportunityDetailView() {
   const { id } = useParams<{ id: string }>();
@@ -51,7 +52,6 @@ function Panel({ title, description, children }: { title: string; description?: 
 }
 
 function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDetail }) {
-  const names = useLookupNames();
   const canEdit = usePermission(EDITOR_ROLES);
   const update = useUpdateOpportunity(opportunity.id);
   const roles = new Map(opportunity.signals.map((s) => [s.id, s.role]));
@@ -76,10 +76,12 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
       </Link>
 
       <header className="flex flex-col gap-5 rounded-2xl border bg-card p-6 sm:flex-row sm:items-center">
-        <ScoreRing score={opportunity.score} size="lg" />
+        <KindTile kind={opportunity.kind} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-muted-foreground">
-            {names.opportunityType(opportunity.type)}
+          <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground/80">{KIND[opportunity.kind].label}</span>
+            {opportunity.openRoles.total > 0 && <span>· {opportunity.openRoles.total} open {opportunity.openRoles.total === 1 ? "role" : "roles"}</span>}
+            <LeadBadge lead={opportunity.lead} />
           </p>
           <h1 className="truncate text-2xl font-semibold">{opportunityName(opportunity)}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -122,6 +124,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 space-y-6">
+          <LeadCheckPanel opportunity={opportunity} canEdit={canEdit} />
           <Panel title="Why it's an opportunity">
             <div className="space-y-4 p-5">
               {/* One sentence from the lead signal, for every opportunity; the full post is under Evidence. */}
@@ -138,7 +141,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
             </div>
           </Panel>
 
-          <Panel title="How the score is built" description="A priority for who to look at first, not a chance of winning.">
+          <Panel title="Why it was sent to the AI" description="A quick rules check of fit and timing, used only to decide what the AI reads first.">
             <div className="p-5">
               {opportunity.engineFactors && opportunity.score !== null ? (
                 <EngineScoreBreakdown factors={opportunity.engineFactors} total={opportunity.score} />
@@ -173,6 +176,69 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
         </aside>
       </div>
     </div>
+  );
+}
+
+/**
+ * Is it a lead? The AI's verdict on the evidence (HOT / WARM / not a fit, with why, the line that
+ * shows the need, and any budget or timeline it states), and the team's own call on top.
+ */
+function LeadCheckPanel({ opportunity, canEdit }: { opportunity: OpportunityDetail; canEdit: boolean }) {
+  const update = useUpdateOpportunity(opportunity.id);
+  const { lead } = opportunity;
+  const decide = (qualification: Qualification | null) =>
+    update.mutate(
+      { qualification },
+      {
+        onSuccess: () => toast.success(qualification === null ? "Handed back to the AI to check." : `Marked ${QUALIFICATION_LABELS[qualification].toLowerCase()}.`),
+        onError: (e) => toast.error(e.message),
+      },
+    );
+  const summary =
+    lead.status === "checking"
+      ? "The AI hasn't read this one yet. It checks the strongest opportunities first, a few each minute."
+      : lead.status === "unchecked"
+        ? "Scores too low to be sent to the AI. Mark it a lead yourself if it is one."
+        : null;
+
+  return (
+    <Panel title="Lead check" description="An opportunity becomes a lead once its evidence shows a real buyer for your service.">
+      <div className="space-y-4 p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <LeadBadge lead={lead} className="text-sm" />
+          {lead.by && <span className="text-xs text-muted-foreground">{lead.by === "team" ? "Decided by your team" : "Checked by the AI"}</span>}
+        </div>
+        {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
+        {lead.reason && <p className="leading-relaxed">{lead.reason}</p>}
+        {lead.quote && <blockquote className="border-l-2 border-primary/40 pl-3 text-sm italic text-muted-foreground">“{lead.quote}”</blockquote>}
+        {(lead.budget || lead.timeline) && (
+          <div className="flex flex-wrap gap-2 text-xs">
+            {lead.budget && <span className="rounded-full border bg-secondary px-2.5 py-0.5">Budget: {lead.budget}</span>}
+            {lead.timeline && <span className="rounded-full border bg-secondary px-2.5 py-0.5">Timeline: {lead.timeline}</span>}
+          </div>
+        )}
+        {canEdit && (
+          <div className="flex flex-wrap gap-2 border-t pt-4">
+            {QUALIFICATIONS.map((q) => (
+              <Button
+                key={q}
+                size="sm"
+                variant={lead.status === q && lead.by === "team" ? "default" : "outline"}
+                disabled={update.isPending}
+                onClick={() => decide(q)}
+              >
+                {q === "not_fit" ? "Not a lead" : `Mark ${QUALIFICATION_LABELS[q].toLowerCase()}`}
+              </Button>
+            ))}
+            {lead.by === "team" && (
+              <Button size="sm" variant="ghost" disabled={update.isPending} onClick={() => decide(null)}>
+                Let the AI decide
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+    </Panel>
   );
 }
 

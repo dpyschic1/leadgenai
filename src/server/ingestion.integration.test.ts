@@ -78,6 +78,10 @@ vi.mock("@/server/sources/nppes", async (original) => ({
 }));
 vi.mock("@/server/ai/signal-analysis", () => ({ analyzeSignal: vi.fn() }));
 vi.mock("@/server/ai/website-extract", () => ({ extractWebsiteFacts: vi.fn() }));
+// A tick also qualifies leads with the AI; never the real one in tests.
+vi.mock("@/server/ai/qualify-lead", () => ({
+  qualifyLead: vi.fn(async () => ({ qualification: "warm", score: 60, reason: "Test verdict.", quote: null, hints: {} })),
+}));
 vi.mock("@/server/jobs/detect", () => ({ detectBoard: vi.fn(async () => null) }));
 vi.mock("@/server/jobs/fetch-jobs", () => ({ fetchBoardJobs: vi.fn(async () => []), MAX_JOBS_PER_BOARD: 500 }));
 

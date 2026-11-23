@@ -97,9 +97,11 @@ describe("feed with engine opportunities", () => {
 });
 
 describe("Leads page", () => {
-  it("includes discovered buyers and projects, which have no contact yet", async () => {
-    const { listLeads } = await import("@/server/services/opportunities.service");
+  it("includes discovered buyers and projects, which have no contact yet, once judged leads", async () => {
+    const { listLeads, updateOpportunity } = await import("@/server/services/opportunities.service");
     const { leadListQuerySchema } = await import("@/lib/validation/opportunities");
+    expect((await listLeads(auth, leadListQuerySchema.parse({}))).counts.all).toBe(0);
+    for (const id of [ids.intent, ids.funded, ids.freelance]) await updateOpportunity(auth, id, { qualification: "warm" });
     const all = await listLeads(auth, leadListQuerySchema.parse({}));
     expect(all.counts.all).toBe(3);
     // None of these carries a named person or a company line.

@@ -2,7 +2,7 @@
 import type { memberRole, signalRole } from "@/db/schema";
 import type { FeedbackVerdict } from "@/lib/domain/feedback";
 import type { CompanyIdentity, SourceAuthorization, SourceSlug } from "@/lib/domain/sources";
-import type { LeadTab, RoleFamily, StatusGroup } from "@/lib/domain/opportunities";
+import type { LeadTab, Qualification, RoleFamily, StatusGroup } from "@/lib/domain/opportunities";
 import type { StageRef } from "@/lib/domain/pipeline";
 import type { ClientType, WorkType } from "@/lib/validation/services";
 import type {
@@ -298,6 +298,25 @@ export type OpportunitySummary = {
   evidence: { url: string; summary: string } | null;
   /** Who on the team judged it and how, newest first; the card shows these as "1 good fit" / "2 flagged". */
   feedbackVotes: FeedbackVote[];
+  /**
+   * Whether it's a lead: hot or warm (a lead), not a fit, "checking" while the AI hasn't read it
+   * yet, or "unchecked" when it scores too low to be sent. With the AI's reason and the quote that shows the need.
+   */
+  lead: {
+    status: Qualification | "checking" | "unchecked";
+    score: number | null;
+    reason: string | null;
+    quote: string | null;
+    budget: string | null;
+    timeline: string | null;
+    by: "ai" | "team" | null;
+  };
+  /** What kind of opportunity it is: hiring, asking for help, a freelance project, recently funded, company news, a problem found, or other. */
+  kind: "hiring" | "request" | "project" | "funding" | "event" | "problem" | "other";
+  /** What they need: service category slugs their evidence points to. */
+  needs: string[];
+  /** The roles they're hiring for: a few titles, and how many in all. */
+  openRoles: { titles: string[]; total: number };
   updatedAt: string;
 };
 

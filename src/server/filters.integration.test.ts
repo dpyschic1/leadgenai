@@ -257,6 +257,37 @@ describe("contacts and the Leads page", () => {
 
   const leads = (query: Record<string, unknown>) => listLeads(auth, leadListQuerySchema.parse(query));
 
+  it("lists only opportunities judged a real buyer: unchecked and not-a-fit stay off the Leads page", async () => {
+    expect((await leads({})).counts.all).toBe(0);
+    expect(await feed({ leadStatus: "unchecked" })).toEqual(["Ledgerline", "Medisync Health", "Northbridge Legal"]);
+
+    // The AI's verdicts: two leads, one not a fit.
+    const verdict = (name: string, qualification: string, score: number) =>
+      db
+        .update(opportunities)
+        .set({ qualification, qualificationScore: score, qualificationReason: `${name} verdict.`, qualifiedBy: "ai", qualifiedAt: new Date() })
+        .where(and(eq(opportunities.workspaceId, auth.workspaceId), eq(opportunities.companyId, ids.get(name)!)));
+    await verdict("Northbridge Legal", "warm", 55);
+    await verdict("Medisync Health", "hot", 85);
+    await verdict("Ledgerline", "not_fit", 20);
+    const listed = await leads({});
+    // Hot before warm.
+    expect(listed.items.map((i) => [i.company?.name, i.lead.status])).toEqual([["Medisync Health", "hot"], ["Northbridge Legal", "warm"]]);
+    expect(await feed({ leadStatus: "lead" })).toEqual(["Medisync Health", "Northbridge Legal"]);
+    expect(await feed({ leadStatus: "not_fit" })).toEqual(["Ledgerline"]);
+
+    // The team's call wins, and can be handed back to the AI.
+    const [ledger] = (await listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", leadStatus: "not_fit" }))).items;
+    const marked = await updateOpportunity(auth, ledger.id, { qualification: "warm" });
+    expect(marked.lead).toMatchObject({ status: "warm", by: "team" });
+    expect((await leads({})).counts.all).toBe(3);
+    const handedBack = await updateOpportunity(auth, ledger.id, { qualification: null });
+    // Back to the AI: no verdict until it reads it again.
+    expect(handedBack.lead).toMatchObject({ by: null, reason: null });
+    expect(["checking", "unchecked"]).toContain(handedBack.lead.status);
+    await updateOpportunity(auth, ledger.id, { qualification: "warm" });
+  });
+
   it("gives a lead with no contact the website and the page its signal was found on", async () => {
     const [lead] = (await leads({ tab: "none" })).items;
     expect(lead.company).toMatchObject({ name: "Medisync Health", domain: `medisynchealth-${run}.example` });

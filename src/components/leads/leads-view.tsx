@@ -22,7 +22,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Pagination, usePage } from "@/components/layout/pagination";
 import { TickBox } from "@/components/opportunities/opportunity-card";
 import { ScoreRing } from "@/components/opportunities/score-ring";
-import { StatusBadge } from "@/components/opportunities/status-badge";
+import { LeadBadge, StatusBadge } from "@/components/opportunities/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -41,7 +41,7 @@ import { cn } from "@/lib/utils";
 import { opportunityName } from "@/lib/opportunity-display";
 
 const TABS: { tab: LeadTab; label: string; hint: string }[] = [
-  { tab: "all", label: "All leads", hint: "Every lead still being worked: companies, buyers and projects, new or in progress." },
+  { tab: "all", label: "All leads", hint: "Every opportunity the AI (or your team) judged a real buyer, HOT or WARM, still being worked." },
   { tab: "email", label: "Has email", hint: "Leads with an email to write to: the person's own, or the company's inbox." },
   { tab: "phone", label: "Has phone", hint: "Leads with a number to call: the person's own, or the company's line." },
   { tab: "person", label: "Named contact", hint: "A named person with their own phone or email: call or write to them directly." },
@@ -50,7 +50,7 @@ const TABS: { tab: LeadTab; label: string; hint: string }[] = [
 ];
 
 const EMPTY: Record<LeadTab, string> = {
-  all: "No active leads yet. Opportunities you're working appear here with their contacts.",
+  all: "No leads yet. The AI reads your strongest opportunities a few at a time; the ones it judges HOT or WARM appear here with their contacts.",
   email: "No lead has an email yet.",
   phone: "No lead has a phone number yet.",
   person: "No lead has a named contact with a phone or email yet.",
@@ -565,11 +565,13 @@ function LeadRow({
 
       <LeadLinks lead={lead} />
 
-      <span>
+      <span className="flex flex-col items-start gap-1">
+        <LeadBadge lead={lead.lead} showScore={false} />
         <StatusBadge stage={lead.stage} archived={lead.archived} />
       </span>
-      <span className="flex justify-end">
-        <ScoreRing score={lead.score} size="sm" />
+      {/* The AI's fit for this lead (none when the team marked it). */}
+      <span className="flex justify-end" title={lead.lead.reason ?? undefined}>
+        <ScoreRing score={lead.lead.score} size="sm" />
       </span>
       {selection && (
         <span className="flex justify-end">

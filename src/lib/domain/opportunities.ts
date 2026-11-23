@@ -22,8 +22,24 @@ export const CONTACT_REACH_LABELS: Record<ContactReach, string> = {
 };
 
 /**
- * The Leads page: every lead still being worked (any open stage, not archived), by how it can be
- * reached. `email` / `phone`: some email or phone (the person's or the company's) is known.
+ * Lead qualification: an opportunity is everything found; it becomes a lead once the AI has read its
+ * evidence and judged it a real buyer (`hot` or `warm`), or the team says so. `not_fit` stays an
+ * opportunity. Unchecked opportunities scoring below `QUALIFY_MIN_SCORE` aren't sent to the AI.
+ */
+export const QUALIFICATIONS = ["hot", "warm", "not_fit"] as const;
+export type Qualification = (typeof QUALIFICATIONS)[number];
+export const LEAD_QUALIFICATIONS: readonly Qualification[] = ["hot", "warm"];
+export const QUALIFICATION_LABELS: Record<Qualification, string> = { hot: "Hot lead", warm: "Warm lead", not_fit: "Not a fit" };
+export const QUALIFY_MIN_SCORE = 50;
+
+/** The Opportunities page's lead-status filter: leads (hot or warm), not checked yet, or not a fit. */
+export const LEAD_STATUSES = ["lead", "unchecked", "not_fit"] as const;
+export type LeadStatus = (typeof LEAD_STATUSES)[number];
+export const LEAD_STATUS_LABELS: Record<LeadStatus, string> = { lead: "Leads only", unchecked: "Not checked yet", not_fit: "Not a fit" };
+
+/**
+ * The Leads page: every qualified lead still being worked (any open stage, not archived), by how it
+ * can be reached. `email` / `phone`: some email or phone (the person's or the company's) is known.
  */
 export const LEAD_TABS = ["all", "email", "phone", "person", "company", "none"] as const;
 export type LeadTab = (typeof LEAD_TABS)[number];

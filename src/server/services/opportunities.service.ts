@@ -40,7 +40,12 @@ import type {
 } from "@/lib/api/types";
 import { ENGINE_FACTOR_LABELS } from "@/lib/domain/engine";
 import {
+  LEAD_QUALIFICATIONS,
   LEAD_TABS,
+  QUALIFICATION_LABELS,
+  QUALIFY_MIN_SCORE,
+  type LeadStatus,
+  type Qualification,
   ROLE_FAMILIES,
   ROLE_FAMILY_PATTERNS,
   roleFamiliesOf,
@@ -164,6 +169,26 @@ const summaryColumns = {
   contactName: people.name,
   contactTitle: companyPeople.title,
   signalCount: sql<number>`(select count(*)::int from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
+  /** The lead signal's category (workforce, explicit_buying, ...): what kind of opportunity it is. */
+  leadCategory: sql<string | null>`(
+    select ${signalTypes.categorySlug} from ${opportunitySignals}
+    join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+    join ${signalTypes} on ${signalTypes.slug} = ${signals.signalType}
+    where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} = 'primary'
+    limit 1)`,
+  /** The kinds of work the supporting signals point to (service category slugs). */
+  needs: sql<string[]>`(
+    select coalesce(array_agg(distinct ${signalServiceCategories.categorySlug}), '{}') from ${opportunitySignals}
+    join ${signalServiceCategories} on ${signalServiceCategories.signalId} = ${opportunitySignals.signalId}
+    where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
+  /** The job titles behind the supporting signals: a few, and how many. */
+  jobTitles: sql<{ titles: string[] | null; total: number }>`(
+    select json_build_object('titles', (array_agg(t.title order by t.title))[1:3], 'total', count(*)::int)
+    from (
+      select distinct ${jobPostings.title} as title from ${jobPostings}
+      join ${opportunitySignals} on ${opportunitySignals.signalId} = ${jobPostings.signalId}
+      where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+    ) t)`,
   companyPhone,
   companyEmail,
   companyContactFromOsm,
@@ -194,6 +219,9 @@ export type SummaryRow = {
   personPhone: string | null;
   signalEvidenceLink: { url: string; summary: string } | null;
   signalCount: number;
+  leadCategory: string | null;
+  needs: string[];
+  jobTitles: { titles: string[] | null; total: number } | null;
   feedbackVotes: FeedbackVote[];
 };
 
@@ -352,7 +380,7 @@ export async function listLeads(auth: AuthContext, query: LeadListQuery): Promis
   const index = await roleIndex(base);
   const role = query.role ? hiringFor(index, query.role) : undefined;
   const [rows, [tabRow], tabIds] = await Promise.all([
-    summaryQuery().where(and(base, role, tab)).orderBy(...priorityOrder()).limit(pageSize).offset(offsetOf({ page, pageSize })),
+    summaryQuery().where(and(base, role, tab)).orderBy(...leadOrder()).limit(pageSize).offset(offsetOf({ page, pageSize })),
     // Each tab's count has the role type applied, and each role type's count the tab: what a click would show.
     db
       .select(
@@ -452,8 +480,24 @@ function hiringFor(index: RoleIndex, family: RoleFamily): SQL {
 }
 
 /** Every lead still being worked (open or in progress, not archived), narrowed by a search and to remote work if asked. Expects `companies` and `pipeline_stages` joined. */
+/** Leads only: the AI (or the team) judged it a real buyer, hot or warm. */
+const isLead = inArray(opportunities.qualification, [...LEAD_QUALIFICATIONS]);
+
+/** The Opportunities page's lead-status filter. */
+const LEAD_STATUS_CONDITIONS: Record<LeadStatus, SQL> = {
+  lead: isLead,
+  unchecked: isNull(opportunities.qualification),
+  not_fit: eq(opportunities.qualification, "not_fit"),
+};
+
+/** Every qualified lead still being worked: hot or warm, in an open stage. */
 function leadBase(workspaceId: string, q: string, remote: boolean): SQL | undefined {
-  return and(matchesFilters(workspaceId, { ...EMPTY_FILTERS, q, remote }), or(groupCondition("open"), groupCondition("inProgress")));
+  return and(matchesFilters(workspaceId, { ...EMPTY_FILTERS, q, remote }), isLead, or(groupCondition("open"), groupCondition("inProgress")));
+}
+
+/** Leads page order: hot before warm, then the AI's fit, then the usual priority. */
+function leadOrder() {
+  return [sql`(${opportunities.qualification} = 'hot') desc`, sql`${opportunities.qualificationScore} desc nulls last`, ...priorityOrder()] as const;
 }
 
 const leadEmail = sql`coalesce(${personEmail}, ${companyEmail})`;
@@ -492,7 +536,7 @@ export async function listLeadContacts(auth: AuthContext, query: LeadContactsQue
     .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
     .leftJoin(people, eq(people.id, opportunities.primaryPersonId))
     .where(where)
-    .orderBy(...priorityOrder())
+    .orderBy(...leadOrder())
     .limit(MAX_LEAD_CONTACTS + 1);
   const items = rows.slice(0, MAX_LEAD_CONTACTS).map((r) => ({
     id: r.id,
@@ -605,6 +649,7 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
     filters.foundWithinDays === null ? undefined : gte(opportunities.createdAt, sql`now() - make_interval(days => ${filters.foundWithinDays})`),
     filters.remote ? remoteWork : undefined,
     offeredToClient,
+    filters.leadStatus === null ? undefined : LEAD_STATUS_CONDITIONS[filters.leadStatus],
     // Likely competitors are hidden unless asked for (then only they are shown).
     filters.hidden ? isNotNull(opportunities.hiddenReason) : isNull(opportunities.hiddenReason),
   );
@@ -764,6 +809,18 @@ export async function updateOpportunity(
         ...(target && { stageId: target.id }),
         ...(input.archived !== undefined && { archivedAt: input.archived ? (opportunity.archivedAt ?? new Date()) : null }),
         ...(input.notes !== undefined && { notes: input.notes }),
+        // The team's call on whether it's a lead; null hands it back to the AI to check again.
+        ...(input.qualification !== undefined &&
+          (input.qualification === null
+            ? { qualification: null, qualificationScore: null, qualificationReason: null, qualificationQuote: null, qualificationHints: null, qualifiedBy: null, qualifiedAt: null }
+            : {
+                qualification: input.qualification,
+                qualificationScore: null,
+                qualificationReason: `Marked ${QUALIFICATION_LABELS[input.qualification].toLowerCase()} by your team`,
+                qualificationQuote: null,
+                qualifiedBy: "team",
+                qualifiedAt: new Date(),
+              })),
       })
       .where(and(eq(opportunities.id, opportunityId), eq(opportunities.workspaceId, auth.workspaceId)));
     if (target && target.id !== opportunity.stageId) {
@@ -774,6 +831,16 @@ export async function updateOpportunity(
         entityType: "opportunity",
         entityId: opportunityId,
         metadata: { from: stageName, to: target.name, kind: target.kind },
+      });
+    }
+    if (input.qualification !== undefined && input.qualification !== opportunity.qualification) {
+      await tx.insert(auditLogs).values({
+        workspaceId: auth.workspaceId,
+        actorId: auth.userId,
+        action: "opportunity.qualified",
+        entityType: "opportunity",
+        entityId: opportunityId,
+        metadata: { from: opportunity.qualification, to: input.qualification },
       });
     }
     if (input.archived !== undefined && input.archived !== (opportunity.archivedAt !== null)) {
@@ -938,6 +1005,60 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
     companyContact: { phone: row.companyPhone, email: row.companyEmail, fromOpenStreetMap: Boolean(row.companyContactFromOsm) },
     evidence: row.signalEvidenceLink,
     feedbackVotes: row.feedbackVotes,
+    lead: leadOf(opportunity),
+    kind: kindOf(opportunity.category, row.leadCategory),
+    needs: specificNeeds(row.needs?.length ? row.needs : engineNeeds(opportunity.scoreFactors)),
+    openRoles: { titles: row.jobTitles?.titles ?? [], total: row.jobTitles?.total ?? 0 },
     updatedAt: opportunity.updatedAt.toISOString(),
   };
+}
+
+/** What kind of opportunity it is, from its engine category or its lead signal's category. */
+function kindOf(category: string | null, leadCategory: string | null): OpportunitySummary["kind"] {
+  if (category === "freelance_project") return "project";
+  if (category === "funded_company") return "funding";
+  if (category === "intent") return "request";
+  switch (leadCategory) {
+    case "workforce":
+      return "hiring";
+    case "explicit_buying":
+      return "request";
+    case "company_event":
+      return "event";
+    case "problem":
+    case "digital":
+      return "problem";
+    default:
+      return "other";
+  }
+}
+
+/** Every tech job also means "staff augmentation"; it's only shown when nothing more specific is known. */
+function specificNeeds(needs: string[]): string[] {
+  const specific = needs.filter((n) => n !== "staff_augmentation");
+  return specific.length > 0 ? specific : needs;
+}
+
+/** A discovered item's needs, stored with its score input. */
+function engineNeeds(factors: unknown): string[] {
+  const needs = (factors as { input?: { signal?: { serviceCategories?: unknown } } } | null)?.input?.signal?.serviceCategories;
+  return Array.isArray(needs) ? needs.filter((n): n is string => typeof n === "string") : [];
+}
+
+/** Whether it's a lead, and why: the AI's (or the team's) verdict, "checking" while the AI hasn't read it, or "unchecked" below the bar. */
+function leadOf(opportunity: SummaryRow["opportunity"]): OpportunitySummary["lead"] {
+  const status = opportunity.qualification as Qualification | null;
+  if (status) {
+    return {
+      status,
+      score: opportunity.qualificationScore,
+      reason: opportunity.qualificationReason,
+      quote: opportunity.qualificationQuote,
+      budget: opportunity.qualificationHints?.budget ?? null,
+      timeline: opportunity.qualificationHints?.timeline ?? null,
+      by: opportunity.qualifiedBy === "team" ? "team" : "ai",
+    };
+  }
+  const checking = (opportunity.opportunityScore ?? 0) >= QUALIFY_MIN_SCORE && opportunity.hiddenReason === null;
+  return { status: checking ? "checking" : "unchecked", score: null, reason: null, quote: null, budget: null, timeline: null, by: null };
 }

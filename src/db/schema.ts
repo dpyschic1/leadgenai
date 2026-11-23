@@ -1129,6 +1129,21 @@ export const opportunities = pgTable(
      * out of the feed and Leads unless the "hidden" filter asks for it. Cleared when someone marks it a good fit.
      */
     hiddenReason: text(),
+    /**
+     * Lead qualification: an opportunity becomes a lead once the AI (or someone on the team) has read
+     * its evidence and judged it `hot` or `warm`; `not_fit` stays an opportunity only. Null: not checked yet.
+     */
+    qualification: text(),
+    /** The AI's 0-100 fit for this opportunity; null when the team decided. */
+    qualificationScore: integer(),
+    /** One sentence on why, and the sentence from the evidence that shows the need (checked to be a real quote). */
+    qualificationReason: text(),
+    qualificationQuote: text(),
+    /** Budget or timeline the evidence states, when it does: { budget?: string, timeline?: string }. */
+    qualificationHints: jsonb().$type<{ budget?: string; timeline?: string }>(),
+    /** "ai" or "team". A team decision is never overwritten by the AI. */
+    qualifiedBy: text(),
+    qualifiedAt: timestamp({ withTimezone: true }),
     /** Where it is in the workspace's sales pipeline; discovery never changes it. */
     stageId: uuid().notNull(),
     /** Set when archived (replaces "dismissed"): hidden from the working tabs, kept for history. */
@@ -1156,6 +1171,9 @@ export const opportunities = pgTable(
       .on(t.workspaceId, t.sourceSlug, t.sourceExternalId)
       .where(sql`${t.sourceExternalId} is not null`),
     index("opportunities_workspace_category_idx").on(t.workspaceId, t.category),
+    index("opportunities_workspace_qualification_idx").on(t.workspaceId, t.qualification),
+    check("opportunities_qualification_chk", sql`${t.qualification} is null or ${t.qualification} in ('hot', 'warm', 'not_fit')`),
+    check("opportunities_qualified_by_chk", sql`${t.qualifiedBy} is null or ${t.qualifiedBy} in ('ai', 'team')`),
     check("opportunities_country_chk", sql`${t.country} is null or ${t.country} ~ '^[A-Z]{2}$'`),
     check(
       "opportunities_identity_chk",

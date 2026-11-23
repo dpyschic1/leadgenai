@@ -10,6 +10,7 @@ import { HANDLERS, jobContext } from "./handlers";
 import { detectYcBoards } from "@/server/sources/yc";
 import { analyzeSharedJobs, categorizeBoardJobs } from "./shared-jobs";
 import { runDueCapabilities } from "@/server/engine/runner";
+import { qualifyLeads } from "@/server/scoring/qualify";
 import { claimNext, ENRICHMENT_KINDS, enqueue, markDone, markFailed, postpone, type JobRow } from "./queue";
 
 /**
@@ -84,6 +85,9 @@ const YC_BOARDS_PER_TICK = 1;
 const BOARDS_PER_TICK = 10;
 /** Shared AI readings started per tick (each up to a few seconds on the free plan). */
 const AI_READINGS_PER_TICK = 3;
+/** Opportunities the AI qualifies per tick, and the share of the tick's budget it may use. */
+const LEADS_QUALIFIED_PER_TICK = 3;
+const QUALIFY_SHARE = 0.3;
 
 /**
  * Job-board discovery shared by every workspace: read more candidates from the archive when few
@@ -165,6 +169,9 @@ export async function runTick({ workspaceId, budgetMs = DEFAULT_BUDGET_MS }: { w
   const startedAt = Date.now();
   const result: TickResult = { processed: 0, failed: 0, postponed: 0 };
   await queueDailyChecks(workspaceId);
+  // Opportunities become leads once the AI has read them: the strongest few each tick, first, so
+  // the AI's allowance goes to what the team sees before background reading.
+  await shared("lead qualification", () => qualifyLeads({ workspaceId, limit: LEADS_QUALIFIED_PER_TICK, deadline: startedAt + budgetMs * QUALIFY_SHARE }));
   // Shared work first (archive reading, board checks), within a slice of the budget.
   await runSharedStep(startedAt + budgetMs * SHARED_SHARE);
   // LeadGen Engine capabilities that are due (their own schedules). Not on a single workspace's quick

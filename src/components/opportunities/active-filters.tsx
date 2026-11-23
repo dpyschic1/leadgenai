@@ -3,7 +3,7 @@
 import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { activeFilterCount, useFilterOptions, type ListFilterKey } from "@/hooks/use-filter-options";
-import { CONTACT_REACH_LABELS } from "@/lib/domain/opportunities";
+import { CONTACT_REACH_LABELS, LEAD_STATUS_LABELS } from "@/lib/domain/opportunities";
 import { EMPTY_FILTERS, type OpportunityFilters } from "@/lib/validation/opportunities";
 import { HIDDEN_FILTER_LABEL } from "./filter-panel";
 
@@ -61,6 +61,9 @@ export function ActiveFilters({
 
   if (filters.contact !== null) {
     chips.push({ key: "contact", label: CONTACT_REACH_LABELS[filters.contact], remove: (f) => ({ ...f, contact: null }) });
+  }
+  if (filters.leadStatus !== null) {
+    chips.push({ key: "leadStatus", label: LEAD_STATUS_LABELS[filters.leadStatus], remove: (f) => ({ ...f, leadStatus: null }) });
   }
   if (filters.remote) chips.push({ key: "remote", label: "Remote", remove: (f) => ({ ...f, remote: false }) });
   if (filters.hidden) chips.push({ key: "hidden", label: HIDDEN_FILTER_LABEL, remove: (f) => ({ ...f, hidden: false }) });

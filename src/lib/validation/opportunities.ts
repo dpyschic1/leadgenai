@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { COUNTRY_CODES } from "@/lib/countries";
 import { FILTER_CATEGORIES } from "@/lib/domain/engine";
-import { CONTACT_REACH, LEAD_TABS, ROLE_FAMILIES, STATUS_GROUP_KEYS, type StatusGroup } from "@/lib/domain/opportunities";
+import { CONTACT_REACH, LEAD_STATUSES, LEAD_TABS, QUALIFICATIONS, ROLE_FAMILIES, STATUS_GROUP_KEYS, type StatusGroup } from "@/lib/domain/opportunities";
 import { paginationFields } from "./pagination";
 
 /** Shared by the opportunity pages, the AI search and the route handlers. */
@@ -75,6 +75,8 @@ export const opportunityFiltersSchema = z.object({
   remote: flag,
   /** Show only the opportunities scoring hid (likely competitors) instead of the rest. */
   hidden: flag,
+  /** Lead status (see `LEAD_STATUSES`): leads, not checked yet, or not a fit; missing means any. */
+  leadStatus: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(LEAD_STATUSES).nullable()).default(null),
 });
 
 export type OpportunityFilters = z.output<typeof opportunityFiltersSchema>;
@@ -97,6 +99,7 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   contact: null,
   remote: false,
   hidden: false,
+  leadStatus: null,
 };
 
 /** How the feed is ordered: best match (score) by default, or newest found, latest activity, most open roles. */
@@ -156,8 +159,13 @@ export const updateOpportunitySchema = z
       .transform((value) => value?.trim() || null)
       .refine((value) => value === null || value.length <= 5000, "Keep notes under 5,000 characters")
       .optional(),
+    /** The team's own call on whether it's a lead (never overwritten by the AI); null hands it back to the AI. */
+    qualification: z.enum(QUALIFICATIONS).nullable().optional(),
   })
-  .refine((value) => value.stageId !== undefined || value.archived !== undefined || value.notes !== undefined, "Nothing to update");
+  .refine(
+    (value) => value.stageId !== undefined || value.archived !== undefined || value.notes !== undefined || value.qualification !== undefined,
+    "Nothing to update",
+  );
 
 export type OpportunityListQuery = z.output<typeof opportunityListQuerySchema>;
 export type OpportunityExportQuery = z.output<typeof opportunityExportQuerySchema>;

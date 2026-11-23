@@ -302,6 +302,13 @@
       "when": 1795462075039,
       "tag": "0042_service_client_work_type",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795465139356,
+      "tag": "0043_opportunity_qualification",
+      "breakpoints": true
     }
   ]
 }
