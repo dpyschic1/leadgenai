@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseFreelancerProject } from "./freelancer";
-import { parseHnHit } from "./hackernews";
+import { parseHiringPost, parseHnHit, postRoles } from "./hackernews";
 import { parseAtom, parseRedditEntry } from "./reddit";
 import { companyKey, countryOf, isVehicleName, parseFeed, parseFormD, withOpenRoles } from "./sec-form-d";
 import { batchStart } from "./yc-batches";
@@ -257,5 +257,57 @@ describe("SerpAPI (Google) results", () => {
     expect(serpApi.configured?.()).toBe(false);
     expect(serpApi.setupHint).toMatch(/SERPAPI_API_KEY/);
     if (saved) process.env.SERPAPI_API_KEY = saved;
+  });
+});
+
+describe("Hacker News: Who is hiring? posts", () => {
+  const post = (html: string, objectID = "1") => ({ objectID, comment_text: html, created_at_i: 1_764_000_000, author: "founder" });
+  const THREAD = "Ask HN: Who is hiring? (November 2026)";
+
+  it("reads a contract-friendly post as B2B, with the company's website and the email it posts", () => {
+    const item = parseHiringPost(
+      post(
+        'Sendery | iOS Engineer | Remote (US) | Contract or full-time<p>We build delivery software. Contract roles welcome.<p>Email jobs [at] sendery [dot] co or see <a href="https://app.sendery.co/careers?ref=hn">our site</a>',
+      ),
+      THREAD,
+    );
+    expect(item).toMatchObject({
+      companyName: "Sendery",
+      companyDomain: "sendery.co",
+      clientType: "company",
+      remote: true,
+      intentHint: "high",
+      metadata: { hiring: true, b2bReasons: ["open to contract or freelance work"], emails: ["jobs@sendery.co"], website: "https://sendery.co" },
+    });
+    expect(item?.title).toBe("Sendery is hiring: iOS Engineer");
+  });
+
+  it("keeps founding roles and teams of 3+ technical roles, and leaves one ordinary role out", () => {
+    expect(parseHiringPost(post("BuildQ | Founding Engineer | San Francisco | $180k"), THREAD)?.metadata?.b2bReasons).toEqual(["hiring a founding role"]);
+    expect(parseHiringPost(post("Acme | Backend Engineer, Frontend Engineer, ML Engineer | Remote"), THREAD)?.metadata?.b2bReasons).toEqual(["hiring 3 technical roles"]);
+    expect(parseHiringPost(post("Acme | Senior Backend Engineer | NYC | Full-time"), THREAD)).toBeNull();
+    // A fixed-term employment contract isn't contract work; a non-technical role isn't work we do.
+    expect(parseHiringPost(post("CERN | Machine Learning Engineer | Geneva<p>Fixed-term contract of 3 years."), THREAD)).toBeNull();
+    expect(parseHiringPost(post("Acme | Account Executive | Remote | Contractors welcome"), THREAD)).toBeNull();
+  });
+
+  it("names a post that opens with SEEKING FREELANCER by its site, and skips replies that aren't company posts", () => {
+    expect(parseHiringPost(post('SEEKING FREELANCER | DevOps Engineer | Remote<p>Contact hn@getregistered.com'), THREAD)?.companyName).toBe("getregistered.com");
+    expect(parseHiringPost(post("Is this role still open?"), THREAD)).toBeNull();
+  });
+
+  it("reads job titles, never sentences, skills, places or links", () => {
+    expect(
+      postRoles(
+        "Acme | Senior Software Engineer / Product Designer | Remote | $150k\nWe're hiring Senior Software Engineers!\n- Staff Data Scientist\nTypeScript\nStrong understanding of developer-led growth\nDevOps: https://acme.com/jobs\nfounding-engineer",
+      ),
+    ).toEqual(["Senior Software Engineer", "Product Designer", "Staff Data Scientist"]);
+  });
+});
+
+describe("Hacker News: one role written several ways", () => {
+  it("counts it once, and drops tags, file names and unclosed brackets", () => {
+    expect(postRoles("Simple Analytics | DevOps Engineer, devops, devops.md | Remote")).toEqual(["DevOps Engineer"]);
+    expect(postRoles("Ledgebrook | Full Stack Engineer (US, Sr Platform Engineer | NYC")).toEqual(["Full Stack Engineer", "Sr Platform Engineer"]);
   });
 });

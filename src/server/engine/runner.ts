@@ -226,6 +226,9 @@ function isRelevant(
     if (!fitsHiringRoles(item, serviceCategories)) return false;
     return passesFundedFilters(item, config, targeting).pass;
   }
+  // A company's hiring post (HN's "Who is hiring?") lists its roles: it fits when one is work a service
+  // delivers, whatever the service is called ("Staff Augmentation" is never written in a job post).
+  if (item.metadata?.hiring === true) return fitsHiringRoles(item, serviceCategories);
   if (matchedTerms(serviceTerms, `${item.title}\n${item.text}`).length === 0) return false;
   // A project is work the workspace delivers only when its role fits a service's categories (the
   // same title rules as job matching): "Laravel developer" fits software development; "LPG pipeline

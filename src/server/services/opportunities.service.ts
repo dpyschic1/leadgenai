@@ -332,7 +332,7 @@ const offeredToClient = sql`(
     where ${services.workspaceId} = ${opportunities.workspaceId}
       and (case
         when ${opportunities.category} = 'freelance_project' then 'project'
-        when ${opportunities.category} = 'intent' and ${opportunities.companyId} is null then 'individual'
+        when ${individualPost()} then 'individual'
         else 'company' end) = any(${services.clientTypes})
   )
 )`;
@@ -341,7 +341,23 @@ const offeredToClient = sql`(
  * Who the buyer is: an individual when it's a post asking for help by someone with no company,
  * otherwise a company (B2B: hiring, funding, company news). Expects `opportunities` in the query.
  */
-const clientKind = sql<"company" | "individual">`(case when ${opportunities.category} = 'intent' and ${opportunities.companyId} is null then 'individual' else 'company' end)`;
+const clientKind = sql<"company" | "individual">`(case when ${individualPost()} then 'individual' else 'company' end)`;
+
+/**
+ * A post by a private person asking for help: an intent opportunity with no company record that
+ * wasn't found as a company's (a "Who is hiring?" post is a company's, though it has no company record).
+ * Never unknown: true or false. Expects `opportunities` in the query. (A function, so the rules above can use it.)
+ */
+function individualPost(): SQL {
+  return sql`coalesce(${opportunities.category} = 'intent' and ${opportunities.companyId} is null
+    and coalesce(${opportunities.scoreFactors} -> 'input' ->> 'clientType', 'individual') = 'individual', false)`;
+}
+
+/** The same, for one opportunity's row. Pure. */
+function isIndividualPost(opportunity: { category: string | null; companyId: string | null; scoreFactors: unknown }): boolean {
+  const stored = (opportunity.scoreFactors as { input?: { clientType?: string } } | null)?.input?.clientType;
+  return opportunity.category === "intent" && opportunity.companyId === null && (stored ?? "individual") === "individual";
+}
 
 /**
  * A B2B opportunity: a company that looks like it needs the work your services do, whatever its size.
@@ -371,7 +387,7 @@ function startupCondition(): SQL {
         join ${services} on ${services.id} = ${serviceServiceCategories.serviceId}
         where ${services.workspaceId} = ${opportunities.workspaceId}))`;
   const asking = sql`(
-    (${opportunities.category} = 'intent' and ${opportunities.companyId} is not null)
+    (${opportunities.category} = 'intent' and not ${individualPost()})
     or exists (
       select 1 from ${opportunitySignals}
       join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
@@ -399,7 +415,7 @@ function startupCondition(): SQL {
 }
 /** An established company posting job openings: a company opportunity that isn't a startup (an individual's post is neither). */
 function establishedCondition(): SQL {
-  return sql`(not ${startupCondition()} and not coalesce(${opportunities.category} = 'intent' and ${opportunities.companyId} is null, false))`;
+  return sql`(not ${startupCondition()} and not ${individualPost()})`;
 }
 
 const remoteWork = sql`(
@@ -1146,9 +1162,10 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
     evidence: row.signalEvidenceLink,
     feedbackVotes: row.feedbackVotes,
     lead: leadOf(opportunity),
-    kind: kindOf(opportunity.category, row.leadCategory),
-    clientType: opportunity.category === "intent" && opportunity.companyId === null ? "individual" : "company",
-    companyStage: row.isStartup ? "startup" : opportunity.category === "intent" && opportunity.companyId === null ? "individual" : "established",
+    // A discovered item's own signal category says what it is (a "Who is hiring?" post is hiring).
+    kind: kindOf(opportunity.category, row.leadCategory ?? storedSignalCategory(opportunity.scoreFactors)),
+    clientType: isIndividualPost(opportunity) ? "individual" : "company",
+    companyStage: row.isStartup ? "startup" : isIndividualPost(opportunity) ? "individual" : "established",
     needs: specificNeeds(row.needs?.length ? row.needs : engineNeeds(opportunity.scoreFactors)),
     openRoles: { titles: row.jobTitles?.titles ?? [], total: row.jobTitles?.total ?? 0 },
     updatedAt: opportunity.updatedAt.toISOString(),
@@ -1156,10 +1173,16 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
 }
 
 /** What kind of opportunity it is, from its engine category or its lead signal's category. */
+/** A discovered item's own signal category, as stored with its score ("workforce" for a hiring post). */
+function storedSignalCategory(factors: unknown): string | null {
+  const category = (factors as { input?: { signal?: { category?: unknown } } } | null)?.input?.signal?.category;
+  return typeof category === "string" ? category : null;
+}
+
 function kindOf(category: string | null, leadCategory: string | null): OpportunitySummary["kind"] {
   if (category === "freelance_project") return "project";
   if (category === "funded_company") return "funding";
-  if (category === "intent") return "request";
+  if (category === "intent") return leadCategory === "workforce" ? "hiring" : "request";
   switch (leadCategory) {
     case "workforce":
       return "hiring";

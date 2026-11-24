@@ -46,7 +46,9 @@ export async function loadScoreContext(workspaceId: string): Promise<ScoreContex
 }
 
 /** The signal type a discovered item is, in the shared taxonomy. Pure. */
-export function signalTypeOf(item: Pick<DiscoveredItem, "capability" | "title" | "text">): string {
+export function signalTypeOf(item: Pick<DiscoveredItem, "capability" | "title" | "text"> & { metadata?: DiscoveredItem["metadata"] }): string {
+  // A company's hiring post (HN's "Who is hiring?") is hiring, not a request for a service.
+  if (item.metadata?.hiring === true) return "engineering_hiring";
   if (item.capability === "funded") return "funding";
   if (item.capability === "freelance") return "project_request";
   return /\bmvp\b/i.test(`${item.title} ${item.text}`) ? "mvp_request" : "service_request";
@@ -95,7 +97,7 @@ export function discoveredInput(item: DiscoveredItem, score: EngineScore, fallba
     signal: {
       id: `${item.sourceSlug}:${item.externalId}`,
       signalType: signalTypeOf(item),
-      category: item.capability === "funded" ? "company_event" : "explicit_buying",
+      category: item.capability === "funded" ? "company_event" : item.metadata?.hiring === true ? "workforce" : "explicit_buying",
       intentLevel,
       urgency: "unknown",
       serviceCategories: needsOf(item, fallbackCategories),
