@@ -50,7 +50,7 @@ export function FeedbackPanel({ opportunity, canEdit }: { opportunity: Opportuni
 
   return (
     <section className="rounded-xl border bg-card p-5">
-      <h2 className="font-semibold">Is this a good opportunity?</h2>
+      <h2 className="text-[17px] font-semibold tracking-tight">Is this a good opportunity?</h2>
       <p className="mt-0.5 text-sm text-muted-foreground">Your verdict is shared with the team. Flags fix the match.</p>
 
       {canEdit && (

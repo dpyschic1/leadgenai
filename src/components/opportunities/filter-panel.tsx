@@ -8,15 +8,17 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { activeFilterCount, useFilterOptions, type ListFilterKey } from "@/hooks/use-filter-options";
-import { CONTACT_REACH, CONTACT_REACH_LABELS, LEAD_STATUS_LABELS, LEAD_STATUSES, type ContactReach, type LeadStatus } from "@/lib/domain/opportunities";
+import { LEAD_STATUS_LABELS, LEAD_STATUSES, type LeadStatus } from "@/lib/domain/opportunities";
 import { EMPTY_FILTERS, type OpportunityFilters } from "@/lib/validation/opportunities";
 
-export const MIN_SCORE_CHOICES = [50, 60, 70, 80, 90] as const;
-export const WITHIN_DAYS_CHOICES = [7, 30, 90, 180] as const;
 export const HIDDEN_FILTER_LABEL = "Show only likely competitors";
 const ANY = "any";
 
-/** Every structured filter in one panel. Changes apply straight away. */
+/**
+ * The filters that decide which opportunities to work on, and only those: is it a lead, which of
+ * your services it's for, what they're hiring for, and where. (Other filters the AI search may set
+ * still apply, and show as removable chips.) Changes apply straight away.
+ */
 export function FilterPanel({
   filters,
   onChange,
@@ -39,142 +41,51 @@ export function FilterPanel({
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="max-h-[min(36rem,80vh)] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto p-0">
+      <PopoverContent align="end" className="max-h-[min(36rem,80vh)] w-[min(30rem,calc(100vw-2rem))] overflow-y-auto p-0">
         <div className="space-y-5 p-5">
-          <div className="grid gap-5 sm:grid-cols-2">
-            <Group label="Hiring for">
-              <MultiCombobox
-                options={options.needs}
-                value={filters.needs}
-                onChange={setList("needs")}
-                placeholder="Any work"
-                searchPlaceholder="Search: design, AI, mobile…"
-                emptyText="No kind of work found."
-              />
-            </Group>
-            <Group label="Opportunity type">
-              <MultiCombobox
-                options={options.types}
-                value={filters.types}
-                onChange={setList("types")}
-                placeholder="Any type"
-                searchPlaceholder="Search types"
-                emptyText="No type found."
-              />
-            </Group>
-            <Group label="Industry">
-              <MultiCombobox
-                options={options.industries}
-                value={filters.industries}
-                onChange={setList("industries")}
-                placeholder="Any industry"
-                searchPlaceholder="Search industries"
-                emptyText="No industry found."
-              />
-            </Group>
-            <Group label="Source">
-              <MultiCombobox
-                options={options.sources}
-                value={filters.sources}
-                onChange={setList("sources")}
-                placeholder="Any source"
-                searchPlaceholder="Search sources"
-                emptyText="No source found."
-              />
-            </Group>
-            <Group label="Buying intent">
-              <ChipSelect options={options.intents} value={filters.intents} onChange={setList("intents")} />
-            </Group>
-            <Group label="Country (headquarters or stated)">
-              <MultiCombobox
-                options={options.countries}
-                value={filters.countries}
-                onChange={setList("countries")}
-                placeholder="Any country"
-                searchPlaceholder="Search countries"
-                emptyText="No country found."
-              />
-            </Group>
-            <div className="grid grid-cols-2 gap-3">
-              <Group label="Score">
-                <NumberChoice
-                  label="Minimum score"
-                  value={filters.minScore}
-                  choices={MIN_SCORE_CHOICES}
-                  anyLabel="Any"
-                  format={(n) => `${n}+`}
-                  onChange={(minScore) => onChange({ ...filters, minScore })}
-                />
-              </Group>
-              <Group label="Latest signal">
-                <NumberChoice
-                  label="Latest signal within"
-                  value={filters.withinDays}
-                  choices={WITHIN_DAYS_CHOICES}
-                  anyLabel="Any time"
-                  format={(n) => `Last ${n} days`}
-                  onChange={(withinDays) => onChange({ ...filters, withinDays })}
-                />
-              </Group>
-            </div>
-          </div>
-
-          <div className="grid gap-5 sm:grid-cols-2">
-            {/* An opportunity is everything found; the AI's check makes it a lead. */}
-            <Group label="Lead status">
-              <Select value={filters.leadStatus ?? ANY} onValueChange={(next) => onChange({ ...filters, leadStatus: next === ANY ? null : (next as LeadStatus) })}>
-                <SelectTrigger aria-label="Lead status" className="h-10! w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ANY}>Any</SelectItem>
-                  {LEAD_STATUSES.map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {LEAD_STATUS_LABELS[status]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Group>
-            <Group label="Contact">
-              <Select value={filters.contact ?? ANY} onValueChange={(next) => onChange({ ...filters, contact: next === ANY ? null : (next as ContactReach) })}>
-                <SelectTrigger aria-label="How the lead can be reached" className="h-10! w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ANY}>Any</SelectItem>
-                  {CONTACT_REACH.map((reach) => (
-                    <SelectItem key={reach} value={reach}>
-                      {CONTACT_REACH_LABELS[reach]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Group>
-            {/* Consultancies and staffing firms sell what you sell: hidden unless asked for. */}
-            <Group label="Likely competitors">
-              <Select value={filters.hidden ? "only" : "hide"} onValueChange={(next) => onChange({ ...filters, hidden: next === "only" })}>
-                <SelectTrigger aria-label="Likely competitors" className="h-10! w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="hide">Hidden</SelectItem>
-                  <SelectItem value="only">{HIDDEN_FILTER_LABEL}</SelectItem>
-                </SelectContent>
-              </Select>
-            </Group>
-          </div>
+          {/* An opportunity is everything found; the AI's check makes it a lead. */}
+          <Group label="Lead status">
+            <Select value={filters.leadStatus ?? ANY} onValueChange={(next) => onChange({ ...filters, leadStatus: next === ANY ? null : (next as LeadStatus) })}>
+              <SelectTrigger aria-label="Lead status" className="h-10! w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Any</SelectItem>
+                {LEAD_STATUSES.map((status) => (
+                  <SelectItem key={status} value={status}>
+                    {LEAD_STATUS_LABELS[status]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Group>
 
           {options.services.length > 0 && (
             <Group label="Matches your service">
               <ChipSelect options={options.services} value={filters.services} onChange={setList("services")} />
             </Group>
           )}
-          <Group label="Signal">
-            <ChipSelect options={options.signals} value={filters.signals} onChange={setList("signals")} />
+
+          <Group label="Hiring for">
+            <MultiCombobox
+              options={options.needs}
+              value={filters.needs}
+              onChange={setList("needs")}
+              placeholder="Any work"
+              searchPlaceholder="Search: design, AI, mobile…"
+              emptyText="No kind of work found."
+            />
           </Group>
-          <Group label="Urgency">
-            <ChipSelect options={options.urgency} value={filters.urgency} onChange={setList("urgency")} />
+
+          <Group label="Country">
+            <MultiCombobox
+              options={options.countries}
+              value={filters.countries}
+              onChange={setList("countries")}
+              placeholder="Any country"
+              searchPlaceholder="Search countries"
+              emptyText="No country found."
+            />
           </Group>
         </div>
 
@@ -200,40 +111,5 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
       <legend className="mb-2 text-sm font-medium">{label}</legend>
       {children}
     </fieldset>
-  );
-}
-
-function NumberChoice({
-  label,
-  value,
-  choices,
-  anyLabel,
-  format,
-  onChange,
-}: {
-  label: string;
-  value: number | null;
-  choices: readonly number[];
-  anyLabel: string;
-  format: (value: number) => string;
-  onChange: (value: number | null) => void;
-}) {
-  return (
-    <Select value={value === null ? ANY : String(value)} onValueChange={(next) => onChange(next === ANY ? null : Number(next))}>
-      <SelectTrigger aria-label={label} className="h-10! w-full">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={ANY}>{anyLabel}</SelectItem>
-        {/* A value the AI chose that isn't a preset still shows correctly. */}
-        {[...new Set([...choices, ...(value === null ? [] : [value])])]
-          .sort((a, b) => a - b)
-          .map((choice) => (
-            <SelectItem key={choice} value={String(choice)}>
-              {format(choice)}
-            </SelectItem>
-          ))}
-      </SelectContent>
-    </Select>
   );
 }

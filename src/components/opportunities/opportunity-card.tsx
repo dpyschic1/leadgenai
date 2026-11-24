@@ -88,9 +88,9 @@ function Monogram({ name }: { name: string }) {
 }
 
 /**
- * One opportunity in a feed, led by the buyer's own words: the line from the evidence that shows
- * the need (or what happened), then who said it and what they're doing. The whole card opens it
- * (a stretched link), so `action`, e.g. a remove button, can sit on top without nesting interactive elements.
+ * One opportunity in a feed: the company (largest), what they need in one line and the roles,
+ * the service it matches, then contact and date. The whole card opens it (a stretched link), so
+ * `action`, e.g. a remove button, can sit on top without nesting interactive elements.
  */
 export function OpportunityCard({
   opportunity,
@@ -116,8 +116,8 @@ export function OpportunityCard({
   const { phone: companyPhone, email: companyEmail } = opportunity.companyContact;
   const name = opportunityName(opportunity);
   const { lead } = opportunity;
-  // The proof the AI quoted, else what happened, else the post's own title.
-  const words = lead.quote ?? opportunity.problem ?? opportunity.engine?.title ?? null;
+  // What they need in one line: the AI's reading, else what happened, else the post's own title.
+  const headline = lead.reason ?? opportunity.problem ?? opportunity.engine?.title ?? null;
   const roles = opportunity.openRoles;
 
   return (
@@ -146,12 +146,16 @@ export function OpportunityCard({
           <div className="min-w-0">
             <Link
               href={`/opportunities/${opportunity.id}`}
-              className="block truncate font-semibold tracking-tight outline-none group-hover:text-primary after:absolute after:inset-0 after:rounded-2xl"
+              className="block truncate text-lg leading-snug font-semibold tracking-tight outline-none group-hover:text-primary after:absolute after:inset-0 after:rounded-2xl"
             >
               {name}
             </Link>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <KindLabel opportunity={opportunity} />
+              {/* Who the buyer is, at a glance: a company (B2B) or an individual. */}
+              <span className="rounded-md border px-1.5 py-px text-xs text-muted-foreground">
+                {opportunity.clientType === "company" ? "B2B" : "Individual"}
+              </span>
               {opportunity.engine && <VerificationBadge status={opportunity.engine.verification} />}
               {rank !== null && <span className="text-xs tabular-nums text-muted-foreground">#{rank}</span>}
             </div>
@@ -169,41 +173,30 @@ export function OpportunityCard({
         </div>
       </div>
 
-      {/* 2. What: in their words, set as a quotation, with the roles and the AI's reading under it. */}
-      {words && (
-        <figure className="relative mt-4 pl-7">
-          <span aria-hidden className="absolute -top-2 left-0 font-quote text-5xl leading-none text-primary">
-            “
-          </span>
-          <blockquote className="line-clamp-3 text-pretty font-quote text-[1.1875rem] leading-snug text-foreground">{words}</blockquote>
-        </figure>
+      {/* 2. What they need: one headline (the AI's reading when it has one, else what happened), the roles under it. */}
+      {headline && (
+        <p className="mt-3.5 line-clamp-2 max-w-[75ch] text-[15px] leading-relaxed text-pretty text-foreground/90">
+          {lead.reason && <SparklesIcon className="mr-1.5 inline size-4 -translate-y-px text-primary" aria-label="AI's reading" />}
+          {headline}
+        </p>
       )}
-      {(roles.titles.length > 0 || lead.reason) && (
-        <div className="mt-2 space-y-1 pl-7 text-sm text-muted-foreground">
-          {roles.titles.length > 0 && (
-            <p className="line-clamp-1">
-              {roles.titles.join(", ")}
-              {roles.total > roles.titles.length && ` and ${roles.total - roles.titles.length} more`}
-            </p>
-          )}
-          {lead.reason && (
-            <p className="line-clamp-2">
-              <SparklesIcon className="mr-1 inline size-3.5 -translate-y-px text-primary" aria-label="AI's reading" />
-              {lead.reason}
-            </p>
-          )}
-        </div>
+      {roles.titles.length > 0 && (
+        <p className="mt-1 line-clamp-1 max-w-[75ch] text-[13px] text-muted-foreground">
+          <span className="font-medium text-foreground/70">Roles: </span>
+          {roles.titles.join(" · ")}
+          {roles.total > roles.titles.length && ` +${roles.total - roles.titles.length} more`}
+        </p>
       )}
 
       {/* 3. Yours: the service it's a match for. */}
-      <div className="mt-4">
+      <div className="mt-3">
         {opportunity.service ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-signal-tint px-3 py-1 text-sm font-semibold text-[var(--signal-deep)]">
-            <CircleCheckIcon className="size-4 text-primary" />
+          <span className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-signal-tint px-2.5 py-0.5 text-xs font-medium text-[var(--signal-deep)]">
+            <CircleCheckIcon className="size-3.5 text-primary" />
             Matches {opportunity.service.name}
           </span>
         ) : (
-          <span className="text-sm text-muted-foreground">No service matched yet</span>
+          <span className="text-xs text-muted-foreground">No service matched yet</span>
         )}
       </div>
 

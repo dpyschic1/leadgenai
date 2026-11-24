@@ -1,17 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
-  GlobeIcon,
+  BanknoteIcon,
+  Building2Icon,
   ListChecksIcon,
-  PhoneIcon,
   SearchIcon,
   SparklesIcon,
   TargetIcon,
+  UserRoundIcon,
   XIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
@@ -27,13 +29,11 @@ import { useBulkOpportunities, useOpportunities } from "@/hooks/use-opportunitie
 import { usePermission } from "@/hooks/use-permission";
 import { usePipeline } from "@/hooks/use-pipeline";
 import { EDITOR_ROLES } from "@/lib/permissions";
-import { FILTER_CATEGORIES, FILTER_CATEGORY_LABELS, type FilterCategory } from "@/lib/domain/engine";
+import { FILTER_CATEGORY_LABELS, type FilterCategory } from "@/lib/domain/engine";
 import type { StatusGroup } from "@/lib/domain/opportunities";
 import { cn } from "@/lib/utils";
 import {
   EMPTY_FILTERS,
-  OPPORTUNITY_SORT_LABELS,
-  OPPORTUNITY_SORTS,
   type BulkOpportunitiesValues,
   type OpportunityFilters,
   type OpportunitySort,
@@ -51,6 +51,27 @@ const TABS: { group: StatusGroup; label: string }[] = [
   { group: "closed", label: "Closed" },
 ];
 
+/**
+ * What to show, in one row: everything, companies (B2B), individuals asking for help, or newly
+ * funded companies. One choice at a time; each sets the buyer and kind filters together.
+ */
+type ShowChoice = "all" | "company" | "individual" | "funded";
+const SHOW_CHOICES: { value: ShowChoice; label: string; icon: LucideIcon | null }[] = [
+  { value: "all", label: "All", icon: null },
+  { value: "company", label: "Companies (B2B)", icon: Building2Icon },
+  { value: "individual", label: "Individuals", icon: UserRoundIcon },
+  { value: "funded", label: "Funded company", icon: BanknoteIcon },
+];
+
+/** The choice the filters amount to, and the filters a choice sets. */
+const showChoiceOf = (filters: OpportunityFilters): ShowChoice =>
+  filters.categories.length === 1 && filters.categories[0] === "funded_company" ? "funded" : (filters.clientType ?? "all");
+const withShowChoice = (filters: OpportunityFilters, choice: ShowChoice): OpportunityFilters => ({
+  ...filters,
+  clientType: choice === "company" || choice === "individual" ? choice : null,
+  categories: choice === "funded" ? ["funded_company"] : [],
+});
+
 const EMPTY_TAB: Record<StatusGroup, string> = {
   open: "No open opportunities. Record signals on your companies and they'll appear here, ranked.",
   inProgress: "Nothing in progress yet. Move an opportunity to Contacted once you reach out.",
@@ -63,7 +84,8 @@ const NEW_DAYS = 7;
 
 export function OpportunitiesView() {
   const [group, setGroup] = useState<StatusGroup>("open");
-  const [sort, setSort] = useState<OpportunitySort>("best");
+  // One order, best match first: the strongest opportunities lead.
+  const sort: OpportunitySort = "best";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Tick boxes appear on the cards only while selecting, so the feed stays clean the rest of the time.
   const [selecting, setSelecting] = useState(false);
@@ -129,30 +151,26 @@ export function OpportunitiesView() {
             }}
           />
 
-          <div role="tablist" aria-label="Category" className="flex max-w-full gap-2 overflow-x-auto">
-            {(["all", ...FILTER_CATEGORIES] as const).map((c) => (
-              <button
-                key={c}
-                role="tab"
-                aria-selected={c === category}
-                onClick={() => setCategory(c)}
-                className={cn(
-                  "shrink-0 rounded-full border px-3 py-1 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-                  c === category ? "border-primary/40 bg-signal-tint font-medium text-[var(--signal-deep)]" : "bg-card text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {c === "all" ? "All" : FILTER_CATEGORY_LABELS[c]}
-              </button>
-            ))}
+          {/* What to show: everything, companies (B2B), individuals or funded companies. */}
+          <div role="radiogroup" aria-label="Show" className="flex max-w-full gap-2 overflow-x-auto">
+            {SHOW_CHOICES.map(({ value, label, icon: Icon }) => {
+              const count = value === "all" ? null : data?.clientTypeCounts[value];
+              return (
+                <Pill key={value} role="radio" selected={showChoiceOf(filters) === value} onClick={() => setFilters(withShowChoice(filters, value))}>
+                  {Icon && <Icon className="size-3.5" />}
+                  {label}
+                  {count !== null && <span className="text-xs tabular-nums opacity-70">{count ?? "·"}</span>}
+                </Pill>
+              );
+            })}
           </div>
 
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            {/* On narrow screens the tabs scroll inside their own bar instead of widening the page. */}
-            <div
-              role="tablist"
-              aria-label="Status"
-              className="flex max-w-full overflow-x-auto rounded-lg border bg-card p-1 lg:inline-flex lg:self-start"
-            >
+          {/* Wide screens: one row, the status tabs on the left and search and actions on the right.
+              Below 1536px (a laptop): two rows, the tabs across the full width, then search and actions
+              (the search box takes its own line on a phone). */}
+          <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
+            {/* The tabs share the width equally when stacked; on a narrow phone they scroll inside their bar instead of widening the page. */}
+            <div role="tablist" aria-label="Status" className="flex w-full overflow-x-auto rounded-lg border bg-card p-1 2xl:w-auto 2xl:shrink-0">
               {TABS.map((tab) => {
                 const selected = tab.group === group;
                 return (
@@ -162,7 +180,7 @@ export function OpportunitiesView() {
                     aria-selected={selected}
                     onClick={() => setGroup(tab.group)}
                     className={cn(
-                      "inline-flex shrink-0 items-center gap-2 rounded-md px-3 py-1.5 text-sm whitespace-nowrap transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                      "inline-flex flex-1 shrink-0 items-center justify-center gap-2 rounded-md px-3 py-1.5 text-sm whitespace-nowrap transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 2xl:flex-none",
                       selected ? "bg-signal-tint font-medium text-[var(--signal-deep)]" : "text-muted-foreground hover:text-foreground",
                     )}
                   >
@@ -174,8 +192,8 @@ export function OpportunitiesView() {
                 );
               })}
             </div>
-            <div className="flex flex-wrap gap-2">
-              <div className="relative w-full lg:w-56">
+            <div className="flex flex-wrap items-center gap-2 2xl:flex-nowrap 2xl:justify-end">
+              <div className="relative min-w-0 flex-1 basis-full sm:basis-64 2xl:w-72 2xl:flex-none 2xl:basis-auto">
                 <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="search"
@@ -197,39 +215,7 @@ export function OpportunitiesView() {
                 New this week
                 <span className={cn("rounded-full px-1.5 text-xs tabular-nums", isNew ? "bg-background" : "bg-secondary")}>{data?.newThisWeek ?? "·"}</span>
               </Button>
-              {/* The one filter a caller reaches for most: only leads someone can be contacted at. */}
-              <Button
-                variant="outline"
-                aria-pressed={filters.contact === "any"}
-                onClick={() => setFilters({ ...filters, contact: filters.contact === "any" ? null : "any" })}
-                className={cn("h-9 shrink-0 bg-card", filters.contact === "any" && "border-primary/40 bg-signal-tint text-[var(--signal-deep)]")}
-              >
-                <PhoneIcon />
-                Has contact
-              </Button>
-              {/* Companies hiring remotely: work a remote team can do. */}
-              <Button
-                variant="outline"
-                aria-pressed={filters.remote}
-                onClick={() => setFilters({ ...filters, remote: !filters.remote })}
-                className={cn("h-9 shrink-0 bg-card", filters.remote && "border-primary/40 bg-signal-tint text-[var(--signal-deep)]")}
-              >
-                <GlobeIcon />
-                Remote
-              </Button>
               <FilterPanel filters={filters} onChange={setFilters} />
-              <Select value={sort} onValueChange={(next) => setSort(next as OpportunitySort)}>
-                <SelectTrigger aria-label="Sort by" className="h-9! w-44 shrink-0 bg-card">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  {OPPORTUNITY_SORTS.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {OPPORTUNITY_SORT_LABELS[s]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
               {canEdit && (
                 <Button
                   variant="outline"
@@ -445,5 +431,24 @@ function EmptyOpportunities() {
         <Link href="/services">Set up your services</Link>
       </Button>
     </section>
+  );
+}
+
+/** One choice in the pill rows at the top (kind of opportunity, buyer). */
+function Pill({ selected, role, onClick, children }: { selected: boolean; role: "tab" | "radio"; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      role={role}
+      aria-selected={role === "tab" ? selected : undefined}
+      aria-checked={role === "radio" ? selected : undefined}
+      onClick={onClick}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-sm whitespace-nowrap transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+        selected ? "border-primary/40 bg-signal-tint font-medium text-[var(--signal-deep)]" : "bg-card text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
   );
 }

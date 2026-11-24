@@ -3,6 +3,7 @@ import { COUNTRY_CODES } from "@/lib/countries";
 import { FILTER_CATEGORIES } from "@/lib/domain/engine";
 import { CONTACT_REACH, LEAD_STATUSES, LEAD_TABS, QUALIFICATIONS, ROLE_FAMILIES, STATUS_GROUP_KEYS, type StatusGroup } from "@/lib/domain/opportunities";
 import { paginationFields } from "./pagination";
+import { CLIENT_TYPES } from "./services";
 
 /** Shared by the opportunity pages, the AI search and the route handlers. */
 
@@ -75,6 +76,8 @@ export const opportunityFiltersSchema = z.object({
   remote: flag,
   /** Show only the opportunities scoring hid (likely competitors) instead of the rest. */
   hidden: flag,
+  /** Who the buyer is: a company (B2B) or an individual (someone asking for help in a post); missing means either. */
+  clientType: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(CLIENT_TYPES).nullable()).default(null),
   /** Lead status (see `LEAD_STATUSES`): leads, not checked yet, or not a fit; missing means any. */
   leadStatus: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(LEAD_STATUSES).nullable()).default(null),
 });
@@ -99,6 +102,7 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   contact: null,
   remote: false,
   hidden: false,
+  clientType: null,
   leadStatus: null,
 };
 

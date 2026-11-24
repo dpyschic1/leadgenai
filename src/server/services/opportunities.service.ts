@@ -246,7 +246,7 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
   await refreshStaleScores(auth.workspaceId);
   const { page, pageSize } = query;
 
-  const [rows, countRows, [fresh]] = await Promise.all([
+  const [rows, countRows, [fresh], [byClient]] = await Promise.all([
     summaryQuery()
       .where(feedFilter(auth.workspaceId, query.group, query))
       .orderBy(...feedOrder(query.sort))
@@ -266,12 +266,32 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
       .leftJoin(companies, eq(companies.id, opportunities.companyId))
       .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
       .where(and(feedFilter(auth.workspaceId, query.group, { ...query, foundWithinDays: NEW_DAYS }))),
+    // Companies, individuals and funded companies on the selected tab, with every other filter
+    // applied (not the buyer or kind choice itself, so each choice shows what it would list).
+    db
+      .select({
+        company: sql<number>`(count(*) filter (where ${clientKind} = 'company'))::int`,
+        individual: sql<number>`(count(*) filter (where ${clientKind} = 'individual'))::int`,
+        funded: sql<number>`(count(*) filter (where ${opportunities.category} = 'funded_company'))::int`,
+      })
+      .from(opportunities)
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .where(feedFilter(auth.workspaceId, query.group, { ...query, clientType: null, categories: [] })),
   ]);
 
   const counts = countRows[0] as Record<StatusGroup, number>;
 
   // The tab counts use the same filters, so the selected tab's count is this list's total.
-  return { items: rows.map(toSummary), counts, newThisWeek: fresh?.n ?? 0, total: counts[query.group], page, pageSize };
+  return {
+    items: rows.map(toSummary),
+    counts,
+    newThisWeek: fresh?.n ?? 0,
+    clientTypeCounts: { company: byClient?.company ?? 0, individual: byClient?.individual ?? 0, funded: byClient?.funded ?? 0 },
+    total: counts[query.group],
+    page,
+    pageSize,
+  };
 }
 
 /** What "new" means in the feed: found in the last 7 days. */
@@ -304,6 +324,12 @@ const offeredToClient = sql`(
         else 'company' end) = any(${services.clientTypes})
   )
 )`;
+
+/**
+ * Who the buyer is: an individual when it's a post asking for help by someone with no company,
+ * otherwise a company (B2B: hiring, funding, company news). Expects `opportunities` in the query.
+ */
+const clientKind = sql<"company" | "individual">`(case when ${opportunities.category} = 'intent' and ${opportunities.companyId} is null then 'individual' else 'company' end)`;
 
 const remoteWork = sql`(
   ${opportunities.category} = 'freelance_project'
@@ -649,6 +675,7 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
     filters.foundWithinDays === null ? undefined : gte(opportunities.createdAt, sql`now() - make_interval(days => ${filters.foundWithinDays})`),
     filters.remote ? remoteWork : undefined,
     offeredToClient,
+    filters.clientType === null ? undefined : sql`${clientKind} = ${filters.clientType}`,
     filters.leadStatus === null ? undefined : LEAD_STATUS_CONDITIONS[filters.leadStatus],
     // Likely competitors are hidden unless asked for (then only they are shown).
     filters.hidden ? isNotNull(opportunities.hiddenReason) : isNull(opportunities.hiddenReason),
@@ -1048,6 +1075,7 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
     feedbackVotes: row.feedbackVotes,
     lead: leadOf(opportunity),
     kind: kindOf(opportunity.category, row.leadCategory),
+    clientType: opportunity.category === "intent" && opportunity.companyId === null ? "individual" : "company",
     needs: specificNeeds(row.needs?.length ? row.needs : engineNeeds(opportunity.scoreFactors)),
     openRoles: { titles: row.jobTitles?.titles ?? [], total: row.jobTitles?.total ?? 0 },
     updatedAt: opportunity.updatedAt.toISOString(),

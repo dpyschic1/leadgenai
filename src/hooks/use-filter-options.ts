@@ -34,11 +34,20 @@ export function useFilterOptions(): Record<ListFilterKey, Option[]> {
     signals: options(ref?.signalCategories.filter((category) => category.slug !== "negative")),
     urgency: URGENCY_OPTIONS,
     industries: options(ref?.industries),
-    countries: COUNTRY_OPTIONS,
+    // The countries your services target; every country when a service targets any (or none exists yet).
+    countries:
+      services && services.items.length > 0 && services.items.every((service) => service.targetCountries.length > 0)
+        ? COUNTRY_OPTIONS.filter((country) => services.items.some((service) => service.targetCountries.includes(country.value)))
+        : COUNTRY_OPTIONS,
     sources: SOURCE_OPTIONS,
     intents: INTENT_OPTIONS,
-    // Hiring for: the kind of work the evidence points to (the service categories).
-    needs: options(ref?.serviceCategories),
+    // Hiring for: the kind of work the evidence points to, limited to what your services cover
+    // (every category, before any service exists).
+    needs: options(
+      services && services.items.length > 0
+        ? ref?.serviceCategories.filter((category) => services.items.some((service) => service.categories.includes(category.slug)))
+        : ref?.serviceCategories,
+    ),
   };
 }
 
@@ -52,6 +61,7 @@ export function activeFilterCount(filters: OpportunityFilters): number {
     (filters.foundWithinDays === null ? 0 : 1) +
     (filters.contact === null ? 0 : 1) +
     (filters.leadStatus === null ? 0 : 1) +
+    (filters.clientType === null ? 0 : 1) +
     (filters.remote ? 1 : 0) +
     (filters.hidden ? 1 : 0)
   );

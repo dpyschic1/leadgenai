@@ -486,3 +486,18 @@ describe("job posts beside the contacts", () => {
     expect(positionOf("AssemblyAI posted a job for an Applied AI Engineer in its Customer Experience department.").title).toBe("Applied AI Engineer");
   });
 });
+
+describe("companies and individuals", () => {
+  it("tells B2B opportunities from individuals' posts, with a count for each", async () => {
+    // The post by someone with no company (added for the client-type test) is an individual's.
+    const list = (clientType?: string) => listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", ...(clientType ? { clientType } : {}) }));
+    const all = await list();
+    expect(all.clientTypeCounts.individual).toBe(1);
+    expect(all.clientTypeCounts.company + all.clientTypeCounts.individual).toBe(all.total);
+    const individuals = await list("individual");
+    expect(individuals.items.map((i) => [i.engine?.title, i.clientType])).toEqual([[`Build a React dashboard ${run}`, "individual"]]);
+    const b2b = await list("company");
+    expect(b2b.total).toBe(all.clientTypeCounts.company);
+    expect(b2b.items.every((i) => i.clientType === "company")).toBe(true);
+  });
+});

@@ -43,8 +43,8 @@ function Panel({ title, description, children }: { title: string; description?: 
   return (
     <section className="rounded-xl border bg-card">
       <div className="border-b px-5 py-4">
-        <h2 className="font-semibold">{title}</h2>
-        {description && <p className="text-sm text-muted-foreground">{description}</p>}
+        <h2 className="text-[17px] font-semibold tracking-tight">{title}</h2>
+        {description && <p className="mt-0.5 text-[13px] text-muted-foreground">{description}</p>}
       </div>
       {children}
     </section>
@@ -55,6 +55,8 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
   const canEdit = usePermission(EDITOR_ROLES);
   const update = useUpdateOpportunity(opportunity.id);
   const roles = new Map(opportunity.signals.map((s) => [s.id, s.role]));
+  // What they need in one line: the AI's reading, else what happened, else the post's own title.
+  const headline = opportunity.lead.reason ?? opportunity.problem ?? opportunity.engine?.title ?? null;
 
   const { data: stages } = usePipeline();
   const moveTo = (stageId: string) =>
@@ -76,15 +78,16 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
       </Link>
 
       <header className="flex flex-col gap-5 rounded-2xl border bg-card p-6 sm:flex-row sm:items-center">
+        {/* The company first and largest, then what they need in one line, then the tags. */}
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-2.5">
+          <h1 className="truncate text-3xl leading-tight font-semibold tracking-tight">{opportunityName(opportunity)}</h1>
+          {headline && <p className="mt-2 line-clamp-2 max-w-[70ch] text-base leading-relaxed text-pretty text-foreground/80">{headline}</p>}
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
             <KindLabel opportunity={opportunity} />
             <LeadBadge lead={opportunity.lead} />
-          </p>
-          <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight">{opportunityName(opportunity)}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
             {opportunity.service ? (
-              <span className="rounded-full border border-primary/15 bg-signal-tint px-2.5 py-0.5 text-xs font-medium text-[var(--signal-deep)]">
+              <span className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-signal-tint px-2.5 py-0.5 text-xs font-medium text-[var(--signal-deep)]">
+                <CircleCheckIcon className="size-3.5 text-primary" />
                 Matches {opportunity.service.name}
               </span>
             ) : (
@@ -126,7 +129,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
           <Panel title="Why it's an opportunity">
             <div className="space-y-4 p-5">
               {/* One sentence from the lead signal, for every opportunity; the full post is under Evidence. */}
-              {opportunity.problem && <p className="line-clamp-3 leading-relaxed">{opportunity.problem}</p>}
+              {opportunity.problem && <p className="line-clamp-3 text-[15px] leading-relaxed">{opportunity.problem}</p>}
               {opportunity.suggestedAction && (
                 <div className="flex gap-3 rounded-lg border border-primary/20 bg-signal-tint/60 p-4">
                   <LightbulbIcon className="mt-0.5 size-4 shrink-0 text-primary" />
@@ -208,7 +211,7 @@ function LeadCheckPanel({ opportunity, canEdit }: { opportunity: OpportunityDeta
         </div>
         {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
         {/* The AI's summary for whoever reaches out; the one-line reason when an older check has none. */}
-        {(lead.summary ?? lead.reason) && <p className="leading-relaxed text-pretty">{lead.summary ?? lead.reason}</p>}
+        {(lead.summary ?? lead.reason) && <p className="max-w-[75ch] text-[15px] leading-relaxed text-pretty">{lead.summary ?? lead.reason}</p>}
         {lead.roles.length > 0 ? (
           <RoleBreakdown roles={lead.roles} jobLinks={opportunity.jobLinks} />
         ) : (
@@ -301,9 +304,9 @@ function ContactLink({ href, label, icon: Icon, external }: { href: string; labe
     <a
       href={href}
       {...(external && { target: "_blank", rel: "noopener noreferrer" })}
-      className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+      className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-[13px] transition-colors hover:bg-accent"
     >
-      <Icon className="size-4 text-muted-foreground" />
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="truncate">{label}</span>
     </a>
   );
@@ -313,33 +316,40 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
   const person = opportunity.contactDetails;
   const company = opportunity.company;
   const others = opportunity.otherPeople;
+  const [allPeople, setAllPeople] = useState(false);
+  const shownPeople = allPeople ? others : others.slice(0, PEOPLE_SHOWN);
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <h2 className="font-semibold">Suggested contact</h2>
+    <section className="rounded-xl border bg-card p-4">
+      <h2 className="text-[15px] font-semibold tracking-tight">Suggested contact</h2>
       {person ? (
-        <PersonContact person={person} className="mt-4" />
+        <PersonContact person={person} className="mt-3" />
       ) : (
-        <p className="mt-2 text-sm text-muted-foreground">
+        <p className="mt-1.5 text-[13px] text-muted-foreground">
           {others.length > 0 || opportunity.companyContacts.length > 0
             ? "No one suggested yet: see the people and contacts below."
             : "No one identified yet. Contacts are looked up automatically and appear here when found."}
         </p>
       )}
       {others.length > 0 && (
-        <div className="mt-4 border-t pt-4">
-          <h3 className="text-sm font-medium">{person ? "Other people" : "People"}{company ? ` at ${company.name}` : ""}</h3>
-          <ul className="mt-3 space-y-4">
-            {others.map((other) => (
+        <div className="mt-3 border-t pt-3">
+          <h3 className="text-xs font-medium text-muted-foreground">{person ? "Other people" : "People"}{company ? ` at ${company.name}` : ""}</h3>
+          <ul className="mt-2 space-y-3">
+            {shownPeople.map((other) => (
               <li key={other.id}>
                 <PersonContact person={other} compact />
               </li>
             ))}
           </ul>
+          {others.length > PEOPLE_SHOWN && (
+            <Button variant="link" size="sm" className="mt-1 h-auto px-0 text-xs" onClick={() => setAllPeople(!allPeople)}>
+              {allPeople ? "Show fewer" : `Show all ${others.length}`}
+            </Button>
+          )}
         </div>
       )}
       {opportunity.companyContacts.length > 0 && <CompanyContacts contacts={opportunity.companyContacts} />}
       {company?.domain && (
-        <div className="mt-4 border-t pt-3">
+        <div className="mt-3 border-t pt-3">
           <p className="mb-1 text-xs text-muted-foreground">Website</p>
           <ContactLink href={`https://${company.domain}`} label={company.domain} icon={GlobeIcon} external />
         </div>
@@ -351,7 +361,9 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
 }
 
 /** Job posts shown before "Show all". */
-const JOB_LINKS_SHOWN = 6;
+const JOB_LINKS_SHOWN = 4;
+/** Other people shown before "Show all". */
+const PEOPLE_SHOWN = 3;
 
 /**
  * The job posts behind the opportunity, by position, each opening its posting: the evidence, and
@@ -362,7 +374,7 @@ function JobLinks({ links }: { links: OpportunityDetail["jobLinks"] }) {
   if (links.length === 0) return null;
   const shown = all ? links : links.slice(0, JOB_LINKS_SHOWN);
   return (
-    <div className="mt-4 border-t pt-3">
+    <div className="mt-3 border-t pt-3">
       <p className="mb-2 text-xs text-muted-foreground">
         Job posts ({links.length})
       </p>
@@ -373,7 +385,7 @@ function JobLinks({ links }: { links: OpportunityDetail["jobLinks"] }) {
               href={link.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="group/job flex items-start gap-2 rounded-md text-sm outline-none hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="group/job flex items-start gap-2 rounded-md text-[13px] outline-none hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <BriefcaseBusinessIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground group-hover/job:text-primary" />
               <span className="min-w-0">
@@ -415,7 +427,7 @@ function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail
   const funded = engine?.category === "funded_company";
   return (
     <section className="rounded-xl border bg-card p-5">
-      <h2 className="font-semibold">Suggested contact</h2>
+      <h2 className="text-[15px] font-semibold tracking-tight">Suggested contact</h2>
       {engine?.buyerName ? (
         <div className="mt-4">
           <div className="flex items-center gap-3">
@@ -428,7 +440,7 @@ function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail
             </div>
           </div>
           {engine.buyerProfileUrl && (
-            <div className="mt-2 space-y-0.5">
+            <div className="mt-1.5 space-y-0">
               <ContactLink
                 href={engine.buyerProfileUrl}
                 label={engine.buyerProfileUrl.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
@@ -443,7 +455,7 @@ function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail
       )}
       {named.length > 0 && (
         <div className="mt-4 border-t pt-4">
-          <h3 className="text-sm font-medium">Named in the filing</h3>
+          <h3 className="text-xs font-medium text-muted-foreground">Named in the filing</h3>
           <ul className="mt-3 space-y-3">
             {named.slice(0, 6).map((p) => (
               <li key={p.name} className="flex items-center gap-3">
@@ -511,19 +523,19 @@ function PersonContact({ person, compact = false, className }: { person: Company
   return (
     <div className={className}>
       <div className="flex items-center gap-3">
-        <span className={cn("grid shrink-0 place-items-center rounded-full", compact ? "size-8 bg-muted text-muted-foreground" : "size-10 bg-foreground text-background")}>
-          <UserRoundIcon className={compact ? "size-3.5" : "size-4"} />
+        <span className={cn("grid shrink-0 place-items-center rounded-full", compact ? "size-7 bg-muted text-muted-foreground" : "size-8 bg-foreground text-background")}>
+          <UserRoundIcon className={compact ? "size-3" : "size-3.5"} />
         </span>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <p className="truncate font-medium">{person.name}</p>
+            <p className="truncate text-sm font-medium">{person.name}</p>
             <IdentityBadge level={person.identity} confidence={person.identityConfidence} />
           </div>
-          <p className="truncate text-sm text-muted-foreground">{role}</p>
+          <p className="truncate text-xs text-muted-foreground">{role}</p>
         </div>
       </div>
       {(person.email || person.phone || person.professionalUrl) && (
-        <div className="mt-2 space-y-0.5">
+        <div className="mt-1.5 space-y-0">
           {person.email && (
             <div className="flex items-center justify-between gap-2">
               <ContactLink href={`mailto:${person.email}`} label={person.email} icon={MailIcon} />
@@ -546,8 +558,8 @@ function PersonContact({ person, compact = false, className }: { person: Company
 /** The company's published lines (switchboard, info@, each practice's phone), with where each came from. */
 function CompanyContacts({ contacts }: { contacts: CompanyContact[] }) {
   return (
-    <div className="mt-4 border-t pt-4">
-      <h3 className="text-sm font-medium">Company contact</h3>
+    <div className="mt-3 border-t pt-3">
+      <h3 className="text-xs font-medium text-muted-foreground">Company contact</h3>
       <ul className="mt-2 space-y-0.5">
         {contacts.map((contact) => {
           const shown = contact.type === "website" ? contact.value.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "") : contact.value;
@@ -581,7 +593,7 @@ function NotesCard({ opportunity, canEdit }: { opportunity: OpportunityDetail; c
 
   return (
     <section className="rounded-xl border bg-card p-5">
-      <label htmlFor="notes" className="font-semibold">
+      <label htmlFor="notes" className="text-[17px] font-semibold tracking-tight">
         Notes
       </label>
       <Textarea
