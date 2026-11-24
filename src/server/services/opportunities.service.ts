@@ -685,9 +685,11 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
     db.select().from(opportunityEvidence).where(eq(opportunityEvidence.opportunityId, opportunity.id)).orderBy(desc(opportunityEvidence.capturedAt)),
     db.select().from(opportunityDiscoveries).where(eq(opportunityDiscoveries.opportunityId, opportunity.id)).orderBy(desc(opportunityDiscoveries.seenAt)).limit(50),
   ]);
-  const [companyContacts, tender] = await Promise.all([
+  const supporting = links.filter((l) => l.role !== "negative").map((l) => l.signalId);
+  const [companyContacts, tender, jobLinks] = await Promise.all([
     companyId ? loadCompanyContacts(companyId) : [],
     opportunity.type === "rfp" ? loadTender(auth.workspaceId, links.map((l) => l.signalId)) : null,
+    loadJobLinks(supporting),
   ]);
   const roleOf = new Map(links.map((l) => [l.signalId, l.role]));
   const roleOrder = { primary: 0, corroborating: 1, negative: 2 } as const;
@@ -708,6 +710,7 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
       .sort((a, b) => Number(reachable(b)) - Number(reachable(a)))
       .slice(0, MAX_OTHER_PEOPLE),
     companyContacts,
+    jobLinks,
     tender,
     engineEvidence: evidenceRows.map((e) => ({
       id: e.id,
@@ -723,6 +726,44 @@ export async function getOpportunity(auth: AuthContext, opportunityId: string): 
     listIds: saved.map((s) => s.listId),
     feedback,
   };
+}
+
+/** Job posts listed beside the contact details, at most. */
+const MAX_JOB_LINKS = 20;
+
+/**
+ * The job posts behind an opportunity, for quick access next to its contacts: each position's name
+ * and the link to the posting (the job board's own record, else the signal's evidence link).
+ */
+async function loadJobLinks(signalIds: string[]): Promise<OpportunityDetail["jobLinks"]> {
+  if (signalIds.length === 0) return [];
+  const rows = await db.execute<{ title: string; url: string; location: string | null }>(sql`
+    select distinct on (url) title, url, location from (
+      select ${jobPostings.title} as title, ${jobPostings.url} as url, ${jobPostings.location} as location, 0 as rank
+      from ${jobPostings} where ${inArray(jobPostings.signalId, signalIds)}
+      union all
+      select ${signals.summary} as title, ${signalEvidence.sourceUrl} as url, null as location, 1 as rank
+      from ${signalEvidence} join ${signals} on ${signals.id} = ${signalEvidence.signalId}
+      where ${inArray(signalEvidence.signalId, signalIds)} and ${signalEvidence.sourceUrl} is not null
+    ) j
+    order by url, rank
+    limit ${MAX_JOB_LINKS}`);
+  return rows.map((r) => ({ ...positionOf(r.title), url: r.url, location: r.location ?? positionOf(r.title).location })).sort((a, b) => a.title.localeCompare(b.title));
+}
+
+/**
+ * A position's name (and place) from a job title or a signal's sentence: "Kita is hiring a Creative AI
+ * Engineer (San Francisco, CA), with 2 open postings. Posted 2026-11-23." -> "Creative AI Engineer",
+ * "San Francisco, CA". A plain job title is returned as it is. Pure.
+ */
+export function positionOf(text: string): { title: string; location: string | null } {
+  // "is hiring a X (Place)": the place may hold one bracket of its own ("Remote (USA timezones)").
+  const hiring = /is hiring an? (.+?)(?: \(((?:[^()]|\([^()]*\))*)\))?(?:, with .*|\. Posted.*|\.)?$/.exec(text);
+  if (hiring) return { title: hiring[1].trim(), location: hiring[2]?.trim() || null };
+  // "posted a job for an Applied AI Engineer in its Customer Experience department, ..."
+  const posted = /posted an? (?:job|role|opening|position) for an? (.+?)(?: in | to | at |,|\.|$)/.exec(text);
+  if (posted) return { title: posted[1].trim(), location: null };
+  return { title: text, location: null };
 }
 
 /** An engine opportunity's stored factors as labelled rows, in the spec's order. */
@@ -1057,9 +1098,11 @@ function leadOf(opportunity: SummaryRow["opportunity"]): OpportunitySummary["lea
       budget: opportunity.qualificationHints?.budget ?? null,
       timeline: opportunity.qualificationHints?.timeline ?? null,
       fittingRoles: opportunity.qualificationHints?.fittingRoles ?? [],
+      summary: opportunity.qualificationHints?.summary ?? null,
+      roles: opportunity.qualificationHints?.roles ?? [],
       by: opportunity.qualifiedBy === "team" ? "team" : "ai",
     };
   }
   const checking = (opportunity.opportunityScore ?? 0) >= QUALIFY_MIN_SCORE && opportunity.hiddenReason === null;
-  return { status: checking ? "checking" : "unchecked", score: null, reason: null, quote: null, budget: null, timeline: null, fittingRoles: [], by: null };
+  return { status: checking ? "checking" : "unchecked", score: null, reason: null, quote: null, budget: null, timeline: null, fittingRoles: [], summary: null, roles: [], by: null };
 }

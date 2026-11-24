@@ -465,3 +465,24 @@ describe("who the services are sold to", () => {
     expect(await titles()).toContain(`Build a React dashboard ${run}`);
   });
 });
+
+describe("job posts beside the contacts", () => {
+  it("lists each job post by position, with its link", async () => {
+    const { getOpportunity, positionOf } = await import("@/server/services/opportunities.service");
+    const [medisync] = (await listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", q: "Medisync" }))).items;
+    const detail = await getOpportunity(auth, medisync.id);
+    // The job board's record (title and place) and the signal's own evidence link.
+    expect(detail.jobLinks).toEqual(
+      expect.arrayContaining([
+        { title: "Software Engineer", url: `https://example.com/${run}`, location: "Remote - US" },
+        expect.objectContaining({ url: `https://jobs.example/medisync-${run}` }),
+      ]),
+    );
+    expect(positionOf("Kita is hiring a Creative AI Engineer (San Francisco, CA), with 2 open postings for this role. Posted 2026-11-23.")).toEqual({
+      title: "Creative AI Engineer",
+      location: "San Francisco, CA",
+    });
+    expect(positionOf("Cairhealth is hiring a Software Engineer (Remote (USA timezones)). Posted 2026-11-23.")).toEqual({ title: "Software Engineer", location: "Remote (USA timezones)" });
+    expect(positionOf("AssemblyAI posted a job for an Applied AI Engineer in its Customer Experience department.").title).toBe("Applied AI Engineer");
+  });
+});

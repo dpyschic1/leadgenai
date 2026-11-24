@@ -3,7 +3,9 @@ import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   boardJobs,
+  collectedItems,
   companies,
+  companyContactPoints,
   companyLocations,
   jobPostings,
   opportunities,
@@ -19,6 +21,10 @@ import { withAiSlot } from "@/server/ingestion/handlers";
 import { AppError } from "@/server/http/errors";
 import { getReferenceData } from "@/server/services/reference-data.service";
 import { loadServices } from "@/server/services/services.service";
+import { isJobHost } from "@/server/collection/collectors/html-jobs";
+import { htmlToText } from "@/server/jobs/html-to-text";
+import { emailsFrom } from "@/server/sources/company-website";
+import { politeGet } from "@/server/sources/http";
 
 /**
  * Turning opportunities into leads (as lead tools such as Buska do): everything found is an
@@ -97,6 +103,62 @@ export async function qualifyLeads({ workspaceId, limit, deadline }: { workspace
   return checked;
 }
 
+/** Job pages read per opportunity when no text is stored (each one a polite request to the employer's site). */
+const MAX_PAGES_READ = 2;
+
+/**
+ * Whether a job link may be read: the employer's own website, or the job board it posts on (an ATS
+ * such as Greenhouse or Ashby). Never LinkedIn, Indeed or a job aggregator: we don't read those
+ * sites. Pure.
+ */
+export function readablePosting(url: string, companyDomain: string | null): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return false;
+  }
+  if (/(^|\.)(linkedin|indeed|glassdoor|ziprecruiter|monster|simplyhired)\.[a-z.]+$/.test(host)) return false;
+  if (companyDomain && (host === companyDomain || host.endsWith(`.${companyDomain}`))) return true;
+  return isJobHost(host);
+}
+
+/** A job's text as the careers-page collector already stored it, by its link. */
+async function collectedText(url: string): Promise<string | null> {
+  const [row] = await db
+    .select({ body: collectedItems.body })
+    .from(collectedItems)
+    .where(and(eq(collectedItems.url, url), sql`${collectedItems.body} is not null and length(${collectedItems.body}) > 200`))
+    .limit(1);
+  return row?.body ?? null;
+}
+
+/** The job page's text, read once and politely (robots.txt respected); null when it can't be read. */
+async function readPosting(url: string): Promise<string | null> {
+  try {
+    const page = await politeGet(url, { timeoutMs: 10_000 });
+    if (page.status >= 400 || !/html/i.test(page.contentType)) return null;
+    const text = htmlToText(page.body);
+    return text.length > 200 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Saves the emails on the company's own domain that its job posts publish, as company contacts. */
+async function saveOwnEmails(companyId: string, domain: string, postings: { text: string; url: string | null }[]): Promise<void> {
+  const own = (email: string) => email.endsWith(`@${domain}`) || email.endsWith(`.${domain}`);
+  // Each address once, with the job post it was published in.
+  const found = new Map<string, string | null>();
+  for (const posting of postings) for (const email of emailsFrom(posting.text, domain).filter(own)) if (!found.has(email)) found.set(email, posting.url);
+  const emails = [...found].slice(0, 3);
+  if (emails.length === 0) return;
+  await db
+    .insert(companyContactPoints)
+    .values(emails.map(([value, sourceUrl]) => ({ companyId, type: "email" as const, value, sourceSlug: "job_board", sourceUrl })))
+    .onConflictDoNothing();
+}
+
 /** What the AI reads about one opportunity: the matched service, the buyer and the evidence. Null when it's gone. */
 async function gatherInput(workspaceId: string, opportunityId: string): Promise<QualifyInput | null> {
   const [opp] = await db.select().from(opportunities).where(and(eq(opportunities.id, opportunityId), eq(opportunities.workspaceId, workspaceId)));
@@ -162,7 +224,7 @@ async function gatherInput(workspaceId: string, opportunityId: string): Promise<
     const ids = linked.map((s) => s.id);
     const [excerpts, jobs] = ids.length
       ? await Promise.all([
-          db.select({ signalId: signalEvidence.signalId, excerpt: signalEvidence.excerpt }).from(signalEvidence).where(inArray(signalEvidence.signalId, ids)),
+          db.select({ signalId: signalEvidence.signalId, excerpt: signalEvidence.excerpt, url: signalEvidence.sourceUrl }).from(signalEvidence).where(inArray(signalEvidence.signalId, ids)),
           db
             .select({
               signalId: jobPostings.signalId,
@@ -176,14 +238,30 @@ async function gatherInput(workspaceId: string, opportunityId: string): Promise<
             .limit(MAX_SIGNALS * 2),
         ])
       : [[], []];
+    // The posting itself is the real evidence: its stored text, else the page read once (only the
+    // employer's own site or its job board, never LinkedIn, Indeed or a job aggregator).
+    const postings: { text: string; url: string | null }[] = [];
+    let fetched = 0;
     for (const signal of linked) {
       add(`Signal (${signal.occurredAt.toISOString().slice(0, 10)}): ${signal.summary}`);
-      for (const e of excerpts.filter((x) => x.signalId === signal.id)) add(e.excerpt && `Excerpt: ${e.excerpt}`);
-      for (const job of jobs.filter((j) => j.signalId === signal.id)) {
-        add(`Job post: ${job.title}${job.location ? ` (${job.location})` : ""}`);
-        add(job.description?.slice(0, MAX_JOB_CHARS));
+      const evidence = excerpts.filter((x) => x.signalId === signal.id);
+      for (const e of evidence) add(e.excerpt && `Excerpt: ${e.excerpt}`);
+      const stored = jobs.filter((j) => j.signalId === signal.id && j.description);
+      for (const job of jobs.filter((j) => j.signalId === signal.id)) add(`Job post: ${job.title}${job.location ? ` (${job.location})` : ""}`);
+      let text = stored[0]?.description ?? null;
+      const link = evidence.find((e) => e.url)?.url ?? null;
+      if (!text && link) text = await collectedText(link);
+      if (!text && link && fetched < MAX_PAGES_READ && readablePosting(link, company?.domain ?? null)) {
+        fetched++;
+        text = await readPosting(link);
+      }
+      if (text) {
+        postings.push({ text, url: link });
+        add(`Job post text: ${text.slice(0, MAX_JOB_CHARS)}`);
       }
     }
+    // An address the employer publishes in its own job post (jobs@its-domain) is a way in too.
+    if (company?.domain && postings.length > 0) await saveOwnEmails(opp.companyId, company.domain, postings);
   } else {
     buyer = [
       opp.buyerName ? `Posted by: ${opp.buyerName}` : "Posted by: unknown",

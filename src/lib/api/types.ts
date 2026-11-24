@@ -311,6 +311,10 @@ export type OpportunitySummary = {
     timeline: string | null;
     /** The open roles the AI judged your service could fill. */
     fittingRoles: string[];
+    /** The AI's summary for the sales team: what they need, which part of your service covers it, why now. */
+    summary: string | null;
+    /** Every open role as the AI judged it: fits or not, the part of your service that covers it, a short note. */
+    roles: { title: string; fits: boolean; coveredBy: string | null; note: string }[];
     by: "ai" | "team" | null;
   };
   /** What kind of opportunity it is: hiring, asking for help, a freelance project, recently funded, company news, a problem found, or other. */
@@ -395,6 +399,8 @@ export type OpportunityDetail = OpportunitySummary & {
   otherPeople: CompanyPerson[];
   /** Every published company phone/email, with where it came from (e.g. "Swindon practice" from CQC). */
   companyContacts: CompanyContact[];
+  /** The job posts behind it: each position and the link to its posting, for quick access beside the contacts. */
+  jobLinks: { title: string; url: string; location: string | null }[];
   /** For a public tender: its notice and closing date (ISO), shown with the contact. */
   tender: { url: string | null; closesAt: string | null; closed: boolean } | null;
   /** The engine's score factors with their weights; null for company-signal opportunities. */

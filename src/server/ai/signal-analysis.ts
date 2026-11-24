@@ -126,7 +126,8 @@ export async function analyzeSignal(
         temperature: 0,
         abortSignal: AbortSignal.timeout(TIMEOUT_MS),
       });
-      return { ...finalizeAnalysis(result.output as RawAnalysis, input.text, ref), model: AI_MODEL_ID };
+      // The model that answered: the fast one when the main one was out of today's allowance.
+      return { ...finalizeAnalysis(result.output as RawAnalysis, input.text, ref), model: result.response.modelId || AI_MODEL_ID };
     } catch (error) {
       if (attempt < MAX_ATTEMPTS && NoObjectGeneratedError.isInstance(error)) {
         messages.push(

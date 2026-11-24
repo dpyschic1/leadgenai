@@ -1140,7 +1140,13 @@ export const opportunities = pgTable(
     qualificationReason: text(),
     qualificationQuote: text(),
     /** Budget or timeline the evidence states, when it does: { budget?: string, timeline?: string }. */
-    qualificationHints: jsonb().$type<{ budget?: string; timeline?: string; fittingRoles?: string[] }>(),
+    qualificationHints: jsonb().$type<{
+      budget?: string;
+      timeline?: string;
+      fittingRoles?: string[];
+      summary?: string;
+      roles?: { title: string; fits: boolean; coveredBy: string | null; note: string }[];
+    }>(),
     /** "ai" or "team". A team decision is never overwritten by the AI. */
     qualifiedBy: text(),
     qualifiedAt: timestamp({ withTimezone: true }),

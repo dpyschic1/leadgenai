@@ -28,22 +28,37 @@ export type QualifyInput = {
   evidence: string;
 };
 
+/** One open role as the AI judged it: whether the service can fill it, under which of its categories, and why. */
+export type RoleVerdict = { title: string; fits: boolean; coveredBy: string | null; note: string };
+
 export type QualifyResult = {
   qualification: Qualification;
   score: number;
   reason: string;
   quote: string | null;
-  hints: { budget?: string; timeline?: string; fittingRoles?: string[] };
+  hints: { budget?: string; timeline?: string; fittingRoles?: string[]; summary?: string; roles?: RoleVerdict[] };
 };
 
 const outputSchema = z.object({
   verdict: z.enum(QUALIFICATIONS),
   fit: z.number().int().describe("0-100: how likely this is a real buyer for the service now."),
   reason: z.string().describe("One plain sentence, under 200 characters."),
+  summary: z
+    .string()
+    .describe("2-3 plain sentences for the sales team: what the company needs, which part of the service covers it, and why now (or why it isn't a lead)."),
+  roles: z
+    .array(
+      z.object({
+        title: z.string().describe("The role's title as the evidence gives it."),
+        fits: z.boolean().describe("Whether the service can fill this role."),
+        covered_by: z.string().describe("The service category that covers it (one of the service's categories), or empty when it doesn't fit."),
+        note: z.string().describe("Under 90 characters: what the role needs (stack, seniority) when it fits; why not when it doesn't."),
+      }),
+    )
+    .describe("Every open role in the evidence, each judged; empty when the evidence lists no roles."),
   quote: z.string().describe("One sentence copied word for word from the evidence that shows the need, or empty."),
   budget: z.string().describe("The budget the evidence states, in its words, or empty."),
   timeline: z.string().describe("The timeline or start date the evidence states, in its words, or empty."),
-  fitting_roles: z.array(z.string()).describe("The open roles (titles as given) the service could fill; empty when none or no roles are listed."),
 });
 
 const SYSTEM = `You qualify sales leads for a software development and AI agency. You get one opportunity: who the buyer is, the evidence found about them (job posts, a post asking for help, a freelance project, a funding round) and the agency's service it was matched to. Decide whether it is worth the sales team's time now.
@@ -57,12 +72,18 @@ Verdicts:
 
 Hiring is demand. For staff augmentation, dedicated developers or outsourced development, a company hiring the kind of engineers the service provides IS the buyer: it needs those people now, and the agency supplies them faster than hiring. Never call it not_fit because the company "hires directly" or "isn't looking for an agency".
 
-Several roles: judge the opportunity on all of its roles together. List every role the service could fill in fitting_roles; one unrelated role (a machinist, a salesperson) never outweighs the roles that fit. Not_fit only when none of the roles fit.
+Several roles: judge the opportunity on all of its roles together. Judge every role in roles (fits or not, the category that covers it, a short note); one unrelated role (a machinist, a salesperson) never outweighs the roles that fit. Not_fit only when none of the roles fit. Every category the service lists counts: "UI / UX design" covers product and UX designers, "Cloud & DevOps" covers platform, SRE and DevOps engineers, "Data & analytics" covers data engineers. Work in a category the service doesn't list (Salesforce or CRM admin, security operations, hardware) doesn't fit.
+
+How hot: hot = an explicit request for help, a founding or urgent hire, or two or more roles the service can fill; warm = one role it can fill, or a fit that depends on unknown size or timing. Spread the fit: 90-100 an explicit request, 75-89 several fitting roles, 55-74 one fitting role.
+
+Not a buyer: a recruiter, staffing firm or hiring marketplace posting jobs for its clients (many unrelated "AI expert" or "AI training" roles such as clinicians, chemists and artists, "for our client", contract talent pools) sells talent like the agency does: not_fit, whatever the roles.
 
 Rules:
 - Judge only from the evidence given. If it doesn't show a need, say so; don't assume one.
-- fit: hot is usually 70-100, warm 40-69, not_fit 0-39.
+- fit: hot 75-100, warm 55-74, not_fit 0-39 (see "How hot").
 - reason: one plain sentence naming the concrete need (or why not), e.g. "Hiring 3 React developers and an ML engineer for its new product." No marketing words.
+- summary: written for a salesperson about to reach out, e.g. "Charlie Health is growing its provider platform team in New York: a platform engineer, a full-stack engineer and a product designer. Your Staff Augmentation service covers all three (Cloud & DevOps, Software development, UI / UX design); all were posted this week." Name the roles and the categories; no marketing words, no advice.
+- roles: one entry per distinct role (a role posted twice is one entry), in the order given. covered_by uses the service's own category names exactly.
 - quote: copy one sentence exactly from the evidence; leave it empty if no sentence shows the need.
 - budget / timeline: only what the evidence states (e.g. "$5,000-10,000", "start ASAP"); otherwise empty.`;
 
@@ -118,8 +139,20 @@ export function toResult(raw: z.infer<typeof outputSchema>, evidence: string): Q
   const hints: QualifyResult["hints"] = {};
   if (text(raw.budget, 100)) hints.budget = text(raw.budget, 100);
   if (text(raw.timeline, 100)) hints.timeline = text(raw.timeline, 100);
-  const fitting = (raw.fitting_roles ?? []).map((r) => text(r, 120)).filter(Boolean).slice(0, 12);
+  // Each role once (a role posted twice is one), fitting ones first.
+  const seen = new Set<string>();
+  const roles: RoleVerdict[] = [];
+  for (const r of raw.roles ?? []) {
+    const title = text(r.title, 120);
+    if (!title || seen.has(title.toLowerCase())) continue;
+    seen.add(title.toLowerCase());
+    roles.push({ title, fits: r.fits, coveredBy: r.fits ? text(r.covered_by, 60) || null : null, note: text(r.note, 140) });
+  }
+  roles.sort((a, b) => Number(b.fits) - Number(a.fits));
+  if (roles.length > 0) hints.roles = roles.slice(0, 25);
+  const fitting = roles.filter((r) => r.fits).map((r) => r.title);
   if (fitting.length > 0) hints.fittingRoles = fitting;
+  if (text(raw.summary, 700)) hints.summary = text(raw.summary, 700);
   return {
     qualification: raw.verdict,
     score: Math.min(100, Math.max(0, Math.round(raw.fit))),

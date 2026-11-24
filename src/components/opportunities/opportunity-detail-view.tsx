@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeftIcon, GlobeIcon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
+import { ArrowLeftIcon, BriefcaseBusinessIcon, CircleCheckIcon, CircleMinusIcon, ExternalLinkIcon, GlobeIcon, LightbulbIcon, LinkIcon, MailIcon, PhoneIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { IdentityBadge, OsmCredit, OvertureCredit, VerificationMark } from "@/components/companies/contact-status";
 import { SaveToListMenu } from "@/components/lists/save-to-list-menu";
@@ -207,12 +207,17 @@ function LeadCheckPanel({ opportunity, canEdit }: { opportunity: OpportunityDeta
           {lead.by && <span className="text-xs text-muted-foreground">{lead.by === "team" ? "Decided by your team" : "Checked by the AI"}</span>}
         </div>
         {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
-        {lead.reason && <p className="leading-relaxed">{lead.reason}</p>}
-        {lead.fittingRoles.length > 0 && (
-          <p className="text-sm">
-            <span className="font-medium">Roles you can fill: </span>
-            <span className="text-muted-foreground">{lead.fittingRoles.join(", ")}</span>
-          </p>
+        {/* The AI's summary for whoever reaches out; the one-line reason when an older check has none. */}
+        {(lead.summary ?? lead.reason) && <p className="leading-relaxed text-pretty">{lead.summary ?? lead.reason}</p>}
+        {lead.roles.length > 0 ? (
+          <RoleBreakdown roles={lead.roles} jobLinks={opportunity.jobLinks} />
+        ) : (
+          lead.fittingRoles.length > 0 && (
+            <p className="text-sm">
+              <span className="font-medium">Roles you can fill: </span>
+              <span className="text-muted-foreground">{lead.fittingRoles.join(", ")}</span>
+            </p>
+          )
         )}
         {lead.quote && <blockquote className="border-l-2 border-primary/40 pl-3 text-sm italic text-muted-foreground">“{lead.quote}”</blockquote>}
         {(lead.budget || lead.timeline) && (
@@ -243,6 +248,51 @@ function LeadCheckPanel({ opportunity, canEdit }: { opportunity: OpportunityDeta
         )}
       </div>
     </Panel>
+  );
+}
+
+/**
+ * Every open role as the AI judged it: the ones your service can fill (with the part of your service
+ * that covers each) first, then the ones it can't and why. A role opens its job post when one matches.
+ */
+function RoleBreakdown({ roles, jobLinks }: { roles: OpportunityDetail["lead"]["roles"]; jobLinks: OpportunityDetail["jobLinks"] }) {
+  const fitting = roles.filter((r) => r.fits).length;
+  const linkOf = (title: string) => jobLinks.find((l) => l.title.toLowerCase() === title.toLowerCase())?.url ?? null;
+  return (
+    <div>
+      <p className="mb-2 text-sm font-medium">
+        {fitting} of {roles.length} {roles.length === 1 ? "role" : "roles"} your service can fill
+      </p>
+      <ul className="divide-y rounded-lg border">
+        {roles.map((role) => {
+          const link = linkOf(role.title);
+          return (
+            <li key={role.title} className="flex items-start gap-3 px-3 py-2.5">
+              {role.fits ? (
+                <CircleCheckIcon className="mt-0.5 size-4 shrink-0 text-primary" aria-label="Fits" />
+              ) : (
+                <CircleMinusIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground/60" aria-label="Doesn't fit" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  {link ? (
+                    <a href={link} target="_blank" rel="noopener noreferrer" className={cn("text-sm font-medium hover:text-primary hover:underline underline-offset-4", !role.fits && "text-muted-foreground")}>
+                      {role.title}
+                    </a>
+                  ) : (
+                    <span className={cn("text-sm font-medium", !role.fits && "text-muted-foreground")}>{role.title}</span>
+                  )}
+                  {role.coveredBy && (
+                    <span className="rounded-md bg-signal-tint px-1.5 py-0.5 text-xs font-medium text-[var(--signal-deep)]">{role.coveredBy}</span>
+                  )}
+                </div>
+                {role.note && <p className="mt-0.5 text-xs text-muted-foreground">{role.note}</p>}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -294,10 +344,65 @@ function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
           <ContactLink href={`https://${company.domain}`} label={company.domain} icon={GlobeIcon} external />
         </div>
       )}
+      <JobLinks links={opportunity.jobLinks} />
       {opportunity.type === "rfp" && <TenderNote tender={opportunity.tender} />}
     </section>
   );
 }
+
+/** Job posts shown before "Show all". */
+const JOB_LINKS_SHOWN = 6;
+
+/**
+ * The job posts behind the opportunity, by position, each opening its posting: the evidence, and
+ * often the way to reach the hiring team (the post names who to apply to).
+ */
+function JobLinks({ links }: { links: OpportunityDetail["jobLinks"] }) {
+  const [all, setAll] = useState(false);
+  if (links.length === 0) return null;
+  const shown = all ? links : links.slice(0, JOB_LINKS_SHOWN);
+  return (
+    <div className="mt-4 border-t pt-3">
+      <p className="mb-2 text-xs text-muted-foreground">
+        Job posts ({links.length})
+      </p>
+      <ul className="space-y-1.5">
+        {shown.map((link) => (
+          <li key={link.url}>
+            <a
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group/job flex items-start gap-2 rounded-md text-sm outline-none hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50"
+            >
+              <BriefcaseBusinessIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground group-hover/job:text-primary" />
+              <span className="min-w-0">
+                <span className="block truncate font-medium">{link.title}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {[link.location, hostOf(link.url)].filter(Boolean).join(" · ")}
+                </span>
+              </span>
+              <ExternalLinkIcon className="ml-auto mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+            </a>
+          </li>
+        ))}
+      </ul>
+      {links.length > JOB_LINKS_SHOWN && (
+        <Button variant="link" size="sm" className="mt-1 h-auto px-0" onClick={() => setAll(!all)}>
+          {all ? "Show fewer" : `Show all ${links.length}`}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+};
 
 /**
  * The "Suggested contact" card for a discovered opportunity (no company record): the buyer the
