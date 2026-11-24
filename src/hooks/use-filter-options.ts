@@ -62,6 +62,7 @@ export function activeFilterCount(filters: OpportunityFilters): number {
     (filters.contact === null ? 0 : 1) +
     (filters.leadStatus === null ? 0 : 1) +
     (filters.clientType === null ? 0 : 1) +
+    (filters.companyStage === null ? 0 : 1) +
     (filters.remote ? 1 : 0) +
     (filters.hidden ? 1 : 0)
   );

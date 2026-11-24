@@ -501,3 +501,46 @@ describe("companies and individuals", () => {
     expect(b2b.items.every((i) => i.clientType === "company")).toBe(true);
   });
 });
+
+describe("startups and job openings", () => {
+  it("files companies that need the work you do as B2B, whatever their size, and ordinary hiring as job openings", async () => {
+    const list = (companyStage?: string) => listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", ...(companyStage ? { companyStage } : {}) }));
+    const stageOf = async (name: string) => (await list()).items.find((i) => i.company?.name === name)?.companyStage;
+    const ids = new Map((await listCompanies(auth, undefined, { page: 1, pageSize: 100 })).items.map((c) => [c.name, c.id]));
+
+    // Asking for a service is B2B at any size (Northbridge's signal is a service request).
+    await db.update(companies).set({ employeeCount: 5000 }).where(eq(companies.id, ids.get("Northbridge Legal")!));
+    expect(await stageOf("Northbridge Legal")).toBe("startup");
+    await db.update(companies).set({ employeeCount: 50 }).where(eq(companies.id, ids.get("Northbridge Legal")!));
+
+    // A small company hiring only for work your services don't cover (MVP work here; the test services
+    // are web development and staff augmentation) is ordinary hiring...
+    expect(await stageOf("Ledgerline")).toBe("established");
+    // ...until it opens a role your services cover.
+    await createSignal(
+      auth,
+      ids.get("Ledgerline")!,
+      signalSchema.parse({
+        signalType: "engineering_hiring",
+        intentLevel: "high",
+        urgency: "medium",
+        serviceCategories: ["web_development"],
+        summary: "Ledgerline is hiring a Frontend Engineer.",
+        personId: null,
+        occurredOn: daysAgo(2),
+        sourceUrl: null,
+        excerpt: null,
+        evidenceLabel: "observed",
+        source: "manual",
+        confidence: null,
+      }),
+    );
+    await rescoreCompany(auth.workspaceId, ids.get("Ledgerline")!);
+    expect(await stageOf("Ledgerline")).toBe("startup");
+
+    // Every company is in one group; the individual's post is in neither.
+    const after = await list();
+    expect(after.clientTypeCounts.startup + after.clientTypeCounts.established).toBe(after.total - after.clientTypeCounts.individual);
+    expect((await list("startup")).items.every((i) => i.companyStage === "startup")).toBe(true);
+  });
+});

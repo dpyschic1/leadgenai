@@ -59,6 +59,9 @@ export const KIND: Record<OpportunitySummary["kind"], { label: string; icon: Luc
   other: { label: "Signal", icon: RadioTowerIcon },
 };
 
+/** The buyer tag on a card. */
+const STAGE_TAG: Record<OpportunitySummary["companyStage"], string> = { startup: "B2B", established: "Job opening", individual: "Individual" };
+
 /** What they're doing, in plain words: "Hiring 6 roles", "Just raised funding". */
 export function KindLabel({ opportunity, className }: { opportunity: Pick<OpportunitySummary, "kind" | "openRoles">; className?: string }) {
   const { label, icon: Icon } = KIND[opportunity.kind];
@@ -152,9 +155,14 @@ export function OpportunityCard({
             </Link>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <KindLabel opportunity={opportunity} />
-              {/* Who the buyer is, at a glance: a company (B2B) or an individual. */}
-              <span className="rounded-md border px-1.5 py-px text-xs text-muted-foreground">
-                {opportunity.clientType === "company" ? "B2B" : "Individual"}
+              {/* What kind of buyer, at a glance: a startup likely to buy from an agency, or a company posting job openings. */}
+              <span
+                className={cn(
+                  "rounded-md border px-1.5 py-px text-xs",
+                  opportunity.companyStage === "startup" ? "border-primary/30 bg-signal-tint text-[var(--signal-deep)]" : "text-muted-foreground",
+                )}
+              >
+                {STAGE_TAG[opportunity.companyStage]}
               </span>
               {opportunity.engine && <VerificationBadge status={opportunity.engine.verification} />}
               {rank !== null && <span className="text-xs tabular-nums text-muted-foreground">#{rank}</span>}

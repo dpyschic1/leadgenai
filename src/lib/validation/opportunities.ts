@@ -76,6 +76,12 @@ export const opportunityFiltersSchema = z.object({
   remote: flag,
   /** Show only the opportunities scoring hid (likely competitors) instead of the rest. */
   hidden: flag,
+  /**
+   * What kind of buyer: a startup likely to buy from an agency (B2B: newly funded, a small YC
+   * company, 200 staff or fewer, or hiring a founding role), or an established company posting job
+   * openings for employees; missing means either.
+   */
+  companyStage: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(["startup", "established"]).nullable()).default(null),
   /** Who the buyer is: a company (B2B) or an individual (someone asking for help in a post); missing means either. */
   clientType: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(CLIENT_TYPES).nullable()).default(null),
   /** Lead status (see `LEAD_STATUSES`): leads, not checked yet, or not a fit; missing means any. */
@@ -102,6 +108,7 @@ export const EMPTY_FILTERS: OpportunityFilters = {
   contact: null,
   remote: false,
   hidden: false,
+  companyStage: null,
   clientType: null,
   leadStatus: null,
 };

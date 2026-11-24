@@ -321,6 +321,8 @@ export type OpportunitySummary = {
   kind: "hiring" | "request" | "project" | "funding" | "event" | "problem" | "other";
   /** Who the buyer is: a company (B2B), or an individual asking for help in a post. */
   clientType: "company" | "individual";
+  /** A startup likely to buy from an agency (B2B), an established company posting job openings, or an individual's post. */
+  companyStage: "startup" | "established" | "individual";
   /** What they need: service category slugs their evidence points to. */
   needs: string[];
   /** The roles they're hiring for: a few titles, and how many in all. */
@@ -363,7 +365,7 @@ export type OpportunityList = Page<OpportunitySummary> & {
   /** How many on the selected tab were found in the last 7 days (with the other filters). */
   newThisWeek: number;
   /** How many on the selected tab are companies (B2B), individuals, and funded companies (with the other filters). */
-  clientTypeCounts: { company: number; individual: number; funded: number };
+  clientTypeCounts: { company: number; individual: number; funded: number; startup: number; established: number };
 };
 
 /** A lead on the Leads page: an opportunity plus the roles it is hiring for (newest first). */

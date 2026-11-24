@@ -10,8 +10,8 @@ import {
   ListChecksIcon,
   SearchIcon,
   SparklesIcon,
+  RocketIcon,
   TargetIcon,
-  UserRoundIcon,
   XIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -52,23 +52,25 @@ const TABS: { group: StatusGroup; label: string }[] = [
 ];
 
 /**
- * What to show, in one row: everything, companies (B2B), individuals asking for help, or newly
- * funded companies. One choice at a time; each sets the buyer and kind filters together.
+ * What to show, in one row: everything; startups likely to buy from an agency (B2B: newly funded, small
+ * YC companies, 200 staff or fewer, founding roles); established companies posting job openings for
+ * employees; or newly funded companies only. One choice at a time.
  */
-type ShowChoice = "all" | "company" | "individual" | "funded";
-const SHOW_CHOICES: { value: ShowChoice; label: string; icon: LucideIcon | null }[] = [
-  { value: "all", label: "All", icon: null },
-  { value: "company", label: "Companies (B2B)", icon: Building2Icon },
-  { value: "individual", label: "Individuals", icon: UserRoundIcon },
-  { value: "funded", label: "Funded company", icon: BanknoteIcon },
+type ShowChoice = "all" | "startup" | "established" | "funded";
+const SHOW_CHOICES: { value: ShowChoice; label: string; icon: LucideIcon | null; hint: string }[] = [
+  { value: "all", label: "All", icon: null, hint: "Every opportunity" },
+  { value: "startup", label: "B2B", icon: RocketIcon, hint: "Needs the work you do, any size: asking for a partner, growing a team (3+ open roles your services cover), or a startup with technical need (newly funded, or a small company hiring a role you cover)" },
+  { value: "established", label: "Job openings", icon: Building2Icon, hint: "Ordinary hiring: one or two roles at an established company, or roles your services don't cover" },
+  { value: "funded", label: "Funded company", icon: BanknoteIcon, hint: "Raised a round recently" },
 ];
 
 /** The choice the filters amount to, and the filters a choice sets. */
 const showChoiceOf = (filters: OpportunityFilters): ShowChoice =>
-  filters.categories.length === 1 && filters.categories[0] === "funded_company" ? "funded" : (filters.clientType ?? "all");
+  filters.categories.length === 1 && filters.categories[0] === "funded_company" ? "funded" : (filters.companyStage ?? "all");
 const withShowChoice = (filters: OpportunityFilters, choice: ShowChoice): OpportunityFilters => ({
   ...filters,
-  clientType: choice === "company" || choice === "individual" ? choice : null,
+  clientType: null,
+  companyStage: choice === "startup" || choice === "established" ? choice : null,
   categories: choice === "funded" ? ["funded_company"] : [],
 });
 
@@ -153,10 +155,10 @@ export function OpportunitiesView() {
 
           {/* What to show: everything, companies (B2B), individuals or funded companies. */}
           <div role="radiogroup" aria-label="Show" className="flex max-w-full gap-2 overflow-x-auto">
-            {SHOW_CHOICES.map(({ value, label, icon: Icon }) => {
+            {SHOW_CHOICES.map(({ value, label, icon: Icon, hint }) => {
               const count = value === "all" ? null : data?.clientTypeCounts[value];
               return (
-                <Pill key={value} role="radio" selected={showChoiceOf(filters) === value} onClick={() => setFilters(withShowChoice(filters, value))}>
+                <Pill key={value} role="radio" title={hint} selected={showChoiceOf(filters) === value} onClick={() => setFilters(withShowChoice(filters, value))}>
                   {Icon && <Icon className="size-3.5" />}
                   {label}
                   {count !== null && <span className="text-xs tabular-nums opacity-70">{count ?? "·"}</span>}
@@ -435,11 +437,12 @@ function EmptyOpportunities() {
 }
 
 /** One choice in the pill rows at the top (kind of opportunity, buyer). */
-function Pill({ selected, role, onClick, children }: { selected: boolean; role: "tab" | "radio"; onClick: () => void; children: ReactNode }) {
+function Pill({ selected, role, title, onClick, children }: { selected: boolean; role: "tab" | "radio"; title?: string; onClick: () => void; children: ReactNode }) {
   return (
     <button
       type="button"
       role={role}
+      title={title}
       aria-selected={role === "tab" ? selected : undefined}
       aria-checked={role === "radio" ? selected : undefined}
       onClick={onClick}

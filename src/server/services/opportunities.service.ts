@@ -22,11 +22,13 @@ import {
   savedOpportunities,
   signalEvidence,
   signalServiceCategories,
+  serviceServiceCategories,
   services,
   signals,
   signalTypes,
   sourceRecords,
   users,
+  ycCompanies,
 } from "@/db/schema";
 import type {
   CompanyContact,
@@ -157,6 +159,11 @@ export const signalEvidenceLink = sql<{ url: string; summary: string } | null>`(
 export const companyContactFromOsm = sql<boolean>`((${ownPhone}) is null and ${osmContact("phone")} is not null)
     or ((${ownEmail}) is null and ${osmContact("email")} is not null)`;
 
+/** Most staff a startup has (B2B, see `startupCondition`); YC's team size counts when we have no other. Before `summaryColumns`, which uses it. */
+const STARTUP_MAX_EMPLOYEES = 200;
+/** Open roles your services cover that make a company "growing a team" (B2B) whatever its size. */
+const TEAM_GROWTH_MIN_ROLES = 3;
+
 const summaryColumns = {
   opportunity: opportunities,
   companyName: companies.canonicalName,
@@ -170,6 +177,8 @@ const summaryColumns = {
   contactTitle: companyPeople.title,
   signalCount: sql<number>`(select count(*)::int from ${opportunitySignals} where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative')`,
   /** The lead signal's category (workforce, explicit_buying, ...): what kind of opportunity it is. */
+  /** A startup likely to buy from an agency (B2B), see `startupCondition`. */
+  isStartup: sql<boolean>`${startupCondition()}`,
   leadCategory: sql<string | null>`(
     select ${signalTypes.categorySlug} from ${opportunitySignals}
     join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
@@ -220,6 +229,7 @@ export type SummaryRow = {
   signalEvidenceLink: { url: string; summary: string } | null;
   signalCount: number;
   leadCategory: string | null;
+  isStartup: boolean;
   needs: string[];
   jobTitles: { titles: string[] | null; total: number } | null;
   feedbackVotes: FeedbackVote[];
@@ -272,12 +282,14 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
       .select({
         company: sql<number>`(count(*) filter (where ${clientKind} = 'company'))::int`,
         individual: sql<number>`(count(*) filter (where ${clientKind} = 'individual'))::int`,
+        startup: sql<number>`(count(*) filter (where ${startupCondition()}))::int`,
+        established: sql<number>`(count(*) filter (where ${establishedCondition()}))::int`,
         funded: sql<number>`(count(*) filter (where ${opportunities.category} = 'funded_company'))::int`,
       })
       .from(opportunities)
       .leftJoin(companies, eq(companies.id, opportunities.companyId))
       .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
-      .where(feedFilter(auth.workspaceId, query.group, { ...query, clientType: null, categories: [] })),
+      .where(feedFilter(auth.workspaceId, query.group, { ...query, clientType: null, companyStage: null, categories: [] })),
   ]);
 
   const counts = countRows[0] as Record<StatusGroup, number>;
@@ -287,7 +299,7 @@ export async function listOpportunities(auth: AuthContext, query: OpportunityLis
     items: rows.map(toSummary),
     counts,
     newThisWeek: fresh?.n ?? 0,
-    clientTypeCounts: { company: byClient?.company ?? 0, individual: byClient?.individual ?? 0, funded: byClient?.funded ?? 0 },
+    clientTypeCounts: { company: byClient?.company ?? 0, individual: byClient?.individual ?? 0, funded: byClient?.funded ?? 0, startup: byClient?.startup ?? 0, established: byClient?.established ?? 0 },
     total: counts[query.group],
     page,
     pageSize,
@@ -330,6 +342,65 @@ const offeredToClient = sql`(
  * otherwise a company (B2B: hiring, funding, company news). Expects `opportunities` in the query.
  */
 const clientKind = sql<"company" | "individual">`(case when ${opportunities.category} = 'intent' and ${opportunities.companyId} is null then 'individual' else 'company' end)`;
+
+/**
+ * A B2B opportunity: a company that looks like it needs the work your services do, whatever its size.
+ * Any one of:
+ * - asking for help: a request for a vendor, agency or partner (or an intent post by a company), with
+ *   or without open jobs;
+ * - growing a team: 3 or more open roles your services cover (a company hiring 15 engineers has real
+ *   engineering demand, however large it is);
+ * - a startup with technical need: newly funded, or a small company (a YC company or any company of
+ *   200 staff or fewer, or hiring a founding role) with at least one open role your services cover.
+ * Everything else with a company is ordinary hiring ("Job openings"): one or two roles at an
+ * established company, or roles your services don't cover (an accountant, an HR manager). A signal,
+ * not proof: the AI's check decides whether it's really a lead. Expects `opportunities` and
+ * `companies` in the query. (A function, so `summaryColumns` can use it.)
+ */
+function startupCondition(): SQL {
+  // Open roles this opportunity has that the workspace's services cover (not counting the generic
+  // "staff augmentation" every tech role carries).
+  const coveredRoles = sql`(
+    select count(distinct ${signals.id}) from ${opportunitySignals}
+    join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+    join ${signalServiceCategories} on ${signalServiceCategories.signalId} = ${signals.id}
+    where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+      and ${signalServiceCategories.categorySlug} <> 'staff_augmentation'
+      and ${signalServiceCategories.categorySlug} in (
+        select ${serviceServiceCategories.categorySlug} from ${serviceServiceCategories}
+        join ${services} on ${services.id} = ${serviceServiceCategories.serviceId}
+        where ${services.workspaceId} = ${opportunities.workspaceId}))`;
+  const asking = sql`(
+    (${opportunities.category} = 'intent' and ${opportunities.companyId} is not null)
+    or exists (
+      select 1 from ${opportunitySignals}
+      join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+      join ${signalTypes} on ${signalTypes.slug} = ${signals.signalType}
+      where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+        and ${signalTypes.categorySlug} = 'explicit_buying'))`;
+  const small = sql`(
+    ${companies.employeeCount} <= ${STARTUP_MAX_EMPLOYEES}
+    or exists (
+      select 1 from ${ycCompanies}
+      where ${companies.domain} is not null and ${ycCompanies.domain} = ${companies.domain}
+        and coalesce(${ycCompanies.teamSize}, 0) <= ${STARTUP_MAX_EMPLOYEES})
+    or exists (
+      select 1 from ${opportunitySignals}
+      join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
+      where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
+        and ${signals.summary} ~* '\mfounding\M'))`;
+  // Unknown (no category, no size) counts as no, so "not B2B" is true for those, not unknown.
+  return sql`coalesce((
+    ${asking}
+    or ${coveredRoles} >= ${TEAM_GROWTH_MIN_ROLES}
+    or ${opportunities.category} = 'funded_company'
+    or (${small} and ${coveredRoles} >= 1)
+  ), false)`;
+}
+/** An established company posting job openings: a company opportunity that isn't a startup (an individual's post is neither). */
+function establishedCondition(): SQL {
+  return sql`(not ${startupCondition()} and not coalesce(${opportunities.category} = 'intent' and ${opportunities.companyId} is null, false))`;
+}
 
 const remoteWork = sql`(
   ${opportunities.category} = 'freelance_project'
@@ -676,6 +747,7 @@ function matchesFilters(workspaceId: string, filters: OpportunityFilters): SQL |
     filters.remote ? remoteWork : undefined,
     offeredToClient,
     filters.clientType === null ? undefined : sql`${clientKind} = ${filters.clientType}`,
+    filters.companyStage === null ? undefined : filters.companyStage === "startup" ? startupCondition() : establishedCondition(),
     filters.leadStatus === null ? undefined : LEAD_STATUS_CONDITIONS[filters.leadStatus],
     // Likely competitors are hidden unless asked for (then only they are shown).
     filters.hidden ? isNotNull(opportunities.hiddenReason) : isNull(opportunities.hiddenReason),
@@ -1076,6 +1148,7 @@ export function toSummary(row: SummaryRow): OpportunitySummary {
     lead: leadOf(opportunity),
     kind: kindOf(opportunity.category, row.leadCategory),
     clientType: opportunity.category === "intent" && opportunity.companyId === null ? "individual" : "company",
+    companyStage: row.isStartup ? "startup" : opportunity.category === "intent" && opportunity.companyId === null ? "individual" : "established",
     needs: specificNeeds(row.needs?.length ? row.needs : engineNeeds(opportunity.scoreFactors)),
     openRoles: { titles: row.jobTitles?.titles ?? [], total: row.jobTitles?.total ?? 0 },
     updatedAt: opportunity.updatedAt.toISOString(),

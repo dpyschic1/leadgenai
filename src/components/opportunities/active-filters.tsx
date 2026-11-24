@@ -62,6 +62,9 @@ export function ActiveFilters({
   if (filters.contact !== null) {
     chips.push({ key: "contact", label: CONTACT_REACH_LABELS[filters.contact], remove: (f) => ({ ...f, contact: null }) });
   }
+  if (filters.companyStage !== null) {
+    chips.push({ key: "companyStage", label: filters.companyStage === "startup" ? "B2B" : "Job openings", remove: (f) => ({ ...f, companyStage: null }) });
+  }
   if (filters.clientType !== null) {
     chips.push({ key: "clientType", label: filters.clientType === "company" ? "Companies (B2B)" : "Individuals", remove: (f) => ({ ...f, clientType: null }) });
   }
