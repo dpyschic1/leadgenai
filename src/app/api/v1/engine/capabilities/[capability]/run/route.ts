@@ -1,4 +1,4 @@
-import { CAPABILITIES, type Capability } from "@/lib/domain/engine";
+import { OFFERED_CAPABILITIES, type Capability } from "@/lib/domain/engine";
 import { CONFIG_ROLES } from "@/lib/permissions";
 import { runCapability } from "@/server/engine/runner";
 import { AppError } from "@/server/http/errors";
@@ -14,7 +14,7 @@ type Context = RouteContext<"/api/v1/engine/capabilities/[capability]/run">;
 export const POST = authedRoute<Context>(
   async ({ context, auth }) => {
     const { capability } = await context.params;
-    if (!(CAPABILITIES as readonly string[]).includes(capability)) throw new AppError("NOT_FOUND", "Capability not found.");
+    if (!(OFFERED_CAPABILITIES as readonly string[]).includes(capability)) throw new AppError("NOT_FOUND", "Capability not found.");
     const summary = await runCapability(auth.workspaceId, capability as Capability, "manual");
     return Response.json({ summary, engine: await getEngine(auth) });
   },

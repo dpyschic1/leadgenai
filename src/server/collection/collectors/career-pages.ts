@@ -205,6 +205,37 @@ export function jobPostingsFrom(html: string, pageUrl: string, domain: string, n
   return items;
 }
 
+/**
+ * A site whose jobs name three or more different employers is a job board listing other companies'
+ * jobs (standout.work listed Andon Labs, Harvey and Reason Machines), not one company's careers
+ * page: its jobs can't be credited to the site. Only the jobs that name their employer's own website
+ * are kept (they're credited to that website); on a real careers page everything stays. Names are
+ * compared without legal suffixes, so "Acme" and "Acme, Inc." are one employer; two (a company and
+ * its brand) still count as one site's own. Pure.
+ */
+const MIN_EMPLOYERS_ON_A_JOB_BOARD = 3;
+const employerKey = (name: string) =>
+  name
+    .toLowerCase()
+    .replace(/\b(inc|llc|ltd|limited|corp|corporation|co|gmbh|plc|pbc)\b\.?/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+
+/** The employer a job names: its markup's organisation, else the first part of its card ("Harvey · New York, NY · $168k"). */
+function employerOf(item: CollectedItemInput): string | null {
+  if (item.companyName) return item.companyName;
+  const facts = typeof item.data?.facts === "string" ? item.data.facts : null;
+  const first = facts?.split("·")[0]?.trim();
+  // A card that opens with the place, the pay or the hours names no employer.
+  if (!first || first === item.location || /\d|\b(remote|hybrid|on-?site|full-time|part-time|contract)\b/i.test(first)) return null;
+  return first;
+}
+
+export function ownJobsOnly(items: CollectedItemInput[], domain: string): CollectedItemInput[] {
+  const employers = new Set(items.map((i) => employerOf(i)).filter((n): n is string => !!n).map(employerKey).filter(Boolean));
+  if (employers.size < MIN_EMPLOYERS_ON_A_JOB_BOARD) return items;
+  return items.filter((i) => i.companyDomain && i.companyDomain !== domain);
+}
+
 // --- The collector ---------------------------------------------------------------------------------
 
 /** Nothing to collect here for a long while; earlier items of the target are closed. */
@@ -380,7 +411,7 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
     items.push(...cards.values());
     cards.clear();
     // Posts marked filled, builders' copies, and dates written on undated pages (see currentJob).
-    items.splice(0, items.length, ...items.flatMap((item) => currentJob(item, now) ?? []));
+    items.splice(0, items.length, ...ownJobsOnly(items.flatMap((item) => currentJob(item, now) ?? []), domain));
 
     if (items.length === 0 && boardLinks.size > 0) return withBoards(idle(cursor, "Jobs are on a Gem or Rippling board, collected there"), boardLinks, domain);
     if (items.length === 0 && looksClientRendered(listing.body)) {
@@ -399,7 +430,7 @@ async function collect({ target, now, fetcher }: CollectContext): Promise<Collec
     );
   } catch (error) {
     if (!(error instanceof CollectionBudgetError)) throw error;
-    return { items: [...items, ...cards.values()].flatMap((item) => currentJob(item, now) ?? []), cursor, complete: false, note: "Stopped at the run's request budget or time" };
+    return { items: ownJobsOnly([...items, ...cards.values()].flatMap((item) => currentJob(item, now) ?? []), domain), cursor, complete: false, note: "Stopped at the run's request budget or time" };
   }
 }
 

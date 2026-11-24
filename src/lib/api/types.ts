@@ -309,6 +309,8 @@ export type OpportunitySummary = {
     quote: string | null;
     budget: string | null;
     timeline: string | null;
+    /** The open roles the AI judged your service could fill. */
+    fittingRoles: string[];
     by: "ai" | "team" | null;
   };
   /** What kind of opportunity it is: hiring, asking for help, a freelance project, recently funded, company news, a problem found, or other. */

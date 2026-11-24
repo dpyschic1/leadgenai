@@ -867,10 +867,10 @@ export const services = pgTable(
     targetCompanySizeMin: integer(),
     targetCompanySizeMax: integer(),
     /**
-     * Who it's sold to: company, individual, project (see CLIENT_TYPES). A small fixed set of
+     * Who it's sold to: company or individual (see CLIENT_TYPES). A small fixed set of
      * values read with the service, so an array, not a join table.
      */
-    clientTypes: text().array().notNull().default(sql`'{company,individual,project}'::text[]`),
+    clientTypes: text().array().notNull().default(sql`'{company,individual}'::text[]`),
     /** How the work is done: any, remote, hybrid or onsite (see WORK_TYPES). */
     workType: text().notNull().default("any"),
     createdAt: createdAt(),
@@ -879,7 +879,7 @@ export const services = pgTable(
   (t) => [
     index("services_workspace_idx").on(t.workspaceId),
     unique("services_id_workspace_uq").on(t.id, t.workspaceId),
-    check("services_client_types_chk", sql`cardinality(${t.clientTypes}) > 0 and ${t.clientTypes} <@ '{company,individual,project}'::text[]`),
+    check("services_client_types_chk", sql`cardinality(${t.clientTypes}) > 0 and ${t.clientTypes} <@ '{company,individual}'::text[]`),
     check("services_work_type_chk", sql`${t.workType} in ('any', 'remote', 'hybrid', 'onsite')`),
     check(
       "services_company_size_chk",
@@ -1140,7 +1140,7 @@ export const opportunities = pgTable(
     qualificationReason: text(),
     qualificationQuote: text(),
     /** Budget or timeline the evidence states, when it does: { budget?: string, timeline?: string }. */
-    qualificationHints: jsonb().$type<{ budget?: string; timeline?: string }>(),
+    qualificationHints: jsonb().$type<{ budget?: string; timeline?: string; fittingRoles?: string[] }>(),
     /** "ai" or "team". A team decision is never overwritten by the AI. */
     qualifiedBy: text(),
     qualifiedAt: timestamp({ withTimezone: true }),

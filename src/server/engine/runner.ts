@@ -9,7 +9,7 @@ import {
   isDue,
   parseCapabilityConfig,
   resolveTargeting,
-  CAPABILITIES,
+  OFFERED_CAPABILITIES,
   type Capability,
   type FreelanceConfig,
   type FundedConfig,
@@ -267,7 +267,7 @@ export async function runDueCapabilities(deadline: number, workspaceId?: string)
     const [settings] = await db.select().from(engineSettings).where(eq(engineSettings.workspaceId, id));
     const master = settings?.enabled ?? true;
     const rows = await db.select().from(engineCapabilities).where(eq(engineCapabilities.workspaceId, id));
-    for (const capability of CAPABILITIES) {
+    for (const capability of OFFERED_CAPABILITIES) {
       // A discovery run takes several seconds per source; do not start one a tick cannot finish.
       if (Date.now() > deadline) return;
       const row = rows.find((r) => r.capability === capability);

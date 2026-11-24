@@ -13,7 +13,7 @@ import {
 import type { CapabilityState, EngineState } from "@/lib/api/types";
 import { COUNTRY_CODES } from "@/lib/countries";
 import {
-  CAPABILITIES,
+  OFFERED_CAPABILITIES,
   CAPABILITY_CONFIG_SCHEMAS,
   DEFAULT_FREQUENCY_MINUTES,
   nextRunAt,
@@ -81,7 +81,7 @@ export async function getEngine(auth: AuthContext): Promise<EngineState> {
   return {
     enabled,
     workspaceTargeting,
-    capabilities: CAPABILITIES.map((c) => toState(c, rows.find((r) => r.capability === c), workspaceTargeting, enabled)),
+    capabilities: OFFERED_CAPABILITIES.map((c) => toState(c, rows.find((r) => r.capability === c), workspaceTargeting, enabled)),
   };
 }
 

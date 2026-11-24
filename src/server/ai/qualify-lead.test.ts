@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { toResult } from "./qualify-lead";
 
 const evidence = "Job post: Senior React Developer (Remote). We are rebuilding our customer portal and need two React developers to start in January.";
-const raw = (overrides = {}) => ({ verdict: "hot" as const, fit: 88, reason: "Hiring two React developers for a portal rebuild.", quote: "", budget: "", timeline: "", ...overrides });
+const raw = (overrides = {}) => ({ verdict: "hot" as const, fit: 88, reason: "Hiring two React developers for a portal rebuild.", quote: "", budget: "", timeline: "", fitting_roles: [] as string[], ...overrides });
 
 describe("lead qualification result", () => {
   it("keeps a quote copied from the evidence, and drops one the AI made up", () => {

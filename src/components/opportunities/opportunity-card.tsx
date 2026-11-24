@@ -4,9 +4,9 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import {
   BanknoteIcon,
-  BriefcaseBusinessIcon,
   CalendarIcon,
   CheckIcon,
+  CircleCheckIcon,
   FileTextIcon,
   MailIcon,
   MessageSquareIcon,
@@ -14,6 +14,7 @@ import {
   NewspaperIcon,
   PhoneIcon,
   RadioTowerIcon,
+  SparklesIcon,
   TriangleAlertIcon,
   UserRoundIcon,
   UsersRoundIcon,
@@ -21,11 +22,12 @@ import {
 } from "lucide-react";
 import { UrgencyBadge } from "@/components/signals/signal-badges";
 import { useLookupNames } from "@/hooks/use-reference-data";
+import { useServices } from "@/hooks/use-services";
 import type { OpportunitySummary } from "@/lib/api/types";
 import { OSM_COPYRIGHT_URL } from "@/lib/domain/sources";
 import { opportunityName } from "@/lib/opportunity-display";
 import { cn } from "@/lib/utils";
-import { CategoryBadge, EngineChips, VerificationBadge } from "./engine-parts";
+import { EngineChips, VerificationBadge } from "./engine-parts";
 import { FeedbackVotes } from "./feedback-votes";
 import { LeadBadge, StatusBadge } from "./status-badge";
 
@@ -46,30 +48,49 @@ export function TickBox({ checked, partly = false }: { checked: boolean; partly?
   );
 }
 
-/** Each kind of opportunity: what to call it and its icon. */
-export const KIND: Record<OpportunitySummary["kind"], { label: string; icon: LucideIcon; tone: string }> = {
-  hiring: { label: "Hiring", icon: UsersRoundIcon, tone: "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300" },
-  request: { label: "Asking for help", icon: MessageSquareIcon, tone: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300" },
-  project: { label: "Freelance project", icon: FileTextIcon, tone: "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300" },
-  funding: { label: "Recently funded", icon: BanknoteIcon, tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" },
-  event: { label: "Company news", icon: NewspaperIcon, tone: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300" },
-  problem: { label: "Problem found", icon: TriangleAlertIcon, tone: "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300" },
-  other: { label: "Signal", icon: RadioTowerIcon, tone: "bg-secondary text-muted-foreground" },
+/** Each kind of opportunity: what they're doing in plain words, and its icon. One accent for all: the theme's signal green. */
+export const KIND: Record<OpportunitySummary["kind"], { label: string; icon: LucideIcon }> = {
+  hiring: { label: "Hiring", icon: UsersRoundIcon },
+  request: { label: "Asking for help", icon: MessageSquareIcon },
+  project: { label: "Freelance project", icon: FileTextIcon },
+  funding: { label: "Just raised funding", icon: BanknoteIcon },
+  event: { label: "Company news", icon: NewspaperIcon },
+  problem: { label: "Problem on their site", icon: TriangleAlertIcon },
+  other: { label: "Signal", icon: RadioTowerIcon },
 };
 
-/** The kind of opportunity as an icon tile, in place of a score: what it is at a glance. */
-export function KindTile({ kind, size = "md" }: { kind: OpportunitySummary["kind"]; size?: "md" | "lg" }) {
-  const { label, icon: Icon, tone } = KIND[kind];
+/** What they're doing, in plain words: "Hiring 6 roles", "Just raised funding". */
+export function KindLabel({ opportunity, className }: { opportunity: Pick<OpportunitySummary, "kind" | "openRoles">; className?: string }) {
+  const { label, icon: Icon } = KIND[opportunity.kind];
+  const roles = opportunity.openRoles.total;
   return (
-    <span title={label} className={cn("grid shrink-0 place-items-center rounded-xl", tone, size === "lg" ? "size-16" : "size-11")}>
-      <Icon className={size === "lg" ? "size-7" : "size-5"} />
+    <span className={cn("inline-flex items-center gap-1.5 text-sm text-muted-foreground", className)}>
+      <Icon className="size-4 text-primary" />
+      {opportunity.kind === "hiring" && roles > 0 ? `Hiring ${roles} ${roles === 1 ? "role" : "roles"}` : label}
+    </span>
+  );
+}
+
+/** The company's initials, as a quiet stand-in for a logo. */
+function Monogram({ name }: { name: string }) {
+  const initials = name
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0]!.toUpperCase())
+    .join("");
+  return (
+    <span aria-hidden className="grid size-9 shrink-0 place-items-center rounded-full border bg-canvas text-xs font-semibold text-foreground/70">
+      {initials || "?"}
     </span>
   );
 }
 
 /**
- * One opportunity in a feed. The whole card opens it (a stretched link), so `action`, e.g. a
- * remove button, can sit on top without nesting interactive elements.
+ * One opportunity in a feed, led by the buyer's own words: the line from the evidence that shows
+ * the need (or what happened), then who said it and what they're doing. The whole card opens it
+ * (a stretched link), so `action`, e.g. a remove button, can sit on top without nesting interactive elements.
  */
 export function OpportunityCard({
   opportunity,
@@ -84,17 +105,25 @@ export function OpportunityCard({
   selection?: { selected: boolean; onToggle: () => void };
 }) {
   const names = useLookupNames();
+  const { data: services } = useServices();
+  // The categories the matched service covers, to show which of their needs you meet.
+  const offered = new Set(services?.items.find((s) => s.id === opportunity.service?.id)?.categories ?? []);
   const latest = opportunity.latestSignalOn
     ? dateFormat.format(new Date(`${opportunity.latestSignalOn}T12:00:00`))
     : opportunity.engine?.discoveredAt
       ? dateFormat.format(new Date(opportunity.engine.discoveredAt))
       : null;
   const { phone: companyPhone, email: companyEmail } = opportunity.companyContact;
+  const name = opportunityName(opportunity);
+  const { lead } = opportunity;
+  // The proof the AI quoted, else what happened, else the post's own title.
+  const words = lead.quote ?? opportunity.problem ?? opportunity.engine?.title ?? null;
+  const roles = opportunity.openRoles;
 
   return (
     <li
       className={cn(
-        "group relative flex gap-4 rounded-xl border bg-card p-4 transition-[box-shadow,border-color,background-color] hover:shadow-[0_8px_24px_-12px_rgba(27,36,51,0.18)] has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 has-[button:focus-visible]:ring-3 has-[button:focus-visible]:ring-ring/50 sm:gap-5 sm:p-5",
+        "group relative rounded-2xl border bg-card px-5 pb-4 pt-5 transition-[border-color,box-shadow,background-color] hover:border-foreground/20 hover:shadow-[0_10px_30px_-18px_rgba(27,36,51,0.35)] has-[a:focus-visible]:ring-3 has-[a:focus-visible]:ring-ring/50 has-[button:focus-visible]:ring-3 has-[button:focus-visible]:ring-ring/50 sm:px-6",
         selection?.selected && "border-primary/50 bg-signal-tint/40",
       )}
     >
@@ -104,137 +133,139 @@ export function OpportunityCard({
           type="button"
           role="checkbox"
           aria-checked={selection.selected}
-          aria-label={`Select ${opportunityName(opportunity)}`}
+          aria-label={`Select ${name}`}
           onClick={selection.onToggle}
-          className="absolute inset-0 z-[5] cursor-pointer rounded-xl outline-none"
+          className="absolute inset-0 z-[5] cursor-pointer rounded-2xl outline-none"
         />
       )}
-      {/* What it is, not a number: the AI's score shows once it's a lead. */}
-      <div className="flex flex-col items-center gap-1">
-        <KindTile kind={opportunity.kind} />
-        {rank !== null && <span className="text-xs tabular-nums text-muted-foreground">#{rank}</span>}
-      </div>
 
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+      {/* 1. Who: the company, what they're doing, and where it stands. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <Monogram name={name} />
           <div className="min-w-0">
             <Link
               href={`/opportunities/${opportunity.id}`}
-              className="block truncate font-semibold outline-none group-hover:text-primary after:absolute after:inset-0 after:rounded-xl"
+              className="block truncate font-semibold tracking-tight outline-none group-hover:text-primary after:absolute after:inset-0 after:rounded-2xl"
             >
-              {opportunityName(opportunity)}
+              {name}
             </Link>
-            {opportunity.engine ? (
-              <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                <CategoryBadge category={opportunity.engine.category} />
-                <VerificationBadge status={opportunity.engine.verification} />
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                <span className="font-medium text-foreground/80">{KIND[opportunity.kind].label}</span>
-                {opportunity.openRoles.total > 0 && ` · ${opportunity.openRoles.total} open ${opportunity.openRoles.total === 1 ? "role" : "roles"}`}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            <LeadBadge lead={opportunity.lead} />
-            <StatusBadge stage={opportunity.stage} archived={opportunity.archived} />
-            {action && <div className="relative z-10">{action}</div>}
-            {selection && (
-              <span className="ml-1">
-                <TickBox checked={selection.selected} />
-              </span>
-            )}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <KindLabel opportunity={opportunity} />
+              {opportunity.engine && <VerificationBadge status={opportunity.engine.verification} />}
+              {rank !== null && <span className="text-xs tabular-nums text-muted-foreground">#{rank}</span>}
+            </div>
           </div>
         </div>
+        <div className="flex items-center gap-1.5">
+          <LeadBadge lead={lead} />
+          <StatusBadge stage={opportunity.stage} archived={opportunity.archived} />
+          {action && <div className="relative z-10">{action}</div>}
+          {selection && (
+            <span className="ml-1">
+              <TickBox checked={selection.selected} />
+            </span>
+          )}
+        </div>
+      </div>
 
-        {opportunity.problem && <p className="mt-2 line-clamp-2 text-sm leading-relaxed">{opportunity.problem}</p>}
-        {/* What they're after: the roles they're hiring for and the kinds of work it points to. */}
-        {(opportunity.openRoles.titles.length > 0 || opportunity.needs.length > 0) && (
-          <div className="mt-2 space-y-1.5 text-sm">
-            {opportunity.openRoles.titles.length > 0 && (
-              <p className="line-clamp-1 text-muted-foreground">
-                <span className="font-medium text-foreground">Roles: </span>
-                {opportunity.openRoles.titles.join(" · ")}
-                {opportunity.openRoles.total > opportunity.openRoles.titles.length && (
-                  <span className="text-primary"> +{opportunity.openRoles.total - opportunity.openRoles.titles.length} more</span>
-                )}
-              </p>
-            )}
-            {opportunity.needs.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="font-medium">Needs:</span>
-                {opportunity.needs.slice(0, 4).map((slug) => (
-                  <span key={slug} className="rounded-full border bg-secondary px-2 py-0.5 text-xs">
-                    {names.category(slug)}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-        {/* The AI's (or team's) verdict, with the line from the evidence that shows the need. */}
-        {opportunity.lead.reason && (
-          <p className="mt-1.5 line-clamp-2 text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">Why: </span>
-            {opportunity.lead.reason}
-            {opportunity.lead.quote && <span className="italic"> “{opportunity.lead.quote}”</span>}
-          </p>
-        )}
+      {/* 2. What: in their words, set as a quotation, with the roles and the AI's reading under it. */}
+      {words && (
+        <figure className="relative mt-4 pl-7">
+          <span aria-hidden className="absolute -top-2 left-0 font-quote text-5xl leading-none text-primary">
+            “
+          </span>
+          <blockquote className="line-clamp-3 text-pretty font-quote text-[1.1875rem] leading-snug text-foreground">{words}</blockquote>
+        </figure>
+      )}
+      {(roles.titles.length > 0 || lead.reason) && (
+        <div className="mt-2 space-y-1 pl-7 text-sm text-muted-foreground">
+          {roles.titles.length > 0 && (
+            <p className="line-clamp-1">
+              {roles.titles.join(", ")}
+              {roles.total > roles.titles.length && ` and ${roles.total - roles.titles.length} more`}
+            </p>
+          )}
+          {lead.reason && (
+            <p className="line-clamp-2">
+              <SparklesIcon className="mr-1 inline size-3.5 -translate-y-px text-primary" aria-label="AI's reading" />
+              {lead.reason}
+            </p>
+          )}
+        </div>
+      )}
 
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-          {opportunity.service && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/15 bg-signal-tint px-2 py-0.5 font-medium text-[var(--signal-deep)]">
-              <BriefcaseBusinessIcon className="size-3" />
-              {opportunity.service.name}
-            </span>
-          )}
-          {opportunity.urgency !== "unknown" && <UrgencyBadge level={opportunity.urgency} />}
-          {opportunity.contact && (
-            <span className="inline-flex items-center gap-1">
-              <UserRoundIcon className="size-3.5" />
-              {opportunity.contact.name}
-              {opportunity.contact.title && `, ${opportunity.contact.title}`}
-            </span>
-          )}
-          {/* The company's own line: a way to reach them even before a person is known. Sits above the card's link. */}
-          {(companyPhone || companyEmail) && (
-            <a
-              href={companyPhone ? `tel:${companyPhone.replace(/[^\d+]/g, "")}` : `mailto:${companyEmail}`}
-              className="relative z-10 inline-flex items-center gap-1 hover:text-foreground hover:underline underline-offset-4"
+      {/* 3. Yours: the service it's a match for. */}
+      <div className="mt-4">
+        {opportunity.service ? (
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-signal-tint px-3 py-1 text-sm font-semibold text-[var(--signal-deep)]">
+            <CircleCheckIcon className="size-4 text-primary" />
+            Matches {opportunity.service.name}
+          </span>
+        ) : (
+          <span className="text-sm text-muted-foreground">No service matched yet</span>
+        )}
+      </div>
+
+      {/* 4. Footer: their needs (yours ticked), contact, date. */}
+
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-3 text-xs text-muted-foreground">
+        {/* What they need; the needs your matched service covers are ticked in green: why it matched. */}
+        {opportunity.needs.slice(0, 4).map((slug) => {
+          const covered = offered.has(slug);
+          return (
+            <span
+              key={slug}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium",
+                covered ? "bg-signal-tint text-[var(--signal-deep)]" : "bg-secondary text-foreground/70",
+              )}
             >
-              {companyPhone ? <PhoneIcon className="size-3.5" /> : <MailIcon className="size-3.5" />}
-              {companyPhone ?? companyEmail}
-            </a>
-          )}
-          {/* ODbL: a contact from OpenStreetMap carries its credit wherever it is shown. */}
-          {(companyPhone || companyEmail) && opportunity.companyContact.fromOpenStreetMap && (
-            <a
-              href={OSM_COPYRIGHT_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Published on OpenStreetMap, not verified by us"
-              className="relative z-10 -ml-2.5 hover:text-foreground hover:underline underline-offset-4"
-            >
-              © OpenStreetMap
-            </a>
-          )}
-          {opportunity.engine ? (
-            <EngineChips engine={opportunity.engine} />
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              <RadioTowerIcon className="size-3.5" />
-              {opportunity.signalCount} {opportunity.signalCount === 1 ? "signal" : "signals"}
+              {covered && <CheckIcon className="size-3" strokeWidth={3} />}
+              {names.category(slug)}
             </span>
-          )}
+          );
+        })}
+        {opportunity.urgency !== "unknown" && <UrgencyBadge level={opportunity.urgency} />}
+        {opportunity.contact && (
+          <span className="inline-flex items-center gap-1">
+            <UserRoundIcon className="size-3.5" />
+            {opportunity.contact.name}
+            {opportunity.contact.title && `, ${opportunity.contact.title}`}
+          </span>
+        )}
+        {/* The company's own line: a way to reach them even before a person is known. Sits above the card's link. */}
+        {(companyPhone || companyEmail) && (
+          <a
+            href={companyPhone ? `tel:${companyPhone.replace(/[^\d+]/g, "")}` : `mailto:${companyEmail}`}
+            className="relative z-10 inline-flex items-center gap-1 hover:text-foreground hover:underline underline-offset-4"
+          >
+            {companyPhone ? <PhoneIcon className="size-3.5" /> : <MailIcon className="size-3.5" />}
+            {companyPhone ?? companyEmail}
+          </a>
+        )}
+        {/* ODbL: a contact from OpenStreetMap carries its credit wherever it is shown. */}
+        {(companyPhone || companyEmail) && opportunity.companyContact.fromOpenStreetMap && (
+          <a
+            href={OSM_COPYRIGHT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Published on OpenStreetMap, not verified by us"
+            className="relative z-10 -ml-2.5 hover:text-foreground hover:underline underline-offset-4"
+          >
+            © OpenStreetMap
+          </a>
+        )}
+        {opportunity.engine && <EngineChips engine={opportunity.engine} />}
+        <span className="ml-auto inline-flex items-center gap-3">
+          <FeedbackVotes votes={opportunity.feedbackVotes} />
           {latest && (
             <span className="inline-flex items-center gap-1">
               <CalendarIcon className="size-3.5" />
-              {opportunity.engine ? "Found" : "Latest"} {latest}
+              {latest}
             </span>
           )}
-          <FeedbackVotes votes={opportunity.feedbackVotes} />
-        </div>
+        </span>
       </div>
     </li>
   );

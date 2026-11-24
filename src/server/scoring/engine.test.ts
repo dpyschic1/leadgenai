@@ -141,7 +141,7 @@ describe("who the service is sold to, and how the work is done", () => {
   });
   it("matches only services sold to that kind of client", () => {
     const companiesOnly = { ...dev, clientTypes: ["company" as const] };
-    expect(scoreCompany({ ...base, services: [companiesOnly], signals: need, clientType: "project" })).toBeNull();
+    expect(scoreCompany({ ...base, services: [companiesOnly], signals: need, clientType: "individual" })).toBeNull();
     expect(scoreCompany({ ...base, services: [companiesOnly], signals: need, clientType: "company" })!.serviceId).toBe("dev");
     expect(scoreCompany({ ...base, services: [companiesOnly, { ...dev, id: "any" }], signals: need, clientType: "individual" })!.serviceId).toBe("any");
   });

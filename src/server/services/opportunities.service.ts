@@ -1056,9 +1056,10 @@ function leadOf(opportunity: SummaryRow["opportunity"]): OpportunitySummary["lea
       quote: opportunity.qualificationQuote,
       budget: opportunity.qualificationHints?.budget ?? null,
       timeline: opportunity.qualificationHints?.timeline ?? null,
+      fittingRoles: opportunity.qualificationHints?.fittingRoles ?? [],
       by: opportunity.qualifiedBy === "team" ? "team" : "ai",
     };
   }
   const checking = (opportunity.opportunityScore ?? 0) >= QUALIFY_MIN_SCORE && opportunity.hiddenReason === null;
-  return { status: checking ? "checking" : "unchecked", score: null, reason: null, quote: null, budget: null, timeline: null, by: null };
+  return { status: checking ? "checking" : "unchecked", score: null, reason: null, quote: null, budget: null, timeline: null, fittingRoles: [], by: null };
 }

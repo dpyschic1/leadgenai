@@ -4,8 +4,9 @@ import type { StageRef } from "@/lib/domain/pipeline";
 import { cn } from "@/lib/utils";
 
 const LEAD_BADGE = {
-  hot: { label: "HOT", icon: FlameIcon, tone: "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-900" },
-  warm: { label: "WARM", icon: SunIcon, tone: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900" },
+  // The theme's signal green: solid for hot, light for warm.
+  hot: { label: "Hot", icon: FlameIcon, tone: "bg-primary text-primary-foreground border-primary" },
+  warm: { label: "Warm", icon: SunIcon, tone: "bg-signal-tint text-[var(--signal-deep)] border-primary/30" },
   not_fit: { label: "Not a fit", icon: XIcon, tone: "bg-secondary text-muted-foreground border-border" },
   checking: { label: "AI checking", icon: Loader2Icon, tone: "bg-secondary text-muted-foreground border-border" },
 } as const;

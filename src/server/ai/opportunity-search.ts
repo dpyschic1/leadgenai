@@ -72,7 +72,7 @@ ${list(ref.industries)}
 - countries: where the company is headquartered, as ISO codes. "UK" or "Britain" is GB. A region means all its main countries, e.g. "Europe" or "EU" means the EU countries plus GB, NO and CH; "North America" means US and CA.
 - minScore: minimum opportunity score.
 - withinDays: the newest supporting signal is at most this many days old.
-- remote: only companies hiring for remote work (a job whose location says remote) and freelance projects.
+- remote: only companies hiring for remote work (a job whose location says remote).
 - companyName: one specific company the user names.
 
 Translating words:

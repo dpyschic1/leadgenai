@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { EngineEvidencePanel, EngineScoreBreakdown } from "./engine-parts";
 import { FeedbackPanel } from "./feedback-panel";
 import { ScoreBreakdown } from "./score-breakdown";
-import { KIND, KindTile } from "./opportunity-card";
+import { KindLabel } from "./opportunity-card";
 import { LeadBadge } from "./status-badge";
 
 export function OpportunityDetailView() {
@@ -76,14 +76,12 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
       </Link>
 
       <header className="flex flex-col gap-5 rounded-2xl border bg-card p-6 sm:flex-row sm:items-center">
-        <KindTile kind={opportunity.kind} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span className="font-medium text-foreground/80">{KIND[opportunity.kind].label}</span>
-            {opportunity.openRoles.total > 0 && <span>· {opportunity.openRoles.total} open {opportunity.openRoles.total === 1 ? "role" : "roles"}</span>}
+          <p className="flex flex-wrap items-center gap-2.5">
+            <KindLabel opportunity={opportunity} />
             <LeadBadge lead={opportunity.lead} />
           </p>
-          <h1 className="truncate text-2xl font-semibold">{opportunityName(opportunity)}</h1>
+          <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight">{opportunityName(opportunity)}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
             {opportunity.service ? (
               <span className="rounded-full border border-primary/15 bg-signal-tint px-2.5 py-0.5 text-xs font-medium text-[var(--signal-deep)]">
@@ -210,6 +208,12 @@ function LeadCheckPanel({ opportunity, canEdit }: { opportunity: OpportunityDeta
         </div>
         {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
         {lead.reason && <p className="leading-relaxed">{lead.reason}</p>}
+        {lead.fittingRoles.length > 0 && (
+          <p className="text-sm">
+            <span className="font-medium">Roles you can fill: </span>
+            <span className="text-muted-foreground">{lead.fittingRoles.join(", ")}</span>
+          </p>
+        )}
         {lead.quote && <blockquote className="border-l-2 border-primary/40 pl-3 text-sm italic text-muted-foreground">“{lead.quote}”</blockquote>}
         {(lead.budget || lead.timeline) && (
           <div className="flex flex-wrap gap-2 text-xs">

@@ -309,6 +309,13 @@
       "when": 1795465139356,
       "tag": "0043_opportunity_qualification",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795469087996,
+      "tag": "0044_drop_project_client_type",
+      "breakpoints": true
     }
   ]
 }

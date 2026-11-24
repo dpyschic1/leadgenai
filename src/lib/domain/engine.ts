@@ -8,6 +8,12 @@ import { z } from "zod";
 export const CAPABILITIES = ["intent", "funded", "freelance"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
+/**
+ * The capabilities the product runs and shows. Freelance projects were dropped (2026-11-24): hourly
+ * marketplace work isn't what the agency sells. The value stays in the database enum for history.
+ */
+export const OFFERED_CAPABILITIES: readonly Capability[] = ["intent", "funded"];
+
 export const CAPABILITY_LABELS: Record<Capability, string> = {
   intent: "Intent Discovery",
   funded: "Funded Companies",
@@ -34,10 +40,10 @@ export const CATEGORY_LABELS: Record<OpportunityCategory, string> = {
   freelance_project: "Freelance project",
 };
 
-/** Opportunities from the original company-signal flow have no category; the feed filters them as "signal". */
-export const FILTER_CATEGORIES = ["signal", ...OPPORTUNITY_CATEGORIES] as const;
+/** Opportunities from the original company-signal flow have no category; the feed filters them as "signal". No freelance projects (see OFFERED_CAPABILITIES). */
+export const FILTER_CATEGORIES = ["signal", "intent", "funded_company"] as const;
 export type FilterCategory = (typeof FILTER_CATEGORIES)[number];
-export const FILTER_CATEGORY_LABELS: Record<FilterCategory, string> = { signal: "Company signals", ...CATEGORY_LABELS };
+export const FILTER_CATEGORY_LABELS: Record<FilterCategory, string> = { signal: "Company signals", intent: CATEGORY_LABELS.intent, funded_company: CATEGORY_LABELS.funded_company };
 
 /** The factors of an engine opportunity's score (spec section 10), in display order. */
 export const ENGINE_FACTOR_LABELS: Record<string, string> = {
@@ -56,9 +62,6 @@ export const ENGINE_SOURCE_LABELS: Record<string, string> = {
   reddit: "Reddit",
   yc_directory: "Y Combinator",
   sec_form_d: "SEC EDGAR (Form D)",
-  freelancer: "Freelancer.com",
-  peopleperhour: "PeoplePerHour",
-  guru: "Guru",
 };
 
 /**

@@ -28,7 +28,7 @@ import { SettingsSection } from "./settings-section";
 
 const TITLE = "LeadGen Engine";
 const DESCRIPTION =
-  "Finds opportunities automatically: people asking for your services, newly funded companies and freelance projects. Each capability has its own schedule and can target differently from your Services & ICP.";
+  "Finds opportunities automatically: people asking for your services and newly funded companies. Each capability has its own schedule and can target differently from your Services & ICP.";
 
 const FREQUENCIES = [
   { minutes: 15, label: "Every 15 minutes" },

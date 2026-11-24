@@ -26,7 +26,6 @@ export type DiscoveredInput = {
 
 /** Who posted it: a freelance project is project-based work; a post or round from a named company is a company. Pure. */
 export function clientTypeOf(item: Pick<DiscoveredItem, "capability" | "companyName" | "companyDomain" | "clientType">): ClientType {
-  if (item.capability === "freelance") return "project";
   if (item.capability === "funded" || item.companyName || item.companyDomain) return "company";
   return item.clientType ?? "individual";
 }

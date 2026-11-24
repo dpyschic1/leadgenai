@@ -33,7 +33,7 @@ export type QualifyResult = {
   score: number;
   reason: string;
   quote: string | null;
-  hints: { budget?: string; timeline?: string };
+  hints: { budget?: string; timeline?: string; fittingRoles?: string[] };
 };
 
 const outputSchema = z.object({
@@ -43,6 +43,7 @@ const outputSchema = z.object({
   quote: z.string().describe("One sentence copied word for word from the evidence that shows the need, or empty."),
   budget: z.string().describe("The budget the evidence states, in its words, or empty."),
   timeline: z.string().describe("The timeline or start date the evidence states, in its words, or empty."),
+  fitting_roles: z.array(z.string()).describe("The open roles (titles as given) the service could fill; empty when none or no roles are listed."),
 });
 
 const SYSTEM = `You qualify sales leads for a software development and AI agency. You get one opportunity: who the buyer is, the evidence found about them (job posts, a post asking for help, a freelance project, a funding round) and the agency's service it was matched to. Decide whether it is worth the sales team's time now.
@@ -53,6 +54,10 @@ Verdicts:
 - hot: a clear, current need the service covers. E.g. asking for an agency, developers or a quote; a posted project with a budget; hiring several developers or AI engineers of the kind the service provides; a newly funded startup hiring to build its product.
 - warm: a plausible need, less direct. E.g. one relevant developer role; growth hiring; funding with no stated plan; the need fits but the timing or size is unclear.
 - not_fit: no real need for this service. E.g. the roles are not software work (sales, nursing, drivers); the buyer itself sells development, consulting or staffing (a competitor or a recruiter posting for a client); a very large enterprise that won't buy from a small agency; work that must be done onsite when the service is remote; the evidence is empty, stale or spam.
+
+Hiring is demand. For staff augmentation, dedicated developers or outsourced development, a company hiring the kind of engineers the service provides IS the buyer: it needs those people now, and the agency supplies them faster than hiring. Never call it not_fit because the company "hires directly" or "isn't looking for an agency".
+
+Several roles: judge the opportunity on all of its roles together. List every role the service could fill in fitting_roles; one unrelated role (a machinist, a salesperson) never outweighs the roles that fit. Not_fit only when none of the roles fit.
 
 Rules:
 - Judge only from the evidence given. If it doesn't show a need, say so; don't assume one.
@@ -113,6 +118,8 @@ export function toResult(raw: z.infer<typeof outputSchema>, evidence: string): Q
   const hints: QualifyResult["hints"] = {};
   if (text(raw.budget, 100)) hints.budget = text(raw.budget, 100);
   if (text(raw.timeline, 100)) hints.timeline = text(raw.timeline, 100);
+  const fitting = (raw.fitting_roles ?? []).map((r) => text(r, 120)).filter(Boolean).slice(0, 12);
+  if (fitting.length > 0) hints.fittingRoles = fitting;
   return {
     qualification: raw.verdict,
     score: Math.min(100, Math.max(0, Math.round(raw.fit))),

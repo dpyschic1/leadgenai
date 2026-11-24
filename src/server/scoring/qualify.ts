@@ -34,6 +34,8 @@ const RETRY_AFTER_HOURS = 6;
 const MAX_EVIDENCE_CHARS = 7_000;
 const MAX_JOB_CHARS = 1_800;
 const MAX_SIGNALS = 4;
+/** Open roles listed in one line each, so the AI judges all of them. */
+const MAX_ROLES_LISTED = 25;
 
 /** Opportunities due a check: unchecked (or failed a while ago), or checked by the AI before newer evidence arrived. */
 const due = sql`(
@@ -139,7 +141,17 @@ async function gatherInput(workspaceId: string, opportunityId: string): Promise<
       .filter(Boolean)
       .join("\n");
 
-    // The supporting signals, strongest first, with their excerpts and the job posts behind them.
+    // Every open role first, in one line each, so the verdict covers all of them (not just the strongest few).
+    const everyRole = await db
+      .select({ summary: signals.summary })
+      .from(opportunitySignals)
+      .innerJoin(signals, eq(signals.id, opportunitySignals.signalId))
+      .where(and(eq(opportunitySignals.opportunityId, opp.id), ne(opportunitySignals.role, "negative")))
+      .orderBy(desc(opportunitySignals.weight))
+      .limit(MAX_ROLES_LISTED);
+    if (everyRole.length > 1) add(`All ${everyRole.length} signals (open roles):\n${everyRole.map((r) => `- ${r.summary}`).join("\n")}`);
+
+    // The strongest signals in detail, with their excerpts and the job posts behind them.
     const linked = await db
       .select({ id: signals.id, summary: signals.summary, occurredAt: signals.occurredAt })
       .from(opportunitySignals)

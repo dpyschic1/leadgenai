@@ -68,7 +68,7 @@ describe("feed with engine opportunities", () => {
 
   it("filters by category", async () => {
     expect((await list({ categories: "funded_company" })).items.map((i) => i.id)).toEqual([ids.funded]);
-    expect((await list({ categories: "freelance_project,intent" })).total).toBe(2);
+    expect((await list({ categories: "funded_company,intent" })).total).toBe(2);
     expect((await list({ categories: "signal" })).total).toBe(0); // none of these come from the company-signal flow
   });
 

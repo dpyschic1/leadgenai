@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePipeline, usePipelineReport } from "@/hooks/use-pipeline";
-import { FILTER_CATEGORY_LABELS } from "@/lib/domain/engine";
+import { CATEGORY_LABELS, FILTER_CATEGORY_LABELS } from "@/lib/domain/engine";
 
 /** Where opportunities sit in the pipeline, and how each source's opportunities have turned out. */
 export function PipelineOverview() {
@@ -61,7 +61,8 @@ export function PipelineOverview() {
               .filter((r) => r.total > 0)
               .map((r) => (
                 <tr key={r.category} className="border-t">
-                  <td className="py-1.5">{FILTER_CATEGORY_LABELS[r.category]}</td>
+                  {/* Freelance projects are no longer found, but won or lost ones keep their history here. */}
+                  <td className="py-1.5">{r.category === "freelance_project" ? CATEGORY_LABELS.freelance_project : FILTER_CATEGORY_LABELS[r.category]}</td>
                   <td className="py-1.5 text-right tabular-nums">{r.open}</td>
                   <td className="py-1.5 text-right tabular-nums">{r.won}</td>
                   <td className="py-1.5 text-right tabular-nums">{r.lost}</td>

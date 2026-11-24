@@ -4,12 +4,12 @@ import { COUNTRY_CODES } from "@/lib/countries";
 /** Shared by the service form and the route handlers. */
 
 /**
- * Who a service is sold to: companies (hiring and funding signals), individuals (people asking for
- * help in a post) and project-based work (freelance marketplace projects).
+ * Who a service is sold to: companies (hiring and funding signals) and individuals (people asking
+ * for help in a post). Freelance marketplace projects were dropped (see OFFERED_CAPABILITIES).
  */
-export const CLIENT_TYPES = ["company", "individual", "project"] as const;
+export const CLIENT_TYPES = ["company", "individual"] as const;
 export type ClientType = (typeof CLIENT_TYPES)[number];
-export const CLIENT_TYPE_LABELS: Record<ClientType, string> = { company: "Companies", individual: "Individuals", project: "Project-based" };
+export const CLIENT_TYPE_LABELS: Record<ClientType, string> = { company: "Companies", individual: "Individuals" };
 
 /** How the work is done. A preference: matching work ranks higher; work that clearly says otherwise isn't offered. */
 export const WORK_TYPES = ["any", "remote", "hybrid", "onsite"] as const;

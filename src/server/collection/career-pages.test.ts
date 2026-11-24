@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FetchBlockedError, OffSiteRedirectError, politeGet } from "@/server/sources/http";
-import { careerPages } from "./collectors/career-pages";
+import { careerPages, ownJobsOnly } from "./collectors/career-pages";
 import { ripplingBoards } from "./collectors/hosted-boards";
 import { createFetcher, fetchHome, moveDestination } from "./fetch";
 
@@ -249,4 +249,28 @@ describe("jobs on Gem and Rippling boards", () => {
     const fetched = vi.mocked(fetch).mock.calls.map(([input]) => input.toString());
     expect(fetched).not.toContain("https://ats.rippling.com/rp-co/jobs/old");
   }, 20_000);
+});
+
+describe("a job board read as a careers page", () => {
+  const job = (companyName: string | null, companyDomain: string) => ({ externalId: `${companyName}-${companyDomain}`, kind: "job" as const, url: "https://x.example/j", title: "Engineer", companyName, companyDomain });
+  it("doesn't credit other employers' jobs to the site", () => {
+    // standout.work listed Andon Labs, Harvey and Reason Machines without their websites: none is the site's own.
+    const board = [job("Andon Labs", "standout.work"), job("Harvey", "standout.work"), job("Reason Machines", "standout.work"), job("Together AI", "together.ai")];
+    expect(ownJobsOnly(board as never, "standout.work").map((j) => j.companyName)).toEqual(["Together AI"]);
+  });
+  it("keeps a company's own careers page, however it writes its name", () => {
+    const own = [job("Acme", "acme.com"), job("Acme, Inc.", "acme.com"), job("Acme Labs", "acme.com"), job(null, "acme.com")];
+    expect(ownJobsOnly(own as never, "acme.com")).toHaveLength(4);
+  });
+});
+
+describe("a job board whose cards name the employer", () => {
+  const card = (facts: string, location: string) => ({ externalId: facts, kind: "job" as const, url: "https://standout.work/jobs/x", title: "AI Engineer", companyName: null, companyDomain: "standout.work", location, data: { facts } });
+  it("is told apart from a careers page by the employers its cards name", () => {
+    const board = [card("Harvey · New York, NY · $168k - $253k", "New York, NY"), card("Wayline · San Francisco, CA · $190k - $240k", "San Francisco, CA"), card("Uncountable · Remote · $110k - $140k", "Remote")];
+    expect(ownJobsOnly(board as never, "standout.work")).toEqual([]);
+    // A company's own cards open with the place or the pay: nothing to tell, everything stays.
+    const own = [card("New York, NY · $150k", "New York, NY"), card("Remote · Full-time", "Remote"), card("$120k - $160k", "Austin, TX")];
+    expect(ownJobsOnly(own as never, "acme.com")).toHaveLength(3);
+  });
 });

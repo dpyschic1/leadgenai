@@ -434,14 +434,15 @@ describe("job sites in the source filter", () => {
 
 describe("who the services are sold to", () => {
   it("shows only kinds of client a service is sold to, and keeps the choice and work type on the service", async () => {
+    // A post by someone with no company: an individual.
     await db.insert(opportunities).values({
       workspaceId: auth.workspaceId,
       stageId: await intakeStageId(db, auth.workspaceId),
-      category: "freelance_project",
+      category: "intent",
       type: "software_development",
       title: `Build a React dashboard ${run}`,
-      sourceSlug: "freelancer",
-      sourceExternalId: `project-${run}`,
+      sourceSlug: "reddit",
+      sourceExternalId: `post-${run}`,
       opportunityScore: 50,
     });
     const titles = async () =>
@@ -459,8 +460,8 @@ describe("who the services are sold to", () => {
     expect(await titles()).not.toContain(`Build a React dashboard ${run}`);
     expect(await titles()).toEqual(expect.arrayContaining(["Ledgerline", "Medisync Health", "Northbridge Legal"]));
 
-    // Ticked again, the project comes back: nothing was deleted.
-    await companiesOnly(["company", "individual", "project"], "any");
+    // Ticked again, the post comes back: nothing was deleted.
+    await companiesOnly(["company", "individual"], "any");
     expect(await titles()).toContain(`Build a React dashboard ${run}`);
   });
 });

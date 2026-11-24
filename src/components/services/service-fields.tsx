@@ -155,7 +155,7 @@ export function ServiceTargetingFields({ control }: Props) {
         control={control}
         name="clientTypes"
         label="Client type"
-        description="Companies: hiring and funding signals. Individuals: people asking for help in a post. Project-based: freelance projects."
+        description="Companies: hiring and funding signals. Individuals: people asking for help in a post."
       >
         {({ field, id, invalid, describedBy }) => (
           <ChipSelect
