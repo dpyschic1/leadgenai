@@ -25,6 +25,8 @@ import { isJobHost } from "@/server/collection/collectors/html-jobs";
 import { htmlToText } from "@/server/jobs/html-to-text";
 import { emailsFrom } from "@/server/sources/company-website";
 import { politeGet } from "@/server/sources/http";
+import { ycPageContacts } from "@/server/sources/yc";
+import { rescoreDiscovered } from "@/server/engine/rescore";
 
 /**
  * Turning opportunities into leads (as lead tools such as Buska do): everything found is an
@@ -43,9 +45,16 @@ const MAX_SIGNALS = 4;
 /** Open roles listed in one line each, so the AI judges all of them. */
 const MAX_ROLES_LISTED = 25;
 
+/**
+ * A newly funded company that says it's hiring ("Marble joined Y Combinator Summer 2026 and is
+ * hiring: Founding Engineer"): the rules score funding as weak intent, but funding plus hiring is
+ * among the best leads there are, so the AI reads it whatever its score.
+ */
+const fundedAndHiring = sql`(${opportunities.category} = 'funded_company' and ${opportunities.title} ~* '\\mhiring\\M')`;
+
 /** Opportunities due a check: unchecked (or failed a while ago), or checked by the AI before newer evidence arrived. */
 const due = sql`(
-  ${opportunities.opportunityScore} >= ${QUALIFY_MIN_SCORE}
+  (${opportunities.opportunityScore} >= ${QUALIFY_MIN_SCORE} or ${fundedAndHiring})
   and ${opportunities.hiddenReason} is null
   and ${opportunities.archivedAt} is null
   and (${opportunities.qualifiedBy} is null or ${opportunities.qualifiedBy} = 'ai')
@@ -60,12 +69,13 @@ const due = sql`(
  * Checks up to `limit` opportunities, strongest first, before `deadline`. Stops early when the AI
  * is busy (its per-minute or daily limit): the rest wait for the next tick. Returns how many were checked.
  */
-export async function qualifyLeads({ workspaceId, limit, deadline }: { workspaceId?: string; limit: number; deadline: number }): Promise<number> {
+export async function qualifyLeads({ workspaceId, limit, deadline, ids }: { workspaceId?: string; limit: number; deadline: number; ids?: string[] }): Promise<number> {
   const rows = await db
     .select({ id: opportunities.id, workspaceId: opportunities.workspaceId })
     .from(opportunities)
-    .where(and(due, workspaceId ? eq(opportunities.workspaceId, workspaceId) : undefined))
-    .orderBy(desc(opportunities.opportunityScore))
+    // Given opportunities are checked now (a team member asking); otherwise the due ones, strongest first.
+    .where(and(ids ? inArray(opportunities.id, ids) : due, workspaceId ? eq(opportunities.workspaceId, workspaceId) : undefined))
+    .orderBy(desc(fundedAndHiring), desc(opportunities.opportunityScore))
     .limit(limit);
 
   let checked = 0;
@@ -103,6 +113,9 @@ export async function qualifyLeads({ workspaceId, limit, deadline }: { workspace
   return checked;
 }
 
+/** Text kept from a discovered company's own page (its YC page lists what it does, its jobs and founders). */
+const MAX_SOURCE_PAGE_CHARS = 3_500;
+
 /** Job pages read per opportunity when no text is stored (each one a polite request to the employer's site). */
 const MAX_PAGES_READ = 2;
 
@@ -135,14 +148,85 @@ async function collectedText(url: string): Promise<string | null> {
 
 /** The job page's text, read once and politely (robots.txt respected); null when it can't be read. */
 async function readPosting(url: string): Promise<string | null> {
+  return (await readPage(url))?.text ?? null;
+}
+
+/**
+ * Pages read lately, by URL: while the AI is busy, the same opportunity is tried again every tick,
+ * and its page shouldn't be fetched again each time (once per `PAGE_KEEP_MS` per server process).
+ */
+const pagesRead = new Map<string, { at: number; page: { html: string; text: string } | null }>();
+const PAGE_KEEP_MS = 6 * 60 * 60_000;
+const MAX_PAGES_KEPT = 200;
+
+/** A page read once and politely: its HTML and its text; null when it can't be read. */
+async function readPage(url: string): Promise<{ html: string; text: string } | null> {
+  const kept = pagesRead.get(url);
+  if (kept && Date.now() - kept.at < PAGE_KEEP_MS) return kept.page;
+  let page: { html: string; text: string } | null = null;
   try {
-    const page = await politeGet(url, { timeoutMs: 10_000 });
-    if (page.status >= 400 || !/html/i.test(page.contentType)) return null;
-    const text = htmlToText(page.body);
-    return text.length > 200 ? text : null;
+    const fetched = await politeGet(url, { timeoutMs: 10_000 });
+    if (fetched.status < 400 && /html/i.test(fetched.contentType)) {
+      const text = htmlToText(fetched.body);
+      if (text.length > 200) page = { html: fetched.body, text };
+    }
   } catch {
-    return null;
+    page = null;
   }
+  if (pagesRead.size >= MAX_PAGES_KEPT) pagesRead.delete(pagesRead.keys().next().value!);
+  pagesRead.set(url, { at: Date.now(), page });
+  return page;
+}
+
+/**
+ * Who to contact at a discovered company, from its own YC page: its founders (name, title, LinkedIn)
+ * and the email it publishes on its own domain, kept with the opportunity's evidence from that page
+ * (where a filing's named people are kept), so the contact card shows them.
+ */
+const isYcPage = (url: string) => {
+  try {
+    return /(^|\.)ycombinator\.com$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Reads the YC pages of a workspace's discovered opportunities found on YC (`ids`, else every
+ * funded one), keeps the founders and published email as their contacts, and re-scores the ones
+ * where some were found. One polite read per page (reused for 6 hours). Returns how many got contacts.
+ */
+export async function findYcContacts(workspaceId: string, ids?: string[]): Promise<number> {
+  const rows = await db
+    .select({ id: opportunities.id, url: opportunities.sourceUrl })
+    .from(opportunities)
+    .where(
+      and(
+        eq(opportunities.workspaceId, workspaceId),
+        ids ? inArray(opportunities.id, ids) : eq(opportunities.category, "funded_company"),
+        sql`${opportunities.companyId} is null and ${opportunities.sourceUrl} ~* '^https?://(www\\.)?ycombinator\\.com/companies/'`,
+      ),
+    );
+  const found: string[] = [];
+  for (const row of rows) {
+    const page = await readPage(row.url!);
+    if (page && (await saveYcContacts(row.id, row.url!, page.html))) found.push(row.id);
+  }
+  await rescoreDiscovered(workspaceId, found);
+  return found.length;
+}
+
+async function saveYcContacts(opportunityId: string, url: string, html: string): Promise<boolean> {
+  const { founders, emails, website } = ycPageContacts(html);
+  if (founders.length === 0 && emails.length === 0) return false;
+  const facts = { people: founders, emails, ...(website ? { website } : {}), peopleSource: "Y Combinator" };
+  const updated = await db
+    .update(opportunityEvidence)
+    .set({ metadata: sql`${opportunityEvidence.metadata} || ${JSON.stringify(facts)}::jsonb` })
+    .where(and(eq(opportunityEvidence.opportunityId, opportunityId), eq(opportunityEvidence.url, url)))
+    .returning({ id: opportunityEvidence.id });
+  if (updated.length === 0) console.warn(`[leads] no evidence for ${url} to keep its founders with`);
+  return updated.length > 0;
 }
 
 /** Saves the emails on the company's own domain that its job posts publish, as company contacts. */
@@ -278,6 +362,16 @@ async function gatherInput(workspaceId: string, opportunityId: string): Promise<
   if (opp.fundingAmountUsd) add(`Funding: $${opp.fundingAmountUsd.toLocaleString("en")}${opp.fundingStage ? ` (${opp.fundingStage})` : ""}${opp.fundingDate ? ` on ${opp.fundingDate}` : ""}`);
   const snippets = await db.select({ platform: opportunityEvidence.platform, snippet: opportunityEvidence.snippet }).from(opportunityEvidence).where(eq(opportunityEvidence.opportunityId, opp.id)).limit(3);
   for (const s of snippets) add(s.snippet && `From ${s.platform}: ${s.snippet}`);
+  // A discovered company's own page where it was found (its YC page: what it does, every open job,
+  // the founders), read once, politely, when it's a site we read; never LinkedIn or an aggregator.
+  if (!opp.companyId && opp.sourceUrl && readablePosting(opp.sourceUrl, null)) {
+    const page = await readPage(opp.sourceUrl);
+    if (page) {
+      add(`Its page (${opp.sourceUrl}): ${page.text.slice(0, MAX_SOURCE_PAGE_CHARS)}`);
+      // Its YC page names the founders and the address it publishes: kept as its contacts, and scored.
+      if (isYcPage(opp.sourceUrl) && (await saveYcContacts(opp.id, opp.sourceUrl, page.html))) await rescoreDiscovered(workspaceId, [opp.id]);
+    }
+  }
 
   if (parts.length === 0) return null;
   return {

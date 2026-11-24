@@ -1,6 +1,6 @@
 import "server-only";
 import { categorizeJob } from "@/server/jobs/job-categories";
-import { scoreCompany, type EngineCompany, type EngineLabels, type EngineService, type EngineSignal, type ScoreResult } from "@/server/scoring/engine";
+import { scoreCompany, type EngineCompany, type EngineLabels, type EnginePerson, type EngineService, type EngineSignal, type ScoreResult } from "@/server/scoring/engine";
 import { getReferenceData } from "@/server/services/reference-data.service";
 import { loadWeights } from "@/server/services/scoring.service";
 import { loadServices } from "@/server/services/services.service";
@@ -119,12 +119,53 @@ export function discoveredInput(item: DiscoveredItem, score: EngineScore, fallba
   };
 }
 
-/** Scores a discovered item's stored input with the workspace's rules; null when nothing positive. Pure. */
-export function scoreDiscovered(input: DiscoveredInput, context: ScoreContext, now: Date): ScoreResult | null {
+/** Who to contact, as kept with a discovered opportunity's evidence (a company's YC page: its founders, published email, website). */
+export type FoundContacts = { people?: { name: string; roles: string[]; url?: string | null }[]; emails?: string[]; website?: string };
+
+/**
+ * The people and website a discovered opportunity's evidence names, for scoring its identity. A
+ * founder is reachable when the published address is meant for them (founders@, or their name);
+ * a general inbox (info@, hello@) is the company's, not theirs. Pure.
+ */
+export function contactsFrom(facts: FoundContacts[]): { people: EnginePerson[]; domain: string | null } {
+  const emails = facts.flatMap((f) => f.emails ?? []).map((e) => e.toLowerCase());
+  const website = facts.find((f) => f.website)?.website ?? null;
+  let domain: string | null = null;
+  try {
+    domain = website ? new URL(website).hostname.replace(/^www\./, "") : null;
+  } catch {
+    domain = null;
+  }
+  const people = facts.flatMap((f) => f.people ?? []).map((p): EnginePerson => {
+    const title = p.roles.join(" ");
+    // Letters only, so "Pierre-Louis" matches pierrelouis@.
+    const first = (p.name.split(/\s+/)[0] ?? "").toLowerCase().replace(/[^a-z]/g, "");
+    const forThem = emails.some((e) => /^founders?@/.test(e) || (first.length > 1 && e.split("@")[0].replace(/[^a-z]/g, "").includes(first)));
+    return {
+      id: `founder:${p.name}`,
+      name: p.name,
+      seniority: /\b(ceo|chief executive|founder)\b/i.test(title) && !/\b(cto|coo|cfo)\b/i.test(title) ? "owner" : /\b(cto|coo|cfo|chief)\b/i.test(title) ? "c_level" : "unknown",
+      jobFunction: /\b(cto|technology|engineering)\b/i.test(title) ? "engineering" : "founder_executive",
+      hasEmail: forThem,
+      hasPhone: false,
+      suggestable: true,
+      verifiedContact: false,
+    };
+  });
+  return { people, domain };
+}
+
+/**
+ * Scores a discovered item's stored input with the workspace's rules; null when nothing positive.
+ * `found`: the contacts its evidence names since (a YC page's founders), which identity counts. Pure.
+ */
+export function scoreDiscovered(input: DiscoveredInput, context: ScoreContext, now: Date, found?: FoundContacts[]): ScoreResult | null {
+  const contacts = found ? contactsFrom(found) : { people: [], domain: null };
   return scoreCompany({
-    company: input.company,
-    // The buyer is not identified from a post: identity scores what is known, never a guess.
-    people: [],
+    company: contacts.domain && !input.company.domain ? { ...input.company, domain: contacts.domain } : input.company,
+    // The buyer is not identified from a post: identity scores what is known (the founders a YC page
+    // names, its published address), never a guess.
+    people: contacts.people,
     signals: [{ ...input.signal, occurredAt: new Date(input.signal.occurredAt) }],
     services: context.services,
     weights: context.weights,

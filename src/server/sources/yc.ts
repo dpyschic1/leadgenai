@@ -6,7 +6,8 @@ import type { JobBoardProvider } from "@/lib/domain/job-boards";
 import { candidateTokens } from "@/server/jobs/detect";
 import { boardExists } from "@/server/jobs/fetch-jobs";
 import { canonicalToken, refreshBoard } from "./board-directory";
-import { readWebsite } from "./company-website";
+import { decodeEntities } from "@/server/jobs/html-to-text";
+import { PLACEHOLDER_EMAIL, readWebsite } from "./company-website";
 import { registrableDomain } from "./http";
 import type { FoundCompany, HealthStatus, SourceAdapter } from "./index";
 
@@ -349,4 +350,42 @@ export async function ycCompanyForBoard(provider: JobBoardProvider, boardToken: 
     .where(and(eq(ycCompanies.boardProvider, provider), eq(ycCompanies.boardToken, boardToken)))
     .limit(1);
   return row ?? null;
+}
+
+/** A founder as the company's YC page lists them. */
+export type YcFounder = { name: string; roles: string[]; url: string | null };
+
+/**
+ * What a company's own YC page (ycombinator.com/companies/<slug>) says about who to contact: its
+ * active founders (name, title, LinkedIn link, from the page's own structured data), the email
+ * addresses it publishes on its own domain (founders@joinmarble.com for joinmarble.ai: the same
+ * name, another ending), and its website. Nothing is guessed; YC's own and placeholder addresses
+ * are left out. Pure.
+ */
+export function ycPageContacts(html: string): { founders: YcFounder[]; emails: string[]; website: string | null } {
+  const empty = { founders: [], emails: [], website: null };
+  const attribute = /data-page="([^"]+)"/.exec(html)?.[1];
+  if (!attribute) return empty;
+  let company: { website?: unknown; founders?: unknown };
+  try {
+    company = (JSON.parse(decodeEntities(attribute)) as { props?: { company?: typeof company } }).props?.company ?? {};
+  } catch {
+    return empty;
+  }
+  const website = typeof company.website === "string" && /^https?:\/\//.test(company.website) ? company.website : null;
+  const founders = (Array.isArray(company.founders) ? company.founders : []).flatMap((raw): YcFounder[] => {
+    const f = raw as { full_name?: unknown; title?: unknown; linkedin_url?: unknown; is_active?: unknown };
+    if (typeof f.full_name !== "string" || !f.full_name.trim() || f.is_active === false) return [];
+    const title = typeof f.title === "string" && f.title.trim() ? [f.title.trim()] : [];
+    const url = typeof f.linkedin_url === "string" && /^https:\/\/([a-z]+\.)?linkedin\.com\/in\//i.test(f.linkedin_url) ? f.linkedin_url : null;
+    return [{ name: f.full_name.trim(), roles: title, url }];
+  });
+  // The company's name in its web address ("joinmarble"), so an address on another ending still counts as its own.
+  const own = website ? registrableDomain(new URL(website).hostname).split(".")[0] : null;
+  const emails = own
+    ? [...new Set([...decodeEntities(html).matchAll(/[a-z0-9._%+-]+@([a-z0-9.-]+\.[a-z]{2,})/gi)].filter((m) => registrableDomain(m[1].toLowerCase()).split(".")[0] === own).map((m) => m[0].toLowerCase()))]
+        .filter((e) => !PLACEHOLDER_EMAIL.test(e))
+        .slice(0, 3)
+    : [];
+  return { founders: founders.slice(0, 6), emails, website };
 }

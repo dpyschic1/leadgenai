@@ -1327,3 +1327,30 @@ describe("AI pacing", () => {
     expect(await withAiSlot(async () => "after")).toBe("after");
   });
 });
+
+describe("a company's YC page", () => {
+  const page = (company: Record<string, unknown>, extra = "") =>
+    `<div data-page="${JSON.stringify({ props: { company } }).replace(/"/g, "&quot;")}"></div>${extra}`;
+  it("names its active founders and the address it publishes on its own domain", async () => {
+    const { ycPageContacts } = await import("./yc");
+    const html = page(
+      {
+        website: "https://joinmarble.ai/",
+        founders: [
+          { full_name: "Aakar Khanna", title: "Founder/CEO", linkedin_url: "https://www.linkedin.com/in/aakarkhanna/", is_active: true },
+          { full_name: "Former Founder", title: "Founder", is_active: false },
+        ],
+      },
+      "Write to founders@joinmarble.com or software@ycombinator.com or changeme@joinmarble.com",
+    );
+    expect(ycPageContacts(html)).toEqual({
+      founders: [{ name: "Aakar Khanna", roles: ["Founder/CEO"], url: "https://www.linkedin.com/in/aakarkhanna/" }],
+      emails: ["founders@joinmarble.com"],
+      website: "https://joinmarble.ai/",
+    });
+  });
+  it("finds nothing on a page without the company's data", async () => {
+    const { ycPageContacts } = await import("./yc");
+    expect(ycPageContacts("<html>Page not found</html>")).toEqual({ founders: [], emails: [], website: null });
+  });
+});

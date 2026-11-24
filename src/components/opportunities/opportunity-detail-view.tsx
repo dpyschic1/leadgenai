@@ -423,7 +423,13 @@ const hostOf = (url: string) => {
  */
 function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
   const engine = opportunity.engine;
-  const named = opportunity.engineEvidence.flatMap((e) => ((e.metadata as { people?: { name: string; roles: string[] }[] }).people ?? []));
+  type NamedFacts = { people?: { name: string; roles: string[]; url?: string | null }[]; emails?: string[]; website?: string; peopleSource?: string };
+  const facts = opportunity.engineEvidence.map((e) => e.metadata as NamedFacts);
+  const named = facts.flatMap((f) => f.people ?? []);
+  // Addresses the company publishes on its own domain (its YC page), and its website.
+  const emails = [...new Set(facts.flatMap((f) => f.emails ?? []))];
+  const website = facts.find((f) => f.website)?.website ?? null;
+  const namedBy = facts.find((f) => f.peopleSource)?.peopleSource ?? null;
   const funded = engine?.category === "funded_company";
   return (
     <section className="rounded-xl border bg-card p-5">
@@ -454,21 +460,38 @@ function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail
         <p className="mt-2 text-sm text-muted-foreground">No one identified yet. The source doesn&apos;t say who posted this, and we don&apos;t guess.</p>
       )}
       {named.length > 0 && (
-        <div className="mt-4 border-t pt-4">
-          <h3 className="text-xs font-medium text-muted-foreground">Named in the filing</h3>
-          <ul className="mt-3 space-y-3">
+        <div className="mt-3 border-t pt-3">
+          <h3 className="text-xs font-medium text-muted-foreground">{namedBy ? `Founders (from ${namedBy})` : "Named in the filing"}</h3>
+          <ul className="mt-2 space-y-2.5">
             {named.slice(0, 6).map((p) => (
-              <li key={p.name} className="flex items-center gap-3">
-                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
-                  <UserRoundIcon className="size-3.5" />
+              <li key={p.name} className="flex items-center gap-2.5">
+                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+                  <UserRoundIcon className="size-3" />
                 </span>
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{p.name}</p>
-                  <p className="truncate text-sm text-muted-foreground">{p.roles.join(", ") || "Title unknown"}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{p.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">{p.roles.join(", ") || "Title unknown"}</p>
                 </div>
+                {p.url && (
+                  <a href={p.url} target="_blank" rel="noopener noreferrer" aria-label={`${p.name}'s profile`} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+                    <LinkIcon className="size-3.5" />
+                  </a>
+                )}
               </li>
             ))}
           </ul>
+        </div>
+      )}
+      {(emails.length > 0 || website) && (
+        <div className="mt-3 border-t pt-3">
+          <h3 className="text-xs font-medium text-muted-foreground">Company contact</h3>
+          <div className="mt-1.5">
+            {emails.map((email) => (
+              <ContactLink key={email} href={`mailto:${email}`} label={email} icon={MailIcon} />
+            ))}
+            {website && <ContactLink href={website} label={website.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")} icon={GlobeIcon} external />}
+          </div>
+          {emails.length > 0 && namedBy && <p className="pl-1.5 text-xs text-muted-foreground">Published on its {namedBy} page</p>}
         </div>
       )}
       {engine && engine.investors.length > 0 && (
