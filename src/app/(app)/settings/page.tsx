@@ -3,7 +3,6 @@ import { PageHeader } from "@/components/layout/page-header";
 import { EngineSettings } from "@/components/settings/engine-settings";
 import { JobspySettings } from "@/components/settings/jobspy-settings";
 import { DataSourcesSettings } from "@/components/settings/data-sources-settings";
-import { PipelineSettings } from "@/components/settings/pipeline-settings";
 import { ScoringSettings } from "@/components/settings/scoring-settings";
 import { TeamSettings } from "@/components/settings/team-settings";
 import { WorkspaceSettings } from "@/components/settings/workspace-settings";
@@ -19,7 +18,6 @@ export default function SettingsPage() {
         <TeamSettings />
         <ScoringSettings />
         <EngineSettings />
-        <PipelineSettings />
         <DataSourcesSettings />
         <JobspySettings />
       </div>

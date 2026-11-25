@@ -381,6 +381,12 @@ export type LeadList = Page<LeadSummary> & {
   stageCounts: { startup: number; established: number };
 };
 
+/** A lead on the Pipeline board: its summary, and when it entered the stage it is in. */
+export type PipelineCard = OpportunitySummary & { enteredStageAt: string };
+
+/** Every lead still being worked or closed (not archived), for the board; best first. */
+export type PipelineBoard = { items: PipelineCard[]; truncated: boolean };
+
 /** Every matching lead's best email and phone (the person's, else the company's), for copying. */
 export type LeadContacts = {
   total: number;

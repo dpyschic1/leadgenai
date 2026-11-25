@@ -42,6 +42,7 @@ import type {
   OpportunityFactor,
   OpportunityList,
   OpportunitySummary,
+  PipelineBoard,
 } from "@/lib/api/types";
 import { ENGINE_FACTOR_LABELS } from "@/lib/domain/engine";
 import {
@@ -669,6 +670,39 @@ function leadBase(workspaceId: string, filter: LeadFilter): SQL | undefined {
     isLead,
     or(groupCondition("open"), groupCondition("inProgress")),
   );
+}
+
+/** Cards one board holds; more than this many active leads is a list, not a board. */
+const MAX_BOARD_CARDS = 500;
+
+/**
+ * The Pipeline board: every lead (hot or warm, not archived or hidden) in every stage, Won and Lost
+ * included, best first, each with when it entered its stage: the last stage move, else when it
+ * became a lead.
+ */
+export async function pipelineBoard(auth: AuthContext): Promise<PipelineBoard> {
+  const rows = await summaryQuery()
+    .where(and(eq(opportunities.workspaceId, auth.workspaceId), isLead, isNull(opportunities.archivedAt), isNull(opportunities.hiddenReason)))
+    .orderBy(...leadOrder())
+    .limit(MAX_BOARD_CARDS + 1);
+  const shown = rows.slice(0, MAX_BOARD_CARDS);
+  const ids = shown.map((row) => row.opportunity.id);
+  const moves =
+    ids.length === 0
+      ? []
+      : await db
+          .select({ id: auditLogs.entityId, at: sql<string>`max(${auditLogs.createdAt})` })
+          .from(auditLogs)
+          .where(and(eq(auditLogs.workspaceId, auth.workspaceId), eq(auditLogs.action, "opportunity.stage_changed"), inArray(auditLogs.entityId, ids)))
+          .groupBy(auditLogs.entityId);
+  const movedAt = new Map(moves.map((m) => [m.id, new Date(m.at)]));
+  return {
+    items: shown.map((row) => ({
+      ...toSummary(row),
+      enteredStageAt: (movedAt.get(row.opportunity.id) ?? row.opportunity.qualifiedAt ?? row.opportunity.createdAt).toISOString(),
+    })),
+    truncated: rows.length > MAX_BOARD_CARDS,
+  };
 }
 
 /** Leads page order: hot before warm, then the AI's fit, then the usual priority. */

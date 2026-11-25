@@ -22,7 +22,13 @@ export function useBulkOpportunities() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: BulkOpportunitiesValues) => opportunitiesApi.bulk(input),
-    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }), queryClient.invalidateQueries({ queryKey: queryKeys.lists })]),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.lists }),
+        // Stage moves and archiving change the pipeline and dashboard numbers too.
+        queryClient.invalidateQueries({ queryKey: queryKeys.pipeline }),
+      ]),
   });
 }
 
@@ -76,7 +82,12 @@ export function useUpdateOpportunity(id: string) {
     mutationFn: (input: UpdateOpportunityValues) => opportunitiesApi.update(id, input),
     onSuccess: (opportunity) => {
       queryClient.setQueryData(queryKeys.opportunity(id), opportunity);
-      return queryClient.invalidateQueries({ queryKey: ["opportunities", "list"] });
+      // A stage, archive or qualification change shows on every feed, the Leads tabs, the board and the
+      // pipeline numbers, so refresh them all (the detail was just set above).
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.opportunities, predicate: (q) => q.queryKey[1] !== "detail" }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.pipeline }),
+      ]);
     },
   });
 }

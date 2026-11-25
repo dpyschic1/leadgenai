@@ -2,6 +2,7 @@ import {
   BookmarkIcon,
   BriefcaseBusinessIcon,
   ContactRoundIcon,
+  KanbanIcon,
   LayoutDashboardIcon,
   SettingsIcon,
   TargetIcon,
@@ -20,6 +21,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/services", label: "Services & ICP", icon: BriefcaseBusinessIcon },
   { href: "/opportunities", label: "Opportunities", icon: TargetIcon },
   { href: "/leads", label: "Leads", icon: ContactRoundIcon },
+  { href: "/pipeline", label: "Pipeline", icon: KanbanIcon },
   { href: "/lists", label: "Lists", icon: BookmarkIcon },
 ];
 

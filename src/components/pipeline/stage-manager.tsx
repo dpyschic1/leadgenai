@@ -1,48 +1,57 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDownIcon, ArrowUpIcon, Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, Loader2Icon, PlusIcon, Settings2Icon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCreateStage, useDeleteStage, usePipeline, useRenameStage, useReorderStages } from "@/hooks/use-pipeline";
 import { usePermission } from "@/hooks/use-permission";
 import { MAX_STAGE_NAME, STAGE_KINDS, STAGE_KIND_LABELS, type PipelineStage, type StageKind } from "@/lib/domain/pipeline";
 import { CONFIG_ROLES } from "@/lib/permissions";
-import { SettingsSection } from "./settings-section";
 
-const TITLE = "Sales pipeline";
 const DESCRIPTION =
-  "The stages an opportunity moves through, shared by your whole workspace. Rename, reorder, add or remove stages. Won and Lost keep their meaning for reporting whatever you call them, so at least one of each must remain.";
+  "The stages a lead moves through, shared by your whole workspace. Won and Lost keep their meaning for reporting whatever you call them, so at least one of each must remain.";
 
-export function PipelineSettings() {
+/** "Manage stages" on the Pipeline page: rename, reorder, add or remove stages in a side panel. */
+export function StageManager() {
   const { data: stages } = usePipeline();
   const canEdit = usePermission(CONFIG_ROLES);
 
-  if (!stages) {
-    return (
-      <SettingsSection title={TITLE} description={DESCRIPTION}>
-        <div className="space-y-2" aria-label="Loading pipeline">
-          {[0, 1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-11 w-full rounded-lg" />
-          ))}
-        </div>
-      </SettingsSection>
-    );
-  }
   return (
-    <SettingsSection title={TITLE} description={canEdit ? DESCRIPTION : `${DESCRIPTION} Only owners, admins and managers can change it.`}>
-      <div className="space-y-4">
-        <ul className="space-y-2" aria-label="Pipeline stages">
-          {stages.map((stage, index) => (
-            <StageRow key={`${stage.id}:${stage.name}`} stage={stage} stages={stages} index={index} canEdit={canEdit} />
-          ))}
-        </ul>
-        {canEdit && <AddStage />}
-      </div>
-    </SettingsSection>
+    <Sheet>
+      <SheetTrigger asChild>
+        <Button variant="outline" className="h-9 bg-card">
+          <Settings2Icon />
+          Manage stages
+        </Button>
+      </SheetTrigger>
+      <SheetContent className="w-full gap-0 sm:max-w-lg">
+        <SheetHeader className="border-b">
+          <SheetTitle>Pipeline stages</SheetTitle>
+          <SheetDescription>{canEdit ? DESCRIPTION : `${DESCRIPTION} Only owners, admins and managers can change them.`}</SheetDescription>
+        </SheetHeader>
+        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+          {stages ? (
+            <ul className="space-y-2" aria-label="Pipeline stages">
+              {stages.map((stage, index) => (
+                <StageRow key={`${stage.id}:${stage.name}`} stage={stage} stages={stages} index={index} canEdit={canEdit} />
+              ))}
+            </ul>
+          ) : (
+            <div className="space-y-2" aria-label="Loading stages">
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-11 w-full rounded-lg" />
+              ))}
+            </div>
+          )}
+          {canEdit && <AddStage />}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 

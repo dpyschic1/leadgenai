@@ -394,7 +394,7 @@ export function PipelineBreakdown() {
     leads: s.leads,
   }));
   return (
-    <Card title="Pipeline" description="Opportunities in each stage." action={<CardLink href="/settings">Stages</CardLink>}>
+    <Card title="Pipeline" description="Opportunities in each stage." action={<CardLink href="/pipeline">Board</CardLink>}>
       <ChartContainer config={stageConfig} className="aspect-auto w-full" style={{ height: stageRows.length * 28 + 8 }}>
         <BarChart data={stageRows} layout="vertical" margin={{ top: 0, right: 40, left: 0, bottom: 0 }} barCategoryGap="24%">
           <XAxis type="number" hide />

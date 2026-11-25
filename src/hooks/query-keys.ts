@@ -30,6 +30,8 @@ export const queryKeys = {
   /** Under "opportunities", so anything that refreshes opportunities refreshes the Leads page too. */
   leads: (filter: { tab: string; role: string | null; q: string }, page: Pagination) => ["opportunities", "leads", filter, page] as const,
   opportunity: (id: string) => ["opportunities", "detail", id] as const,
+  /** The Pipeline board: under "opportunities", so every stage move or re-qualification refreshes it. */
+  pipelineBoard: ["opportunities", "board"] as const,
   /** The saved lists with their counts. */
   lists: ["lists"] as const,
   /** One list's opportunities: under the opportunities prefix so re-scores and status changes refresh it. */
