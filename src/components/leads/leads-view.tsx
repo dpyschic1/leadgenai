@@ -527,7 +527,7 @@ function LeadRow({
         <CompanyAvatar name={opportunityName(lead)} />
         <span className="min-w-0">
           {/* The whole row opens the lead; the contact links sit above this link. */}
-          <Link href={`/opportunities/${lead.id}`} className="block truncate font-medium outline-none after:absolute after:inset-0 focus-visible:underline">
+          <Link href={`/leads/${lead.id}`} className="block truncate font-medium outline-none after:absolute after:inset-0 focus-visible:underline">
             {opportunityName(lead)}
           </Link>
           {lead.roles.length > 0 ? (

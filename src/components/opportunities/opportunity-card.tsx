@@ -170,7 +170,7 @@ export function OpportunityCard({
           </div>
         </div>
         <div className="flex items-center gap-1.5">
-          <LeadBadge lead={lead} />
+          <LeadBadge lead={lead} showScore={false} />
           <StatusBadge stage={opportunity.stage} archived={opportunity.archived} />
           {action && <div className="relative z-10">{action}</div>}
           {selection && (

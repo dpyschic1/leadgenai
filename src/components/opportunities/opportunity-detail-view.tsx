@@ -24,9 +24,8 @@ import { SOURCE_LABELS } from "@/lib/domain/sources";
 import { EDITOR_ROLES } from "@/lib/permissions";
 import { opportunityName } from "@/lib/opportunity-display";
 import { cn } from "@/lib/utils";
-import { EngineEvidencePanel, EngineScoreBreakdown } from "./engine-parts";
+import { EngineEvidencePanel } from "./engine-parts";
 import { FeedbackPanel } from "./feedback-panel";
-import { ScoreBreakdown } from "./score-breakdown";
 import { KindLabel } from "./opportunity-card";
 import { LeadBadge } from "./status-badge";
 
@@ -39,7 +38,7 @@ export function OpportunityDetailView() {
   return <OpportunityDetailContent opportunity={opportunity} />;
 }
 
-function Panel({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+export function Panel({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return (
     <section className="rounded-xl border bg-card">
       <div className="border-b px-5 py-4">
@@ -84,7 +83,7 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
           {headline && <p className="mt-2 line-clamp-2 max-w-[70ch] text-base leading-relaxed text-pretty text-foreground/80">{headline}</p>}
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
             <KindLabel opportunity={opportunity} />
-            <LeadBadge lead={opportunity.lead} />
+            <LeadBadge lead={opportunity.lead} showScore={false} />
             {opportunity.service ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-signal-tint px-2.5 py-0.5 text-xs font-medium text-[var(--signal-deep)]">
                 <CircleCheckIcon className="size-3.5 text-primary" />
@@ -142,20 +141,6 @@ function OpportunityDetailContent({ opportunity }: { opportunity: OpportunityDet
             </div>
           </Panel>
 
-          <Panel title="Why it was sent to the AI" description="A quick rules check of fit and timing, used only to decide what the AI reads first.">
-            <div className="p-5">
-              {opportunity.engineFactors && opportunity.score !== null ? (
-                <EngineScoreBreakdown factors={opportunity.engineFactors} total={opportunity.score} />
-              ) : opportunity.factors && opportunity.score !== null ? (
-                <ScoreBreakdown factors={opportunity.factors} total={opportunity.score} />
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Not scored: this company has no positive signal any more. Its history is kept because it&apos;s been worked on.
-                </p>
-              )}
-            </div>
-          </Panel>
-
           <Panel
             title="Evidence"
             description={opportunity.engine ? "Where this came from, and how well it is confirmed." : "The signals behind this opportunity, strongest first."}
@@ -206,7 +191,7 @@ function LeadCheckPanel({ opportunity, canEdit }: { opportunity: OpportunityDeta
     <Panel title="Lead check" description="An opportunity becomes a lead once its evidence shows a real buyer for your service.">
       <div className="space-y-4 p-5">
         <div className="flex flex-wrap items-center gap-2">
-          <LeadBadge lead={lead} className="text-sm" />
+          <LeadBadge lead={lead} showScore={false} className="text-sm" />
           {lead.by && <span className="text-xs text-muted-foreground">{lead.by === "team" ? "Decided by your team" : "Checked by the AI"}</span>}
         </div>
         {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
@@ -258,7 +243,7 @@ function LeadCheckPanel({ opportunity, canEdit }: { opportunity: OpportunityDeta
  * Every open role as the AI judged it: the ones your service can fill (with the part of your service
  * that covers each) first, then the ones it can't and why. A role opens its job post when one matches.
  */
-function RoleBreakdown({ roles, jobLinks }: { roles: OpportunityDetail["lead"]["roles"]; jobLinks: OpportunityDetail["jobLinks"] }) {
+export function RoleBreakdown({ roles, jobLinks }: { roles: OpportunityDetail["lead"]["roles"]; jobLinks: OpportunityDetail["jobLinks"] }) {
   const fitting = roles.filter((r) => r.fits).length;
   const linkOf = (title: string) => jobLinks.find((l) => l.title.toLowerCase() === title.toLowerCase())?.url ?? null;
   return (
@@ -312,7 +297,7 @@ function ContactLink({ href, label, icon: Icon, external }: { href: string; labe
   );
 }
 
-function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
+export function ContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
   const person = opportunity.contactDetails;
   const company = opportunity.company;
   const others = opportunity.otherPeople;
@@ -421,7 +406,7 @@ const hostOf = (url: string) => {
  * source names, with their profile or website, and the people a filing names. Same card, same layout
  * as a company opportunity's; nothing is guessed when the source names no one.
  */
-function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
+export function DiscoveredContactCard({ opportunity }: { opportunity: OpportunityDetail }) {
   const engine = opportunity.engine;
   type NamedFacts = { people?: { name: string; roles: string[]; url?: string | null }[]; emails?: string[]; website?: string; peopleSource?: string };
   const facts = opportunity.engineEvidence.map((e) => e.metadata as NamedFacts);
@@ -609,7 +594,7 @@ function CompanyContacts({ contacts }: { contacts: CompanyContact[] }) {
   );
 }
 
-function NotesCard({ opportunity, canEdit }: { opportunity: OpportunityDetail; canEdit: boolean }) {
+export function NotesCard({ opportunity, canEdit }: { opportunity: OpportunityDetail; canEdit: boolean }) {
   const [notes, setNotes] = useState(opportunity.notes ?? "");
   const update = useUpdateOpportunity(opportunity.id);
   const dirty = notes.trim() !== (opportunity.notes ?? "");
