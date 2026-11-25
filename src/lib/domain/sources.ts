@@ -17,6 +17,8 @@ export const SOURCE_SLUGS = [
   "yc_directory",
   "web_collection",
   "fca_register",
+  /** Settings → JobSpy import; switched per workspace in its own card, not under Data sources. */
+  "jobspy",
 ] as const;
 export type SourceSlug = (typeof SOURCE_SLUGS)[number];
 
@@ -34,6 +36,7 @@ export const SOURCE_LABELS: Record<SourceSlug, string> = {
   yc_directory: "Y Combinator companies",
   web_collection: "Own web collection",
   fca_register: "FCA register",
+  jobspy: "JobSpy import",
 };
 
 export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
@@ -57,6 +60,7 @@ export const SOURCE_DESCRIPTIONS: Record<SourceSlug, string> = {
   web_collection:
     "Jobs our own collector reads from companies' careers pages, Gem and Rippling boards and Hacker News's monthly hiring thread, politely and within robots.txt: companies hiring for the work your services do, in your target countries, found by their own website.",
   fca_register: "Financial firms and approved people. Not used: the FCA's terms need written permission to store or redistribute register data.",
+  jobspy: "Jobs from Indeed, LinkedIn, Glassdoor and ZipRecruiter fetched by the separate JobSpy service (Settings → JobSpy import).",
 };
 
 /** Platform-level permission to run a source (SRS §11.3). Only `approved` sources run. */

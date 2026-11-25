@@ -51,6 +51,8 @@ export async function listDataSources(auth: AuthContext): Promise<DataSource[]> 
     const row = rows.find((r) => r.slug === slug);
     // Sources we aren't allowed to use (e.g. FCA, restricted by its terms) aren't shown at all.
     if (!row || row.authorizationStatus !== "approved") return [];
+    // JobSpy import has its own card and switch (Settings → JobSpy import).
+    if (slug === "jobspy") return [];
     const kinds = kindsOf(slug);
     const lastSuccess = successes.filter((s) => kinds.includes(s.kind) && s.at).map((s) => s.at!.getTime());
     const failure = failures.filter((f) => kinds.includes(f.kind) && f.at).sort((a, b) => b.at!.getTime() - a.at!.getTime())[0];

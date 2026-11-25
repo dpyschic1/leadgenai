@@ -116,6 +116,15 @@ const webCollection: SourceAdapter = {
   },
 };
 
+/** Settings → JobSpy import: its own service and switch (src/server/jobspy.ts); never run by the ingestion queue. */
+const jobspy: SourceAdapter = {
+  slug: "jobspy",
+  isConfigured: () => Boolean(process.env.JOBSPY_SERVICE_URL && process.env.JOBSPY_SERVICE_KEY),
+  async healthCheck() {
+    return { ok: true, message: "Separate JobSpy service; switched on per workspace in Settings → JobSpy import." };
+  },
+};
+
 /** Every source adapter, by slug. Adding a provider = one adapter here + one `sources` row. */
 export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   companies_house: companiesHouse,
@@ -131,4 +140,5 @@ export const SOURCE_ADAPTERS: Record<SourceSlug, SourceAdapter> = {
   yc_directory: ycDirectory,
   web_collection: webCollection,
   fca_register: fcaRegister,
+  jobspy,
 };

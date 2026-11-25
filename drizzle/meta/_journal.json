@@ -316,6 +316,20 @@
       "when": 1795469087996,
       "tag": "0044_drop_project_client_type",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1795552788675,
+      "tag": "0045_jobspy_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1795553728881,
+      "tag": "0046_jobspy_opportunities",
+      "breakpoints": true
     }
   ]
 }

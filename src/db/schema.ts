@@ -1820,3 +1820,72 @@ export const collectedItemCategories = pgTable(
   },
   (t) => [primaryKey({ columns: [t.itemId, t.categorySlug] }), index("collected_item_categories_category_idx").on(t.categorySlug)],
 );
+
+// ---------------------------------------------------------------------------
+// JobSpy import (Settings → JobSpy import). Kept apart on purpose: nothing else reads these tables,
+// so the feature can be removed by deleting its files and dropping both tables.
+// ---------------------------------------------------------------------------
+
+/** One press of "Run" in Settings. Shared by every workspace: one service, one IP, one cooldown. */
+export const jobspyRuns = pgTable(
+  "jobspy_runs",
+  {
+    id: id(),
+    requestedBy: uuid().references(() => users.id, { onDelete: "set null" }),
+    startedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp({ withTimezone: true }),
+    /** Null while running. */
+    status: text().$type<"success" | "partial" | "failed">(),
+    searchTerm: text().notNull(),
+    location: text().notNull(),
+    boards: text().array().notNull(),
+    resultsPerBoard: integer().notNull(),
+    found: integer().notNull().default(0),
+    created: integer().notNull().default(0),
+    /** Per-board errors reported by the service, or `service` when the call itself failed. */
+    errors: jsonb().$type<Record<string, string>>().notNull().default({}),
+  },
+  (t) => [
+    index("jobspy_runs_started_at_idx").on(t.startedAt),
+    check("jobspy_runs_status_chk", sql`${t.status} is null or ${t.status} in ('success', 'partial', 'failed')`),
+  ],
+);
+
+/**
+ * A job returned by JobSpy, deduplicated by its board URL. Emails are deliberately not stored;
+ * `description` is capped like every other stored body.
+ */
+export const jobspyJobs = pgTable(
+  "jobspy_jobs",
+  {
+    id: id(),
+    board: text().notNull(),
+    jobUrl: text().notNull(),
+    /** The employer's own job page, when the board links to it. */
+    jobUrlDirect: text(),
+    title: text().notNull(),
+    company: text(),
+    /** The company's website, when the board gives it. */
+    companyUrl: text(),
+    location: text(),
+    isRemote: boolean(),
+    jobType: text(),
+    datePosted: date(),
+    salaryMin: doublePrecision(),
+    salaryMax: doublePrecision(),
+    salaryInterval: text(),
+    currency: text(),
+    description: text(),
+    firstRunId: uuid().references(() => jobspyRuns.id, { onDelete: "set null" }),
+    firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("jobspy_jobs_job_url_idx").on(t.jobUrl), index("jobspy_jobs_first_seen_idx").on(t.firstSeenAt)],
+);
+
+/** Per workspace: whether JobSpy jobs become companies and signals in Opportunities. No row = off. */
+export const jobspyWorkspaces = pgTable("jobspy_workspaces", {
+  workspaceId: workspaceRef().primaryKey(),
+  sendToOpportunities: boolean().notNull().default(false),
+  updatedAt: updatedAt(),
+});
