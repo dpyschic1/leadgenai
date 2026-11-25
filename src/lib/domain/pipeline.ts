@@ -36,6 +36,42 @@ export type PipelineReportRow = {
 
 export type PipelineReport = { rows: PipelineReportRow[]; total: PipelineReportRow };
 
+/**
+ * The dashboard's numbers, over the opportunities the team works with (not archived, not hidden as a
+ * competitor). Each funnel step is a subset of the one before it.
+ */
+export type DashboardReport = {
+  funnel: {
+    found: number;
+    /** Read by the AI or decided by the team. */
+    checked: number;
+    /** Hot or warm. */
+    leads: number;
+    /** Leads moved past the first stage (contacted, in talks, won or lost). */
+    worked: number;
+    won: number;
+  };
+  quality: {
+    hot: number;
+    warm: number;
+    notFit: number;
+    /** Strong enough to be read, and waiting for the AI. */
+    awaiting: number;
+    /** Scored too low to be sent to the AI. */
+    tooWeak: number;
+  };
+  /** Found and turned into leads in the last 7 days, and the 7 before (to show the change). */
+  thisWeek: { found: number; leads: number };
+  lastWeek: { found: number; leads: number };
+  /** The last 30 days (UTC), oldest first: opportunities found and leads made each day. */
+  daily: { date: string; found: number; leads: number }[];
+  /** Per source, most found first. */
+  sources: { category: PipelineReportRow["category"]; found: number; leads: number }[];
+};
+
+/** Days of history the dashboard's trend shows. */
+export const DASHBOARD_DAYS = 30;
+
 export type StageRef = { id: string; name: string; kind: StageKind };
 
 /** A stage in the pipeline editor, with how many opportunities sit in it. */

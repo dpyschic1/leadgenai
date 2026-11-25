@@ -1,8 +1,9 @@
 import "server-only";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
 import { auditLogs, opportunities, pipelineStages } from "@/db/schema";
-import { DEFAULT_STAGES, MAX_STAGES, STAGE_KIND_LABELS, type PipelineReport, type PipelineReportRow, type PipelineStage, type StageKind, type StageRef } from "@/lib/domain/pipeline";
+import { QUALIFY_MIN_SCORE } from "@/lib/domain/opportunities";
+import { DASHBOARD_DAYS, DEFAULT_STAGES, MAX_STAGES, STAGE_KIND_LABELS, type DashboardReport, type PipelineReport, type PipelineReportRow, type PipelineStage, type StageKind, type StageRef } from "@/lib/domain/pipeline";
 import type { AuthContext } from "@/server/auth/session";
 import { AppError } from "@/server/http/errors";
 
@@ -183,4 +184,75 @@ export async function pipelineReport(auth: AuthContext): Promise<PipelineReport>
   const ordered = CATEGORY_ORDER.map((category) => finish(byCategory.get(category) ?? { category, total: 0, open: 0, won: 0, lost: 0, archived: 0 }));
   const sum = (key: "total" | "open" | "won" | "lost" | "archived") => ordered.reduce((acc, r) => acc + r[key], 0);
   return { rows: ordered, total: finish({ category: "signal", total: sum("total"), open: sum("open"), won: sum("won"), lost: sum("lost"), archived: sum("archived") }) };
+}
+
+/**
+ * The dashboard: the funnel from found to won, how the AI judged what it read, the last 30 days of
+ * finds and new leads, and which sources they came from. Counts only what the team works with:
+ * archived and competitor-hidden opportunities are left out.
+ */
+export async function dashboardReport(auth: AuthContext): Promise<DashboardReport> {
+  const intake = await intakeStageId(db, auth.workspaceId);
+  const visible = and(eq(opportunities.workspaceId, auth.workspaceId), isNull(opportunities.hiddenReason), isNull(opportunities.archivedAt));
+  const isLead = sql`${opportunities.qualification} in ('hot', 'warm')`;
+  const foundAt = sql`coalesce(${opportunities.discoveredAt}, ${opportunities.createdAt})`;
+  const n = (condition: ReturnType<typeof sql>) => sql<number>`(count(*) filter (where ${condition}))::int`;
+  const daysAgo = (days: number) => sql`now() - make_interval(days => ${days})`;
+  const day = (at: ReturnType<typeof sql>) => sql<string>`to_char(${at} at time zone 'UTC', 'YYYY-MM-DD')`;
+  const category = sql<DashboardReport["sources"][number]["category"]>`coalesce(${opportunities.category}::text, 'signal')`;
+
+  const [[t], foundDaily, leadDaily, sources] = await Promise.all([
+    db
+      .select({
+        found: sql<number>`count(*)::int`,
+        checked: n(sql`${opportunities.qualification} is not null`),
+        hot: n(sql`${opportunities.qualification} = 'hot'`),
+        warm: n(sql`${opportunities.qualification} = 'warm'`),
+        notFit: n(sql`${opportunities.qualification} = 'not_fit'`),
+        awaiting: n(sql`${opportunities.qualification} is null and coalesce(${opportunities.opportunityScore}, 0) >= ${QUALIFY_MIN_SCORE}`),
+        tooWeak: n(sql`${opportunities.qualification} is null and coalesce(${opportunities.opportunityScore}, 0) < ${QUALIFY_MIN_SCORE}`),
+        worked: n(sql`${isLead} and ${opportunities.stageId} <> ${intake}`),
+        won: n(sql`${isLead} and ${pipelineStages.kind} = 'won'`),
+        foundThisWeek: n(sql`${foundAt} >= ${daysAgo(7)}`),
+        foundLastWeek: n(sql`${foundAt} >= ${daysAgo(14)} and ${foundAt} < ${daysAgo(7)}`),
+        leadsThisWeek: n(sql`${isLead} and ${opportunities.qualifiedAt} >= ${daysAgo(7)}`),
+        leadsLastWeek: n(sql`${isLead} and ${opportunities.qualifiedAt} >= ${daysAgo(14)} and ${opportunities.qualifiedAt} < ${daysAgo(7)}`),
+      })
+      .from(opportunities)
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .where(visible),
+    db
+      .select({ date: day(foundAt), count: sql<number>`count(*)::int` })
+      .from(opportunities)
+      .where(and(visible, sql`${foundAt} >= ${daysAgo(DASHBOARD_DAYS)}`))
+      .groupBy(day(foundAt)),
+    db
+      .select({ date: day(sql`${opportunities.qualifiedAt}`), count: sql<number>`count(*)::int` })
+      .from(opportunities)
+      .where(and(visible, isLead, sql`${opportunities.qualifiedAt} >= ${daysAgo(DASHBOARD_DAYS)}`))
+      .groupBy(day(sql`${opportunities.qualifiedAt}`)),
+    db
+      .select({ category, found: sql<number>`count(*)::int`, leads: n(isLead) })
+      .from(opportunities)
+      .where(visible)
+      .groupBy(category),
+  ]);
+
+  // Every day in the window, including the ones with nothing found.
+  const found = new Map(foundDaily.map((r) => [r.date, r.count]));
+  const leads = new Map(leadDaily.map((r) => [r.date, r.count]));
+  const today = new Date();
+  const daily = Array.from({ length: DASHBOARD_DAYS }, (_, i) => {
+    const date = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - (DASHBOARD_DAYS - 1 - i))).toISOString().slice(0, 10);
+    return { date, found: found.get(date) ?? 0, leads: leads.get(date) ?? 0 };
+  });
+
+  return {
+    funnel: { found: t.found, checked: t.checked, leads: t.hot + t.warm, worked: t.worked, won: t.won },
+    quality: { hot: t.hot, warm: t.warm, notFit: t.notFit, awaiting: t.awaiting, tooWeak: t.tooWeak },
+    thisWeek: { found: t.foundThisWeek, leads: t.leadsThisWeek },
+    lastWeek: { found: t.foundLastWeek, leads: t.leadsLastWeek },
+    daily,
+    sources: sources.filter((s) => s.found > 0).sort((a, b) => b.found - a.found),
+  };
 }

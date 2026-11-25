@@ -13,6 +13,10 @@ export function usePipelineReport() {
   return useQuery({ queryKey: [...queryKeys.pipeline, "report"], queryFn: ({ signal }) => pipelineApi.report(signal), staleTime: 30_000 });
 }
 
+export function useDashboardReport() {
+  return useQuery({ queryKey: [...queryKeys.pipeline, "dashboard"], queryFn: ({ signal }) => pipelineApi.dashboard(signal), staleTime: 30_000 });
+}
+
 /** Any pipeline change also changes what the feed's tabs and every card show. */
 function usePipelineMutation<TInput>(fn: (input: TInput) => Promise<PipelineStage[]>) {
   const queryClient = useQueryClient();

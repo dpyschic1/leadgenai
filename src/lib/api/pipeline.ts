@@ -1,7 +1,8 @@
-import type { PipelineReport, PipelineStage, StageKind } from "@/lib/domain/pipeline";
+import type { DashboardReport, PipelineReport, PipelineStage, StageKind } from "@/lib/domain/pipeline";
 import { apiRequest } from "./client";
 
 export const pipelineApi = {
+  dashboard: (signal?: AbortSignal) => apiRequest<DashboardReport>("/dashboard", { signal }),
   report: (signal?: AbortSignal) => apiRequest<PipelineReport>("/pipeline/report", { signal }),
   list: (signal?: AbortSignal) => apiRequest<PipelineStage[]>("/pipeline", { signal }),
   create: (input: { name: string; kind: StageKind }) => apiRequest<PipelineStage[]>("/pipeline", { method: "POST", body: input }),
