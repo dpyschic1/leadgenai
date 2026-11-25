@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/db";
-import { companies, companyContactPoints, jobPostings, opportunities, signalEvidence, signals, users, workspaces } from "@/db/schema";
+import { boardJobs, companies, companyContactPoints, companyJobBoards, jobBoardDirectory, jobPostings, opportunities, signalEvidence, signals, users, workspaces } from "@/db/schema";
 import { companySchema, personSchema } from "@/lib/validation/companies";
 import { feedbackSchema } from "@/lib/validation/feedback";
 import { leadContactsQuerySchema, leadListQuerySchema, opportunityExportQuerySchema, opportunityListQuerySchema } from "@/lib/validation/opportunities";
@@ -316,6 +316,31 @@ describe("contacts and the Leads page", () => {
     expect(withPhone.items).toEqual([expect.objectContaining({ name: "Ledgerline", email: null, phone: "0113 496 0000" })]);
   });
 
+  it("splits leads into B2B and job openings, as the Opportunities page does, with a count for each", async () => {
+    const all = await leads({});
+    const { startup, established } = all.stageCounts;
+    // Every lead is one or the other, and each choice lists what its count says.
+    expect(startup + established).toBe(all.counts.all);
+    const b2b = await leads({ companyStage: "startup" });
+    const openings = await leads({ companyStage: "established" });
+    expect(b2b.counts.all).toBe(startup);
+    expect(openings.counts.all).toBe(established);
+    // The counts leave the choice itself out, so they stay the same whichever is picked.
+    expect(b2b.stageCounts).toEqual(all.stageCounts);
+    // Copying follows the choice.
+    expect((await listLeadContacts(auth, leadContactsQuerySchema.parse({ companyStage: "startup" }))).total).toBe(startup);
+  });
+
+  it("gives a lead with no job posts the roles the AI found fit, for the role filter", async () => {
+    await db
+      .update(opportunities)
+      .set({ qualificationHints: { fittingRoles: ["Senior React Engineer"] } })
+      .where(and(eq(opportunities.workspaceId, auth.workspaceId), eq(opportunities.companyId, ids.get("Northbridge Legal")!)));
+    const frontend = await leads({ role: "frontend" });
+    expect(frontend.items.map((i) => [i.company?.name, i.roles])).toEqual([["Northbridge Legal", ["Senior React Engineer"]]]);
+    expect(frontend.roleCounts.frontend).toBe(1);
+  });
+
   it("filters the feed and the export to leads someone can be contacted at", async () => {
     expect(await feed({ contact: "any" })).toEqual(["Ledgerline", "Northbridge Legal"]);
     expect(await feed({ contact: "none" })).toEqual(["Medisync Health"]);
@@ -376,7 +401,7 @@ describe("likely competitors", () => {
 });
 
 describe("remote work", () => {
-  it("narrows the feed, the Leads page and the export to leads hiring remotely", async () => {
+  it("narrows the feed and the export to leads hiring remotely", async () => {
     // Medisync's job says remote; Ledgerline's says it isn't.
     const job = async (company: string, location: string) => {
       const [signal] = await db
@@ -401,9 +426,6 @@ describe("remote work", () => {
     expect(await feed({ remote: "true" })).toEqual(["Medisync Health"]);
     // Off, the filter leaves every lead in.
     expect(await feed({})).toEqual(expect.arrayContaining(["Ledgerline", "Medisync Health", "Northbridge Legal"]));
-    const leads = await listLeads(auth, leadListQuerySchema.parse({ remote: "true" }));
-    expect(leads.items.map((i) => i.company?.name)).toEqual(["Medisync Health"]);
-    expect(leads.counts.all).toBe(1);
     const { count } = await exportOpportunities(auth, opportunityExportQuerySchema.parse({ group: "open", remote: "true" }));
     expect(count).toBe(1);
   });
@@ -503,7 +525,7 @@ describe("companies and individuals", () => {
 });
 
 describe("startups and job openings", () => {
-  it("files companies that need the work you do as B2B, whatever their size, and ordinary hiring as job openings", async () => {
+  it("files companies that need the work you do as B2B, and ordinary hiring as job openings", async () => {
     const list = (companyStage?: string) => listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open", ...(companyStage ? { companyStage } : {}) }));
     const stageOf = async (name: string) => (await list()).items.find((i) => i.company?.name === name)?.companyStage;
     const ids = new Map((await listCompanies(auth, undefined, { page: 1, pageSize: 100 })).items.map((c) => [c.name, c.id]));
@@ -542,5 +564,54 @@ describe("startups and job openings", () => {
     const after = await list();
     expect(after.clientTypeCounts.startup + after.clientTypeCounts.established).toBe(after.total - after.clientTypeCounts.individual);
     expect((await list("startup")).items.every((i) => i.companyStage === "startup")).toBe(true);
+  });
+
+  it("files a large company growing a team as job openings: over 200 staff, or 50+ open jobs when its size is unknown", async () => {
+    const stageOf = async (name: string) =>
+      (await listOpportunities(auth, opportunityListQuerySchema.parse({ group: "open" }))).items.find((i) => i.company?.name === name)?.companyStage;
+    const [medisync] = await db.select({ id: companies.id }).from(companies).where(and(eq(companies.workspaceId, auth.workspaceId), eq(companies.canonicalName, "Medisync Health")));
+    // Three open roles the services cover: growing a team.
+    for (const role of ["Frontend Engineer", "Backend Engineer", "Web Developer"]) {
+      await createSignal(
+        auth,
+        medisync.id,
+        signalSchema.parse({
+          signalType: "engineering_hiring",
+          intentLevel: "medium",
+          urgency: "unknown",
+          serviceCategories: ["web_development"],
+          summary: `Medisync Health is hiring a ${role}.`,
+          personId: null,
+          occurredOn: daysAgo(3),
+          sourceUrl: null,
+          excerpt: null,
+          evidenceLabel: "observed",
+          source: "manual",
+          confidence: null,
+        }),
+      );
+    }
+    await rescoreCompany(auth.workspaceId, medisync.id);
+    expect(await stageOf("Medisync Health")).toBe("startup");
+
+    // Large by its own staff count: it fills those roles itself.
+    await db.update(companies).set({ employeeCount: 3000 }).where(eq(companies.id, medisync.id));
+    expect(await stageOf("Medisync Health")).toBe("established");
+
+    // Size unknown: 49 open jobs on its board say too little, 50 say large.
+    await db.update(companies).set({ employeeCount: null }).where(eq(companies.id, medisync.id));
+    const token = `medisync-${run}`;
+    // A board every workspace shares (the directory), followed by this company.
+    await db.insert(jobBoardDirectory).values({ provider: "greenhouse", boardToken: token });
+    await db.insert(companyJobBoards).values({ companyId: medisync.id, workspaceId: auth.workspaceId, provider: "greenhouse", boardToken: token });
+    const job = (i: number) => ({ provider: "greenhouse" as const, boardToken: token, externalId: String(i), title: `Role ${i}`, url: `https://example.com/${token}/${i}` });
+    await db.insert(boardJobs).values(Array.from({ length: 49 }, (_, i) => job(i)));
+    expect(await stageOf("Medisync Health")).toBe("startup");
+    await db.insert(boardJobs).values(job(49));
+    expect(await stageOf("Medisync Health")).toBe("established");
+
+    await db.delete(boardJobs).where(eq(boardJobs.boardToken, token));
+    await db.delete(companyJobBoards).where(eq(companyJobBoards.companyId, medisync.id));
+    await db.delete(jobBoardDirectory).where(eq(jobBoardDirectory.boardToken, token));
   });
 });

@@ -377,6 +377,8 @@ export type LeadList = Page<LeadSummary> & {
   counts: Record<LeadTab, number>;
   /** Per role type, with the contact tab applied. */
   roleCounts: Record<RoleFamily, number>;
+  /** B2B and job-opening leads (the feed's company stage), with the tab, role type and search applied. */
+  stageCounts: { startup: number; established: number };
 };
 
 /** Every matching lead's best email and phone (the person's, else the company's), for copying. */

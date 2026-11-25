@@ -330,6 +330,13 @@
       "when": 1795553728881,
       "tag": "0046_jobspy_opportunities",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1795621685307,
+      "tag": "0047_yc_companies_domain_index",
+      "breakpoints": true
     }
   ]
 }

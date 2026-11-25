@@ -21,6 +21,7 @@ import { CompanyAvatar } from "@/components/companies/company-avatar";
 import { PageHeader } from "@/components/layout/page-header";
 import { Pagination, usePage } from "@/components/layout/pagination";
 import { TickBox } from "@/components/opportunities/opportunity-card";
+import { Pill, SHOW_CHOICES } from "@/components/opportunities/opportunities-view";
 import { ScoreRing } from "@/components/opportunities/score-ring";
 import { LeadBadge, StatusBadge } from "@/components/opportunities/status-badge";
 import { Button } from "@/components/ui/button";
@@ -44,7 +45,7 @@ const TABS: { tab: LeadTab; label: string; hint: string }[] = [
   { tab: "all", label: "All leads", hint: "Every opportunity the AI (or your team) judged a real buyer, HOT or WARM, still being worked." },
   { tab: "email", label: "Has email", hint: "Leads with an email to write to: the person's own, or the company's inbox." },
   { tab: "phone", label: "Has phone", hint: "Leads with a number to call: the person's own, or the company's line." },
-  { tab: "person", label: "Named contact", hint: "A named person with their own phone or email: call or write to them directly." },
+  { tab: "person", label: "Direct contact", hint: "A named person with their own phone or email: call or write to them directly." },
   { tab: "company", label: "Company line", hint: "No named person reachable yet, but the company's own phone or email works as a way in." },
   { tab: "none", label: "No contact yet", hint: "Nothing to call or write to yet. Open the lead to research it, or wait for its website to be read." },
 ];
@@ -53,10 +54,13 @@ const EMPTY: Record<LeadTab, string> = {
   all: "No leads yet. The AI reads your strongest opportunities a few at a time; the ones it judges HOT or WARM appear here with their contacts.",
   email: "No lead has an email yet.",
   phone: "No lead has a phone number yet.",
-  person: "No lead has a named contact with a phone or email yet.",
+  person: "No lead has a named person with their own phone or email yet.",
   company: "No lead is reachable only through its company line.",
   none: "Every lead has a way in.",
 };
+
+/** All, B2B or job openings: the same choice as on the Opportunities page (no funded-only view: leads are judged buyers). */
+const STAGE_CHOICES = SHOW_CHOICES.filter((choice) => choice.value !== "funded");
 
 const COLUMNS = "grid-cols-[minmax(0,2.2fr)_minmax(0,1.3fr)_minmax(0,1.1fr)_minmax(0,1.5fr)_minmax(0,1.2fr)_7.5rem_3rem]";
 const COLUMNS_SELECTING = "grid-cols-[minmax(0,2.2fr)_minmax(0,1.3fr)_minmax(0,1.1fr)_minmax(0,1.5fr)_minmax(0,1.2fr)_7.5rem_3rem_1.5rem]";
@@ -73,9 +77,9 @@ export function LeadsView() {
   const [tab, setTab] = useState<LeadTab>("all");
   const [role, setRole] = useState<RoleFamily | null>(null);
   const [search, setSearch] = useState("");
-  const [remote, setRemote] = useState(false);
+  const [companyStage, setCompanyStage] = useState<LeadFilter["companyStage"]>(null);
   const q = useDebouncedValue(search.trim());
-  const filter = useMemo<LeadFilter>(() => ({ tab, role, q, remote }), [tab, role, q, remote]);
+  const filter = useMemo<LeadFilter>(() => ({ tab, role, q, companyStage }), [tab, role, q, companyStage]);
   const view = JSON.stringify(filter);
   const [page, setPage] = usePage(view);
   const { data, isPending, isFetching } = useLeads(filter, page);
@@ -109,9 +113,25 @@ export function LeadsView() {
       <PageHeader title="Leads" description="Who to contact at every lead you're working, and how: named people first, then the company's own line." />
 
       <div className="space-y-3">
+        {/* What to show: every lead, B2B (needs the work you do) or ordinary job openings. */}
+        <div role="radiogroup" aria-label="Show" className="flex max-w-full gap-2 overflow-x-auto">
+          {STAGE_CHOICES.map(({ value, label, icon: Icon, hint }) => {
+            const count = value === "startup" || value === "established" ? data?.stageCounts[value] : null;
+            const selected = (companyStage ?? "all") === value;
+            return (
+              <Pill key={value} role="radio" title={hint} selected={selected} onClick={() => setCompanyStage(value === "startup" || value === "established" ? value : null)}>
+                {Icon && <Icon className="size-3.5" />}
+                {label}
+                {count !== null && <span className="text-xs tabular-nums opacity-70">{count ?? "·"}</span>}
+              </Pill>
+            );
+          })}
+        </div>
+
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div role="tablist" aria-label="How the lead can be reached" className="flex max-w-full overflow-x-auto rounded-lg border bg-card p-1 lg:inline-flex lg:self-start">
-            {TABS.map((item) => {
+            {/* A tab with nothing in it is hidden (unless it is the one open), so no click leads nowhere. */}
+            {TABS.filter((item) => item.tab === "all" || item.tab === tab || !data || data.counts[item.tab] > 0).map((item) => {
               const selected = item.tab === tab;
               return (
                 <button
@@ -142,16 +162,6 @@ export function LeadsView() {
                 className="h-9 bg-card pl-9"
               />
             </div>
-            {/* Leads hiring remotely: work a remote team can do. */}
-            <Button
-              variant="outline"
-              aria-pressed={remote}
-              onClick={() => setRemote(!remote)}
-              className={cn("h-9 shrink-0 bg-card", remote && "border-primary/40 bg-signal-tint text-[var(--signal-deep)]")}
-            >
-              <GlobeIcon />
-              Remote
-            </Button>
             <Button
               variant="outline"
               aria-pressed={selecting}
@@ -165,7 +175,7 @@ export function LeadsView() {
           </div>
         </div>
 
-        {/* The kind of role each lead is hiring for, read from its job titles. */}
+        {/* The kind of role each lead is hiring for: its job titles, and the roles the AI found fit. */}
         {roleChips.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Hiring for">
             {/* <span className="mr-1 text-xs font-medium text-muted-foreground">Hiring for</span> */}
@@ -227,7 +237,7 @@ export function LeadsView() {
               </ul>
             ) : (
               <p className="px-4 py-12 text-center text-sm text-muted-foreground">
-                {q ? `No leads match “${q}”.` : role ? `No ${ROLE_FAMILY_LABELS[role]} leads here.` : remote ? "No leads hiring remotely here." : EMPTY[tab]}
+                {q ? `No leads match “${q}”.` : role ? `No ${ROLE_FAMILY_LABELS[role]} leads here.` : companyStage ? `No ${companyStage === "startup" ? "B2B" : "job-opening"} leads here.` : EMPTY[tab]}
               </p>
             )}
           </div>

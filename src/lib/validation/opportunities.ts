@@ -189,8 +189,8 @@ export const leadFilterFields = {
   q: z.string().trim().max(200).default(""),
   tab: z.enum(LEAD_TABS).default("all"),
   role: z.enum(ROLE_FAMILIES).optional(),
-  /** Only leads hiring for remote work (see the feed's `remote` filter). */
-  remote: flag,
+  /** B2B (startup) or job openings (established), as on the Opportunities page; missing means either. */
+  companyStage: z.preprocess((value) => (value === "" || value === undefined ? null : value), z.enum(["startup", "established"]).nullable()).default(null),
 };
 
 /** One page of the Leads page. */

@@ -1,0 +1,1 @@
+CREATE INDEX "yc_companies_domain_idx" ON "yc_companies" USING btree ("domain");

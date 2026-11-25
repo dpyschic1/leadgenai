@@ -57,10 +57,10 @@ const TABS: { group: StatusGroup; label: string }[] = [
  * employees; or newly funded companies only. One choice at a time.
  */
 type ShowChoice = "all" | "startup" | "established" | "funded";
-const SHOW_CHOICES: { value: ShowChoice; label: string; icon: LucideIcon | null; hint: string }[] = [
+export const SHOW_CHOICES: { value: ShowChoice; label: string; icon: LucideIcon | null; hint: string }[] = [
   { value: "all", label: "All", icon: null, hint: "Every opportunity" },
-  { value: "startup", label: "B2B", icon: RocketIcon, hint: "Needs the work you do, any size: asking for a partner, growing a team (3+ open roles your services cover), or a startup with technical need (newly funded, or a small company hiring a role you cover)" },
-  { value: "established", label: "Job openings", icon: Building2Icon, hint: "Ordinary hiring: one or two roles at an established company, or roles your services don't cover" },
+  { value: "startup", label: "B2B", icon: RocketIcon, hint: "Needs the work you do: asking for a partner (any size), newly funded, growing a team (3+ open roles your services cover, not a large company), or a small company hiring a role you cover. Large companies (over 200 staff, or 50+ open jobs) count as job openings" },
+  { value: "established", label: "Job openings", icon: Building2Icon, hint: "Ordinary hiring: a large company filling its own roles, one or two roles at an established company, or roles your services don't cover" },
   { value: "funded", label: "Funded company", icon: BanknoteIcon, hint: "Raised a round recently" },
 ];
 
@@ -437,7 +437,7 @@ function EmptyOpportunities() {
 }
 
 /** One choice in the pill rows at the top (kind of opportunity, buyer). */
-function Pill({ selected, role, title, onClick, children }: { selected: boolean; role: "tab" | "radio"; title?: string; onClick: () => void; children: ReactNode }) {
+export function Pill({ selected, role, title, onClick, children }: { selected: boolean; role: "tab" | "radio"; title?: string; onClick: () => void; children: ReactNode }) {
   return (
     <button
       type="button"

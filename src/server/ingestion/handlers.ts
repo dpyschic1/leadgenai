@@ -464,6 +464,12 @@ async function discoverNpi({ actor }: JobContext): Promise<JobResult> {
 
 // --- discover_yc: Y Combinator startups in the ICP's countries and industries --------------------
 
+/**
+ * YC companies added per daily run: every match to the services comes in, hiring and newest first
+ * (`pickYcCompanies`), so all of them arrive within a few weeks without flooding the AI queue.
+ */
+const YC_COMPANIES_PER_RUN = 100;
+
 /** Countries a service with no target country is taken to mean, for YC companies. */
 const YC_ANY_COUNTRY = ["US", "GB"];
 
@@ -480,7 +486,7 @@ async function discoverYc({ actor }: JobContext): Promise<JobResult> {
   if (!importedAt || Date.now() - importedAt.getTime() > YC_REFRESH_MS) await importYcCompanies();
 
   const known = await knownIdentifiers(db, actor.workspaceId, "yc_company");
-  const picked = await pickYcCompanies({ countries, industries, exclude: [...known], limit: COMPANIES_PER_RUN });
+  const picked = await pickYcCompanies({ countries, industries, exclude: [...known], limit: YC_COMPANIES_PER_RUN });
 
   const followUps: FollowUp[] = [];
   for (const row of picked) {

@@ -15,15 +15,22 @@ export function setFilterParams(params: URLSearchParams, filters: OpportunityFil
   return params;
 }
 
-/** What the Leads page shows: a contact tab, a role type (null: any), a search, and remote work only. */
-export type LeadFilter = { tab: LeadTab; role: RoleFamily | null; q: string; remote: boolean };
+/**
+ * What the Leads page shows: a contact tab, a role type, a search, and B2B or job openings (null: either).
+ */
+export type LeadFilter = {
+  tab: LeadTab;
+  role: RoleFamily | null;
+  q: string;
+  companyStage: "startup" | "established" | null;
+};
 
-function leadParams({ tab, role, q, remote }: LeadFilter): URLSearchParams {
+function leadParams({ tab, role, q, companyStage }: LeadFilter): URLSearchParams {
   const params = new URLSearchParams();
   if (tab !== "all") params.set("tab", tab);
   if (role) params.set("role", role);
   if (q) params.set("q", q);
-  if (remote) params.set("remote", "true");
+  if (companyStage) params.set("companyStage", companyStage);
   return params;
 }
 

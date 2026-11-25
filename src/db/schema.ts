@@ -1612,6 +1612,8 @@ export const ycCompanies = pgTable(
     uniqueIndex("yc_companies_slug_idx").on(t.slug),
     index("yc_companies_pick_idx").on(t.country, t.status, t.isHiring),
     index("yc_companies_board_idx").on(t.boardProvider, t.boardToken),
+    // Lookups by a company's website (team size, B2B or job openings): one per opportunity row.
+    index("yc_companies_domain_idx").on(t.domain),
     foreignKey({
       name: "yc_companies_board_fk",
       columns: [t.boardProvider, t.boardToken],

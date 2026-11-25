@@ -3,8 +3,11 @@ import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql, ty
 import { db } from "@/db";
 import {
   auditLogs,
+  boardJobs,
+  collectedItems,
   companies,
   companyContactPoints,
+  companyJobBoards,
   companyLocations,
   companyPeople,
   contactPoints,
@@ -161,8 +164,10 @@ export const companyContactFromOsm = sql<boolean>`((${ownPhone}) is null and ${o
 
 /** Most staff a startup has (B2B, see `startupCondition`); YC's team size counts when we have no other. Before `summaryColumns`, which uses it. */
 const STARTUP_MAX_EMPLOYEES = 200;
-/** Open roles your services cover that make a company "growing a team" (B2B) whatever its size. */
+/** Open roles your services cover that make a company "growing a team" (B2B), unless it is large. */
 const TEAM_GROWTH_MIN_ROLES = 3;
+/** Open jobs that mark a company of unknown size as large (over 200 staff, see `likelyMinEmployees`). */
+const LARGE_COMPANY_OPEN_JOBS = 50;
 
 const summaryColumns = {
   opportunity: opportunities,
@@ -360,12 +365,11 @@ function isIndividualPost(opportunity: { category: string | null; companyId: str
 }
 
 /**
- * A B2B opportunity: a company that looks like it needs the work your services do, whatever its size.
- * Any one of:
+ * A B2B opportunity: a company that looks like it needs the work your services do. Any one of:
  * - asking for help: a request for a vendor, agency or partner (or an intent post by a company), with
- *   or without open jobs;
- * - growing a team: 3 or more open roles your services cover (a company hiring 15 engineers has real
- *   engineering demand, however large it is);
+ *   or without open jobs, at any size;
+ * - newly funded, at any size;
+ * - growing a team: 3 or more open roles your services cover, at a company that isn't large;
  * - a startup with technical need: newly funded, or a small company (a YC company or any company of
  *   200 staff or fewer, or hiring a founding role) with at least one open role your services cover.
  * Everything else with a company is ordinary hiring ("Job openings"): one or two roles at an
@@ -405,12 +409,30 @@ function startupCondition(): SQL {
       join ${signals} on ${signals.id} = ${opportunitySignals.signalId}
       where ${opportunitySignals.opportunityId} = ${opportunities.id} and ${opportunitySignals.role} <> 'negative'
         and ${signals.summary} ~* '\mfounding\M'))`;
+  // A large company (Toast, Airwallex) fills its roles itself: over 200 staff by its own count or
+  // YC's, or, size unknown, 50+ open jobs on its board or careers pages (measured on YC: all such had 200+).
+  const knownSize = sql`coalesce(${companies.employeeCount}, (
+    select ${ycCompanies.teamSize} from ${ycCompanies}
+    where ${companies.domain} is not null and ${ycCompanies.domain} = ${companies.domain} and ${ycCompanies.teamSize} is not null
+    limit 1))`;
+  // "At least 50 open jobs" stops reading at the 50th, instead of counting a big board's hundreds.
+  const manyOpenJobs = sql`(
+    exists (
+      select 1 from ${boardJobs}
+      join ${companyJobBoards} on ${companyJobBoards.provider} = ${boardJobs.provider} and ${companyJobBoards.boardToken} = ${boardJobs.boardToken}
+      where ${companyJobBoards.companyId} = ${companies.id} and ${boardJobs.closedAt} is null
+      offset ${LARGE_COMPANY_OPEN_JOBS - 1})
+    or exists (
+      select 1 from ${collectedItems}
+      where ${companies.domain} is not null and ${collectedItems.companyDomain} = ${companies.domain}
+        and ${collectedItems.kind} = 'job' and ${collectedItems.closedAt} is null and ${collectedItems.duplicateOf} is null
+      offset ${LARGE_COMPANY_OPEN_JOBS - 1}))`;
+  const large = sql`(case when ${knownSize} is not null then ${knownSize} > ${STARTUP_MAX_EMPLOYEES} else ${manyOpenJobs} end)`;
   // Unknown (no category, no size) counts as no, so "not B2B" is true for those, not unknown.
   return sql`coalesce((
     ${asking}
-    or ${coveredRoles} >= ${TEAM_GROWTH_MIN_ROLES}
     or ${opportunities.category} = 'funded_company'
-    or (${small} and ${coveredRoles} >= 1)
+    or (not ${large} and (${coveredRoles} >= ${TEAM_GROWTH_MIN_ROLES} or (${small} and ${coveredRoles} >= 1)))
   ), false)`;
 }
 /** An established company posting job openings: a company opportunity that isn't a startup (an individual's post is neither). */
@@ -488,11 +510,14 @@ export function feedOrder(sort: OpportunitySort = "best") {
 export async function listLeads(auth: AuthContext, query: LeadListQuery): Promise<LeadList> {
   await refreshStaleScores(auth.workspaceId);
   const { page, pageSize } = query;
-  const base = leadBase(auth.workspaceId, query.q, query.remote);
+  const base = leadBase(auth.workspaceId, query);
   const tab = leadTab(query.tab);
   const index = await roleIndex(base);
   const role = query.role ? hiringFor(index, query.role) : undefined;
-  const [rows, [tabRow], tabIds] = await Promise.all([
+  // B2B and job openings counted with the tab and role type applied, not the choice itself.
+  const anyStage = leadBase(auth.workspaceId, { ...query, companyStage: null });
+  const roleAnyStage = query.role ? (query.companyStage ? hiringFor(await roleIndex(anyStage), query.role) : role) : undefined;
+  const [rows, [tabRow], tabIds, [stageRow]] = await Promise.all([
     summaryQuery().where(and(base, role, tab)).orderBy(...leadOrder()).limit(pageSize).offset(offsetOf({ page, pageSize })),
     // Each tab's count has the role type applied, and each role type's count the tab: what a click would show.
     db
@@ -517,6 +542,15 @@ export async function listLeads(auth: AuthContext, query: LeadListQuery): Promis
           .where(and(base, tab))
           .then((found) => new Set(found.map((r) => r.id)))
       : null,
+    db
+      .select({
+        startup: sql<number>`(count(*) filter (where ${startupCondition()}))::int`,
+        established: sql<number>`(count(*) filter (where ${establishedCondition()}))::int`,
+      })
+      .from(opportunities)
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .where(and(anyStage, roleAnyStage, tab)),
   ]);
 
   const roleCounts = Object.fromEntries(ROLE_FAMILIES.map((f) => [f, 0])) as Record<RoleFamily, number>;
@@ -534,6 +568,7 @@ export async function listLeads(auth: AuthContext, query: LeadListQuery): Promis
     }),
     counts,
     roleCounts,
+    stageCounts: stageRow,
     total: counts[query.tab],
     page,
     pageSize,
@@ -560,12 +595,30 @@ async function roleIndex(base: SQL | undefined): Promise<RoleIndex> {
       .from(opportunities)
       .leftJoin(companies, eq(companies.id, opportunities.companyId))
       .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId));
-  const [jobs, engine] = await Promise.all([
+  const [jobs, collected, fitting, engine] = await Promise.all([
     leads()
       .innerJoin(opportunitySignals, and(eq(opportunitySignals.opportunityId, opportunities.id), sql`${opportunitySignals.role} <> 'negative'`))
       .innerJoin(jobPostings, eq(jobPostings.signalId, opportunitySignals.signalId))
       .where(base)
       .orderBy(sql`coalesce(${jobPostings.postedAt}, ${jobPostings.firstSeenAt}) desc`),
+    // Jobs read by our own collector or JobSpy: their title is on the signal's source record.
+    db
+      .select({ id: opportunities.id, title: sql<string>`${sourceRecords.data} ->> 'title'` })
+      .from(opportunities)
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .innerJoin(opportunitySignals, and(eq(opportunitySignals.opportunityId, opportunities.id), sql`${opportunitySignals.role} <> 'negative'`))
+      .innerJoin(signals, eq(signals.id, opportunitySignals.signalId))
+      .innerJoin(sourceRecords, eq(sourceRecords.id, signals.sourceRecordId))
+      .where(and(base, eq(sourceRecords.recordType, "job_post"), sql`${sourceRecords.data} ->> 'title' is not null`))
+      .orderBy(sql`${sourceRecords.publishedAt} desc nulls last`),
+    // The roles the AI judged a fit when it qualified the lead (e.g. a YC company read from its site).
+    db
+      .select({ id: opportunities.id, title: sql<string>`jsonb_array_elements_text(${opportunities.qualificationHints} -> 'fittingRoles')` })
+      .from(opportunities)
+      .leftJoin(companies, eq(companies.id, opportunities.companyId))
+      .innerJoin(pipelineStages, eq(pipelineStages.id, opportunities.stageId))
+      .where(and(base, sql`jsonb_typeof(${opportunities.qualificationHints} -> 'fittingRoles') = 'array'`)),
     db
       .select({ id: opportunities.id, title: sql<string>`${opportunities.title}` })
       .from(opportunities)
@@ -576,7 +629,9 @@ async function roleIndex(base: SQL | undefined): Promise<RoleIndex> {
 
   const index: RoleIndex = new Map();
   const entry = (id: string) => index.get(id) ?? index.set(id, { titles: [], families: new Set() }).get(id)!;
-  for (const { id, title } of jobs) {
+  // Board jobs first (newest first), then collected jobs, then the AI's fitting roles; each title once.
+  for (const { id, title } of [...jobs, ...collected, ...fitting]) {
+    if (!title?.trim()) continue;
     const lead = entry(id);
     if (lead.titles.some((t) => t.toLowerCase() === title.toLowerCase())) continue;
     lead.titles.push(title);
@@ -592,7 +647,6 @@ function hiringFor(index: RoleIndex, family: RoleFamily): SQL {
   return ids.length > 0 ? inArray(opportunities.id, ids) : sql`false`;
 }
 
-/** Every lead still being worked (open or in progress, not archived), narrowed by a search and to remote work if asked. Expects `companies` and `pipeline_stages` joined. */
 /** Leads only: the AI (or the team) judged it a real buyer, hot or warm. */
 const isLead = inArray(opportunities.qualification, [...LEAD_QUALIFICATIONS]);
 
@@ -603,9 +657,18 @@ const LEAD_STATUS_CONDITIONS: Record<LeadStatus, SQL> = {
   not_fit: eq(opportunities.qualification, "not_fit"),
 };
 
-/** Every qualified lead still being worked: hot or warm, in an open stage. */
-function leadBase(workspaceId: string, q: string, remote: boolean): SQL | undefined {
-  return and(matchesFilters(workspaceId, { ...EMPTY_FILTERS, q, remote }), isLead, or(groupCondition("open"), groupCondition("inProgress")));
+type LeadFilter = Pick<LeadContactsQuery, "q" | "companyStage">;
+
+/**
+ * Every qualified lead still being worked (hot or warm, in an open stage), narrowed by a search and
+ * to B2B or job openings (the feed's `companyStage`) if asked.
+ */
+function leadBase(workspaceId: string, filter: LeadFilter): SQL | undefined {
+  return and(
+    matchesFilters(workspaceId, { ...EMPTY_FILTERS, q: filter.q, companyStage: filter.companyStage }),
+    isLead,
+    or(groupCondition("open"), groupCondition("inProgress")),
+  );
 }
 
 /** Leads page order: hot before warm, then the AI's fit, then the usual priority. */
@@ -632,7 +695,7 @@ function leadTab(tab: LeadTab): SQL | undefined {
 
 /** Every lead the Leads page's tab, role type and search match (best first), with the email and phone to use. */
 export async function listLeadContacts(auth: AuthContext, query: LeadContactsQuery): Promise<LeadContacts> {
-  const base = leadBase(auth.workspaceId, query.q, query.remote);
+  const base = leadBase(auth.workspaceId, query);
   const role = query.role ? hiringFor(await roleIndex(base), query.role) : undefined;
   const where = and(base, role, leadTab(query.tab));
   const rows = await db
